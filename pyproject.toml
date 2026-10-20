@@ -1,0 +1,28 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "remote-dispatch"
+version = "0.1.0"
+description = "把编码代理会话与命令经 SSH 派到另一台机器执行"
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+authors = [{ name = "weicoz" }]
+keywords = ["dispatch", "ssh", "coding-agent", "codex", "dsh", "kimi"]
+classifiers = [
+  "Environment :: Console",
+  "License :: OSI Approved :: MIT License",
+  "Programming Language :: Python :: 3",
+  "Topic :: Software Development :: Build Tools",
+]
+
+[project.scripts]
+rd = "remote_dispatch.cli:main"
+
+[project.urls]
+Source = "https://codeberg.org/jy_project/remote-dispatch"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/remote_dispatch"]

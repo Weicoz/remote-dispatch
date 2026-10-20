@@ -1,0 +1,49 @@
+#!/bin/sh
+# rd-heavy — run a memory-hungry command (full test suite, big build) while
+# holding one of this machine's "heavy" slots. Every job on the machine shares
+# the same slots, so at most RD_MAX_HEAVY such commands run at once and the
+# rest wait their turn instead of pushing the machine into swap.
+#
+#   rd-heavy make all
+#
+# RD_LOCK_DIR and RD_MAX_HEAVY are exported by the job runner.
+[ $# -gt 0 ] || { echo "usage: rd-heavy <command> [args...]" >&2; exit 2; }
+dir=${RD_LOCK_DIR:?RD_LOCK_DIR is not set; run inside an rd job}
+max=${RD_MAX_HEAVY:-1}
+mkdir -p "$dir"
+waited=0
+while :; do
+  i=1
+  while [ "$i" -le "$max" ]; do
+    slot="$dir/heavy.$i"
+    if mkdir "$slot" 2>/dev/null; then
+      echo $$ > "$slot/pid"
+      trap 'rm -rf "$slot"' EXIT
+      trap 'rm -rf "$slot"; exit 143' INT TERM HUP
+      [ "$waited" -gt 0 ] && echo "rd-heavy: got slot $i after ${waited}s" >&2
+      "$@"
+      exit $?
+    fi
+    holder=$(cat "$slot/pid" 2>/dev/null)
+    # The supervising wrapper may exit while its observed descendants remain.
+    # Only the owning supervisor may release a slot with a retained receipt.
+    if [ -e "$slot/process-receipt.json" ]; then
+      i=$((i + 1))
+      continue
+    fi
+    if [ -n "$holder" ]; then
+      probe_error=$(LC_ALL=C kill -0 "$holder" 2>&1)
+      # Permission denied cannot prove a shared slot's holder has exited.
+      case "$probe_error" in
+        *"No such process"*|*"no such process"*)
+          rm -rf "$slot"
+          continue
+          ;;
+      esac
+    fi
+    i=$((i + 1))
+  done
+  [ "$waited" -eq 0 ] && echo "rd-heavy: all $max heavy slot(s) busy, waiting" >&2
+  sleep 15
+  waited=$((waited + 15))
+done
