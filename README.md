@@ -11,22 +11,15 @@
 
 ## 安装
 
-需要本机 Python 3.9+、`git`、`ssh`。尚未发布到包索引与 Codeberg，先从本地目录或源码安装。
+需要本机 Python 3.9+、`git`、`ssh`。未发布到 PyPI，从 GitHub 或本地目录安装。
 
 ```sh
-uv tool install --from /path/to/remote-dispatch remote-dispatch   # 或者
-pipx install /path/to/remote-dispatch                             # 或者
-pip install --user /path/to/remote-dispatch
+uv tool install git+https://github.com/Weicoz/remote-dispatch     # 或者
+pipx install git+https://github.com/Weicoz/remote-dispatch        # 或者
+pip install --user git+https://github.com/Weicoz/remote-dispatch
 ```
 
-在仓库目录内可以直接 `uv tool install .`。发布之后才能用：
-
-```sh
-uv tool install git+https://codeberg.org/jy_project/remote-dispatch
-uv tool upgrade remote-dispatch
-```
-
-升级当前形态：重跑上面的安装命令。检查版本：`rd --version`。
+在仓库目录内可以直接 `uv tool install .`。从 GitHub 安装后升级：`uv tool upgrade remote-dispatch`。检查版本：`rd --version`。
 
 ## 五分钟上手
 

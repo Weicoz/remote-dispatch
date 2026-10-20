@@ -22,7 +22,7 @@ classifiers = [
 rd = "remote_dispatch.cli:main"
 
 [project.urls]
-Source = "https://codeberg.org/jy_project/remote-dispatch"
+Source = "https://github.com/Weicoz/remote-dispatch"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/remote_dispatch"]
