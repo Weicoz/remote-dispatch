@@ -265,10 +265,11 @@ class Config:
 def root_expr(host):
     """Shell expression for the worker's root directory."""
     w = host["workdir"].rstrip("/")
-    if w == "~":
+    if w in ("~", "$HOME"):
         return '"$HOME"'
-    if w.startswith("~/"):
-        return '"$HOME/' + w[2:] + '"'
+    for prefix in ("~/", "$HOME/"):
+        if w.startswith(prefix):
+            return '"$HOME/' + w[len(prefix):] + '"'
     return shlex.quote(w)
 
 
@@ -303,6 +304,8 @@ def ssh(host, script, check=True, stdin_data=None, stdin=None, timeout=None, std
     shared = dict(host, workdir=host.get("shared_workdir", host["workdir"]))
     pre = f'export PATH="{host["path"]}:$PATH"; ROOT={root_expr(host)}; SHARED_ROOT={root_expr(shared)}; '
     if is_local(host):
+        if os.name == "nt":
+            die(f"[{host['name']}] Windows 发起方不能用 ssh = local；本机派单只支持 POSIX，请配置 SSH 目标机。")
         cmd = ["sh", "-c", pre + script]
     else:
         cmd = ["ssh", *shlex.split(host["ssh_opts"]), host["ssh"], "sh -c " + shlex.quote(pre + script)]
@@ -439,9 +442,11 @@ mv "$ROOT/profiles/current.tmp" "$ROOT/profiles/current.json"
 # ---------------------------------------------------------------- probing
 
 def probe(host):
-    options = health.network_options(host)
-    if host.get("probe_profile_fingerprint"):
-        options["profile_fingerprint"] = host["probe_profile_fingerprint"]
+    options = None
+    if not is_local(host):
+        options = health.network_options(host)
+        if host.get("probe_profile_fingerprint"):
+            options["profile_fingerprint"] = host["probe_profile_fingerprint"]
     uid = os.environ.get("RD_USER_ID", "")
     if uid:
         profiles.user_id(uid)
@@ -456,22 +461,23 @@ def probe(host):
     info = {"host": host["name"], "reachable": bool(r and r.returncode == 0)}
     if info["reachable"]:
         info.update(kv.split("=", 1) for kv in r.stdout.split() if "=" in kv)
-        source = Path(HERE, "rd_health.py").read_text(encoding="utf-8")
-        code = source + "\nimport sys\nprint(json.dumps(network_probe(json.loads(sys.argv[1]), sys.argv[2], sys.argv[3], sys.argv[4])))"
-        # 与任务启动使用相同的远端环境文件，保留其代理环境；不输出文件内容。
-        env_file = host.get("env_file", "")
-        env = ('set -a; . ' + shlex.quote(env_file) + '; set +a; ') if env_file else ""
-        if env_file.startswith("~/"):
-            env = 'set -a; . "$HOME"/' + shlex.quote(env_file[2:]) + '; set +a; '
-        script = env + "python3 -c " + shlex.quote(code) + " " + shlex.quote(json.dumps(options)) + ' "$SHARED_ROOT" ' + shlex.quote(uid) + " " + shlex.quote(host.get("probe_agent", "codex"))
-        result = ssh(host, script, check=False, timeout=options["network_timeout_seconds"] + 10)
-        try:
-            network = json.loads(result.stdout) if result and result.returncode == 0 else None
-            if not isinstance(network, dict) or not isinstance(network.get("ok"), bool):
-                raise ValueError()
-            info["network"] = network
-        except ValueError:
-            info["network"] = {"ok": False, "checks": [], "error": "network probe unavailable/timeout (requires python3 and curl)"}
+        if not is_local(host):
+            source = Path(HERE, "rd_health.py").read_text(encoding="utf-8")
+            code = source + "\nimport sys\nprint(json.dumps(network_probe(json.loads(sys.argv[1]), sys.argv[2], sys.argv[3], sys.argv[4])))"
+            # 与任务启动使用相同的远端环境文件，保留其代理环境；不输出文件内容。
+            env_file = host.get("env_file", "")
+            env = ('set -a; . ' + shlex.quote(env_file) + '; set +a; ') if env_file else ""
+            if env_file.startswith("~/"):
+                env = 'set -a; . "$HOME"/' + shlex.quote(env_file[2:]) + '; set +a; '
+            script = env + "python3 -c " + shlex.quote(code) + " " + shlex.quote(json.dumps(options)) + ' "$SHARED_ROOT" ' + shlex.quote(uid) + " " + shlex.quote(host.get("probe_agent", "codex"))
+            result = ssh(host, script, check=False, timeout=options["network_timeout_seconds"] + 10)
+            try:
+                network = json.loads(result.stdout) if result and result.returncode == 0 else None
+                if not isinstance(network, dict) or not isinstance(network.get("ok"), bool):
+                    raise ValueError()
+                info["network"] = network
+            except ValueError:
+                info["network"] = {"ok": False, "checks": [], "error": "network probe unavailable/timeout (requires python3 and curl)"}
     else:
         info["error"] = ((r.stderr if r else "timeout") or "").strip().splitlines()[-1:] or ["unreachable"]
         info["error"] = info["error"][0]
@@ -529,9 +535,13 @@ def fmt_probe(host, info, why):
     unk = lambda k, suf="": (info.get(k) or "?") + suf
     verdict = "ok" if not why else ("unavailable: " if info.get("network", {}).get("ok") is False else "busy: ") + "; ".join(why)
     cpu = "cpu " + unk("cpu_pct", "%") if info.get("os") == "Windows" else "load " + unk("load1") + "/" + unk("ncpu") + "c"
-    network = info.get("network", {})
-    net = ", ".join(f"{item['kind']} {item['target']}={'ok' if item['ok'] else item['error']}" for item in network.get("checks", [])) or network.get("error", "unknown")
-    return (f"{host['name']:<12} {cpu}  mem-free {unk('memfree', '%')}  "
+    if is_local(host):
+        net = "skipped for local"
+    else:
+        network = info.get("network", {})
+        net = ", ".join(f"{item['kind']} {item['target']}={'ok' if item['ok'] else item['error']}" for item in network.get("checks", [])) or network.get("error", "unknown")
+    name = host["name"] + (" (本机)" if is_local(host) else "")
+    return (f"{name:<12} {cpu}  mem-free {unk('memfree', '%')}  "
             f"swap {unk('swap')}  disk {unk('disk', 'G')}  sessions {unk('running')}  "
             f"heavy {unk('heavy')}/{host['max_heavy']}  network [{net}]  -> {verdict}")
 
@@ -545,8 +555,12 @@ def pick_host(cfg, name, tags):
         if why:
             die(f"{name} cannot take the job now ({'; '.join(why)}). Wait, or pass --force-host.", 3)
         return host
-    hosts = [h for h in cfg.hosts() if set(tags) <= {t.strip() for t in h["tags"].split(",") if t.strip()}]
+    matching = [h for h in cfg.hosts() if set(tags) <= {t.strip() for t in h["tags"].split(",") if t.strip()}]
+    hosts = [h for h in matching if not is_local(h)]
     if not hosts:
+        local = [h["name"] for h in matching if is_local(h)]
+        if local:
+            die(f"auto 不会选择本机目标（{', '.join(local)} 配置为 ssh = local）；本机派单请显式 --host {local[0]}。", 4)
         die(f"no enabled host{' with tags ' + ','.join(tags) if tags else ''} in {CONFIG}")
     free = []
     for host, info in probe_all(hosts):
@@ -1677,7 +1691,7 @@ def cmd_doctor(a, cfg):
         status = probe(host)
         print(fmt_probe(host, status, assess(host, status)))
         sys.exit(0 if info["ok"] and info["features"] else 1)
-    agents = a.agent or list(AGENTS)
+    agents = [a.agent] if a.agent else list(AGENTS)
     checks = ['ok() { echo "  ok    $1"; }; bad() { echo "  MISSING  $1"; fail=1; }; fail=0',
               'command -v git >/dev/null && ok "git $(git --version | cut -d" " -f3)" || bad git',
               'command -v pgrep >/dev/null && ok pgrep || bad "pgrep (needed for timeouts and rd stop)"']
@@ -1685,9 +1699,12 @@ def cmd_doctor(a, cfg):
         checks.append('command -v tmux >/dev/null && ok tmux || bad "tmux (launcher = tmux)"')
     for name in agents:
         b = cfg.agent(name)["bin"]
-        opt = "" if a.agent else " (only needed if you dispatch to it)"
-        checks.append(f'command -v {shlex.quote(b)} >/dev/null && ok "agent {name}: $(command -v {shlex.quote(b)})" '
-                      f'|| echo "  absent   agent {name}{opt}"')
+        if a.agent:
+            checks.append(f'command -v {shlex.quote(b)} >/dev/null && ok "agent {name}: $(command -v {shlex.quote(b)})" '
+                          f'|| bad "agent {name} CLI"')
+        else:
+            checks.append(f'command -v {shlex.quote(b)} >/dev/null && ok "agent {name}: $(command -v {shlex.quote(b)})" '
+                          f'|| echo "  absent   agent {name} (only needed if you dispatch to it)"')
         if name == "codex":
             checks.append("( " + CODEX_CHECK + ' ) >/dev/null 2>&1 && ok "Codex profile runtime" || bad "Python 3.11+ / Codex isolation features"')
     url = None

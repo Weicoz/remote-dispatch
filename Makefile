@@ -13,3 +13,4 @@ sync-skill:
 
 check-skill:
 	@diff -u $(SKILL_SRC) $(SKILL_DEST) && echo "技能副本一致"
+	@python3 scripts/check_skill_links.py $(SKILL_SRC)

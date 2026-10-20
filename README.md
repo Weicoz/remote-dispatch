@@ -90,7 +90,7 @@ sync = direct
 dsh_auth_file = ~/.dsh/.credentials.yaml   ; 派 dsh 时必填
 ```
 
-`rd hosts` 会把它显示为「本机」。不需要 sshd、免密或网络。负载、内存、磁盘阈值照样生效，超阈值才用 `--force-host`。只有 codex/dsh 有员工配置隔离，本机派 kimi/claude 同样会被拒。本机 dsh 的 provider key 缺失会报 `MISSING_CREDENTIAL`，处理方法见 [代理适配](docs/agents.md)。
+`rd hosts` 会把它显示为「本机」。不需要 sshd、免密或外网探针；代理调用模型仍需网络。`--host auto` 不会选本机，必须显式 `--host self`；Windows 发起方不能配置 `ssh = local`。负载、内存、磁盘阈值照样生效，超阈值才用 `--force-host`。只有 codex/dsh 有员工配置隔离，本机派 kimi/claude 同样会被拒。本机 dsh 的 provider key 缺失会报 `MISSING_CREDENTIAL`，处理方法见 [代理适配](docs/agents.md)。
 
 ## 安全边界
 
@@ -125,6 +125,7 @@ uv venv .venv
 uv pip install --python .venv/bin/python -e .
 .venv/bin/python -m unittest discover -s tests -p 'test_*.py'
 make sync-skill    # 改完 skills/weicoz-remote-dispatch/SKILL.md 后同步到 ../weicoz-skills
+make check-skill   # 校验技能副本一致，且 SKILL.md 不含相对链接
 ```
 
 代码结构：`src/remote_dispatch/cli.py` 是命令行主入口，`rd_profiles.py` 负责目标机上的配置隔离（同时以单文件形式上传到执行机），`rd_messages.py` / `rd_cache.py` 管回执与缓存，`rd_health.py` 管探活与日志取样，`rd_native.py` 是 Windows 适配层。

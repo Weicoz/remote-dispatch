@@ -7,7 +7,7 @@
 | Linux | `linux` 或 `posix` | SSH＋POSIX shell，`/proc` 资源探针 | git、procps、Python 3.11+、Codex |
 | Windows | `windows` | OpenSSH＋PowerShell＋Python 原生 worker | OpenSSH Server、PowerShell 5.1+、git、Python 3.11+、Codex |
 
-本机目标把 `ssh` 写成 `local`，进程直接在本机启动，不经过 sshd；Windows 目标必须走 SSH，`local` 与 `platform = windows` 同时出现会被拒绝。本机目标同样使用独立 worktree、任务目录与负载阈值。
+本机目标把 `ssh` 写成 `local`，进程直接在本机启动，不经过 sshd，也不跑外网探针。Windows 目标必须走 SSH，`local` 与 `platform = windows` 同时出现会被拒绝；Windows 发起方也不能配置 `ssh = local`，运行时会直接报错。本机目标同样使用独立 worktree、任务目录与负载阈值，且不会被 `--host auto` 选中，必须显式指定。
 
 管理员在机器清单一次配置平台，员工只选择机器和自己的 ID。`platform` 默认 `posix`，旧 macOS/Linux 清单继续使用。Windows 必须显式设置 `platform = windows`；不能把检测失败当成空闲机器。原生 Windows 无需 Git Bash 或 WSL；WSL 通过 Linux SSH 服务连接时按 Linux 主机登记，不混用 Windows 和 Linux 的路径。
 
@@ -76,5 +76,6 @@ rd profile check win
    - 支持通过 `-C <路径>` 或 `--dir <路径>` 指定 Windows 绝对路径（例如 `-C D:\Projects\myrepo`）。
    - 支持通过 `--workdir <路径>` 覆盖远端的目标存储路径。
 4. **状态与配置目录**：自动映射至 `%USERPROFILE%\.config\remote-dispatch\config.ini` 与 `%USERPROFILE%\.local\state\remote-dispatch`，支持环境变量 `RD_CONFIG` 和 `RD_STATE` 自定义。
+5. **不能配置本机目标**：Windows 发起方写 `ssh = local` 不受支持，`rd` 会直接报错。本机目标只支持 POSIX 发起方；Windows 上的并行会话请登记成 SSH 目标机。
 
 实现依据：[Microsoft OpenSSH 配置](https://learn.microsoft.com/en-us/windows-server/administration/openssh/openssh-server-configuration)、[Python subprocess Windows flags](https://docs.python.org/3/library/subprocess.html#subprocess.CREATE_BREAKAWAY_FROM_JOB)、[OpenSSH 维护者关于后台进程与 SSH 管道的记录](https://github.com/PowerShell/Win32-OpenSSH/issues/2452)。

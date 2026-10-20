@@ -72,8 +72,9 @@ rd run --host self --agent dsh --prompt-file task.md --force-host
 rd run --host self --cmd 'make bench'     # 普通命令，不经隔离
 ```
 
-- `ssh = local` 直接执行，不需要 sshd、免密或网络。
-- 只支持 POSIX。Windows 目标必须走 SSH。
+- `ssh = local` 直接在本机执行，不需要 sshd 或免密。rd 不为本机目标跑外网探针；代理调用模型仍需网络。
+- 只支持 POSIX 发起方。Windows 目标必须走 SSH；Windows 发起方写 `ssh = local` 会直接报错。
+- `--host auto` 与 `--tag` 不会选本机目标；本机派单必须显式 `--host self`。
 - 本机同样按负载、内存、磁盘阈值拦截；超阈值才用 `--force-host`，先确认不会挤压当前会话。
 - 隔离只覆盖 `codex` 与 `dsh`。`kimi` / `claude` 会被拒绝；要本机并行用这两个，直接调它们自己的 CLI，或改用 `--cmd`。
 - 本机派 dsh 仍需 `dsh_auth_file`。headless profile 的路由缺 provider key 时报 `MISSING_CREDENTIAL`；rd 保留 `DEEPSEEK_*`、`OPENAI_*`、`ANTHROPIC_*` 环境变量，可先 `export DEEPSEEK_API_KEY=...`，或换用带 key 的 profile。裸 `dsh headless` 同样报错即与 rd 无关。

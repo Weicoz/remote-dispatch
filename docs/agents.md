@@ -11,7 +11,7 @@
 | 名称 | 启动方式 | 换模型 | 推理强度 | 验证情况 |
 | --- | --- | --- | --- | --- |
 | `codex` | `codex exec`，员工权限配置、JSON 输出 | `--model` | `--effort` | 旧版启动、续跑、提交回传实跑；新版员工模式另行验证 |
-| `dsh` | `dsh headless --json` | 不支持，由目标机的 headless profile 决定 | 不支持 | 本机目标（`ssh = local`）已实跑派单、隔离 `DSH_HOME` 与凭据复制；模型调用因 provider 路由缺 key 报 `MISSING_CREDENTIAL`，回复质量未验证 |
+| `dsh` | `dsh headless --json` | 不支持，由目标机的 headless profile 决定 | 不支持 | 本机目标（`ssh = local`）已用临时状态实跑派单、隔离 `DSH_HOME` 与凭据复制，默认配置无留存记录；模型调用因 provider 路由缺 key 报 `MISSING_CREDENTIAL`，回复质量未验证 |
 | `kimi` | `kimi --auto`，stream-json 输出 | `--model`（别名见远端 `~/.kimi-code/config.toml`） | 不支持 | 命令取自帮助文档，未实跑 |
 | `claude` | `claude -p`，跳过权限询问，stream-json 输出 | `--model` | 不支持 | 命令取自帮助文档，未实跑 |
 
