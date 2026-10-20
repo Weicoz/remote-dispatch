@@ -110,6 +110,7 @@ ln -s "$PWD/skills/weicoz-remote-dispatch" ~/.agents/skills/weicoz-remote-dispat
 uv venv .venv
 uv pip install --python .venv/bin/python -e .
 .venv/bin/python -m unittest discover -s tests -p 'test_*.py'
+make sync-skill    # 改完 skills/weicoz-remote-dispatch/SKILL.md 后同步到 ../weicoz-skills
 ```
 
 代码结构：`src/remote_dispatch/cli.py` 是命令行主入口，`rd_profiles.py` 负责目标机上的配置隔离（同时以单文件形式上传到执行机），`rd_messages.py` / `rd_cache.py` 管回执与缓存，`rd_health.py` 管探活与日志取样，`rd_native.py` 是 Windows 适配层。

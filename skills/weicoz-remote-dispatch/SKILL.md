@@ -5,11 +5,10 @@ description: 把 Codex 或 DSH 编码代理会话、测试和构建命令经 SSH
 
 # Remote Dispatch
 
-把任务派到指定机器，并按员工固定 ID 选择独立配置。实现是本仓库的 Python 包与 `rd` 命令，本技能只负责调用它。
+把任务派到指定机器，并按员工固定 ID 选择独立配置。实现是 Python 包 `remote_dispatch` 与 `rd` 命令，本技能只负责调用它。
 
-- 实现与文档：本仓库根目录（`src/remote_dispatch`、`docs/`、`tests/`）
-- 发布地址：`https://github.com/Weicoz/remote-dispatch`
-- 技能源文件：`skills/weicoz-remote-dispatch/SKILL.md`。`weicoz-skills` 仓库的同名技能由这里同步；在本仓库内，参考文档直接用 `docs/`。
+- 项目源码：`https://github.com/Weicoz/remote-dispatch`（`src/remote_dispatch`、`docs/`、`tests/`）
+- 技能源文件在项目仓库 `skills/weicoz-remote-dispatch/SKILL.md`；Codeberg `weicoz-skills` 里的同名文件由 `make sync-skill` 同步。
 
 需要同时协调本机交互会话与多条远端任务时，由 `weicoz-session-hub` 当总控，本技能负责其中的远端任务。
 
@@ -111,11 +110,11 @@ PowerShell 把 `rd` 预设为 `Remove-Item` 别名，CMD 预设为 `rmdir`。必
 
 ## 参考文档
 
-与 `docs/` 同源，冲突时以 `docs/` 为准。
+对应项目仓库的 `docs/` 目录，冲突时以那里为准。
 
-- [代理适配与自定义](../../docs/agents.md)
-- [平台差异（macOS / Linux / Windows）](../../docs/platforms.md)
-- [目标机准备](../../docs/worker-setup.md)
-- [员工配置包格式](../../docs/user-profiles.md)
-- [多轮交接协议](../../docs/handoff.md)
-- [运行状态与缓存保留](../../docs/cache-retention.md)
+- [代理适配与自定义](https://github.com/Weicoz/remote-dispatch/blob/main/docs/agents.md)
+- [平台差异（macOS / Linux / Windows）](https://github.com/Weicoz/remote-dispatch/blob/main/docs/platforms.md)
+- [目标机准备](https://github.com/Weicoz/remote-dispatch/blob/main/docs/worker-setup.md)
+- [员工配置包格式](https://github.com/Weicoz/remote-dispatch/blob/main/docs/user-profiles.md)
+- [多轮交接协议](https://github.com/Weicoz/remote-dispatch/blob/main/docs/handoff.md)
+- [运行状态与缓存保留](https://github.com/Weicoz/remote-dispatch/blob/main/docs/cache-retention.md)
