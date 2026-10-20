@@ -59,7 +59,7 @@ origin_url = git@github.com:me/myrepo.git
 test = uv run pytest -q
 ```
 
-新增机器、目标机装环境与凭据的步骤见 [目标机准备](../../docs/worker-setup.md)。
+新增机器、目标机装环境与凭据的步骤见 [目标机准备](https://github.com/Weicoz/remote-dispatch/blob/main/docs/worker-setup.md)。
 
 ## 本机派单（不跨机）
 
