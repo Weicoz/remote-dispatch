@@ -11,23 +11,22 @@
 
 ## 安装
 
-需要本机 Python 3.9+、`git`、`ssh`。
+需要本机 Python 3.9+、`git`、`ssh`。尚未发布到包索引与 Codeberg，先从本地目录或源码安装。
 
 ```sh
-uv tool install remote-dispatch      # 或者
-pipx install remote-dispatch         # 或者
-pip install --user remote-dispatch
+uv tool install --from /path/to/remote-dispatch remote-dispatch   # 或者
+pipx install /path/to/remote-dispatch                             # 或者
+pip install --user /path/to/remote-dispatch
 ```
 
-从源码装：
+在仓库目录内可以直接 `uv tool install .`。发布之后才能用：
 
 ```sh
-git clone https://codeberg.org/jy_project/remote-dispatch.git
-cd remote-dispatch
-uv tool install .
+uv tool install git+https://codeberg.org/jy_project/remote-dispatch
+uv tool upgrade remote-dispatch
 ```
 
-升级：`uv tool upgrade remote-dispatch`。检查版本：`rd --version`。
+升级当前形态：重跑上面的安装命令。检查版本：`rd --version`。
 
 ## 五分钟上手
 
@@ -47,7 +46,7 @@ test = uv run pytest -q
 2. 看机器活不活：
 
 ```sh
-rd probe --all
+rd hosts
 ```
 
 3. 在仓库里派一单代理任务：
