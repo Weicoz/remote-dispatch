@@ -2,6 +2,8 @@
 
 每个代理是一组命令模板。内置的定义在 `src/remote_dispatch/cli.py` 的 `AGENTS` 里，可以在机器清单里用同名小节覆盖，也可以新增。
 
+目标机写 `ssh = local` 时，命令直接在本机执行，模板、隔离、worktree 与远端一致；不经过 SSH，也不要求本机运行 sshd。限制是必须为 POSIX，Windows 目标只能走 SSH。
+
 本版共享员工模式启用 Codex 与 DSH（`dsh headless --json`）；其他模板保留但派单被阻止。员工 `CODEX_HOME`、路径映射、认证和续跑版本由 [Employee Profiles](user-profiles.md) 管理。Codex 的 sandbox 不再强制完全访问，使用员工配置；后台要求 `approval_policy = "never"`。新版员工模式须独立验收，旧版实际跑通不代表新版已在目标机实跑。
 
 ## 内置代理
@@ -9,11 +11,24 @@
 | 名称 | 启动方式 | 换模型 | 推理强度 | 验证情况 |
 | --- | --- | --- | --- | --- |
 | `codex` | `codex exec`，员工权限配置、JSON 输出 | `--model` | `--effort` | 旧版启动、续跑、提交回传实跑；新版员工模式另行验证 |
-| `dsh` | `dsh headless --json` | 不支持，由远端的 headless profile 决定 | 不支持 | 命令取自帮助文档，未实跑 |
+| `dsh` | `dsh headless --json` | 不支持，由目标机的 headless profile 决定 | 不支持 | 本机目标（`ssh = local`）已实跑派单、隔离 `DSH_HOME` 与凭据复制；模型调用因 provider 路由缺 key 报 `MISSING_CREDENTIAL`，回复质量未验证 |
 | `kimi` | `kimi --auto`，stream-json 输出 | `--model`（别名见远端 `~/.kimi-code/config.toml`） | 不支持 | 命令取自帮助文档，未实跑 |
 | `claude` | `claude -p`，跳过权限询问，stream-json 输出 | `--model` | 不支持 | 命令取自帮助文档，未实跑 |
 
 未实跑的代理第一次使用时要确认两件事：启动后 `rd logs <job>` 有输出、文件确实写进了 worktree；续跑时 `rd resume` 打印出了会话编号。会话编号取不到，就在日志里找到它的字段名，按下面的方法改 `session_regex`。
+
+### dsh 的凭据
+
+`rd run --agent dsh` 要求目标机配置 `dsh_auth_file`，本机目标也不例外。隔离 `DSH_HOME` 里只复制这份凭据与 `AGENTS.md`。
+
+headless profile 的模型路由需要 provider key。缺失时报：
+
+```text
+llm-deepseek: no API key for provider route "deepseek-official"
+code: MISSING_CREDENTIAL
+```
+
+裸跑 `dsh headless --json '只回复 OK'` 也报同样错误时与 rd 无关。处理：把 key 写进凭据文件，或在派单端 `export DEEPSEEK_API_KEY=...`（rd 只保留 `RD_`、`DSH_`、`DEEPSEEK_`、`OPENAI_`、`ANTHROPIC_` 前缀，其余环境变量不传）。
 
 ## 模板里能用的变量
 

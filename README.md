@@ -1,6 +1,6 @@
 # Remote Dispatch（`rd`）
 
-把编码代理任务和测试命令，从本机经 SSH 派到另一台机器执行。
+把编码代理任务和测试命令经 SSH 派到另一台机器，或在本机另起一个隔离的 harness 会话执行。
 
 本机写代码、看结果；远端拉分支、跑代理、跑测试；结果按轮次回传。适合「笔记本配置不够、家里有台 Mac mini 或服务器」的场景。
 
@@ -77,6 +77,20 @@ DSH 需要在机器清单里给出员工凭据文件：
 ssh = weicoz@192.168.1.20
 dsh_auth_file = ~/employee/dsh-credentials.yaml
 ```
+
+## 本机目标机
+
+同一台机器也能当目标机：让另一个 harness 会话并行干活，rd 建独立 worktree，不碰当前工作区。
+
+```ini
+[host:self]
+ssh = local
+workdir = ~/remote-dispatch
+sync = direct
+dsh_auth_file = ~/.dsh/.credentials.yaml   ; 派 dsh 时必填
+```
+
+`rd hosts` 会把它显示为「本机」。不需要 sshd、免密或网络。负载、内存、磁盘阈值照样生效，超阈值才用 `--force-host`。只有 codex/dsh 有员工配置隔离，本机派 kimi/claude 同样会被拒。本机 dsh 的 provider key 缺失会报 `MISSING_CREDENTIAL`，处理方法见 [代理适配](docs/agents.md)。
 
 ## 安全边界
 

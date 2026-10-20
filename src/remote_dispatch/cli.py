@@ -76,10 +76,6 @@ AGENTS = {
         "resume": 'kimi --auto -S {session} {model_args} --output-format stream-json -p "$(cat "$RD_PROMPT")"',
         "model": "-m {model}",
     },
-    "dsh": {
-        "start": 'dsh headless --json - < "$RD_PROMPT"',
-        "resume": 'dsh headless --json --session-id {session} - < "$RD_PROMPT"',
-    },
     "claude": {
         "start": "claude -p --output-format stream-json --verbose --dangerously-skip-permissions "
         '{model_args} < "$RD_PROMPT"',
@@ -241,7 +237,9 @@ class Config:
         if h["platform"] == "windows":
             h["path"] = sec.get("path", "")
         if not h.get("ssh"):
-            die(f"[host:{name}] needs ssh = user@address")
+            die(f"[host:{name}] needs ssh = user@address (use ssh = local to dispatch on this machine)")
+        if h["ssh"] == "local" and h["platform"] == "windows":
+            die(f"[host:{name}] 本机派发只支持 POSIX；Windows 目标必须通过 SSH。")
         h["name"] = name
         h["probe_agent"] = getattr(self, "probe_agent", "codex")
         return h
@@ -274,8 +272,28 @@ def root_expr(host):
     return shlex.quote(w)
 
 
+def is_local(host):
+    return host.get("ssh") == "local"
+
+
+def local_path(base, rel):
+    """Expand a worker-style path expression (~, ~/x, $HOME/x) for local execution."""
+    w = (base or "~").rstrip("/")
+    if w in ("~", "$HOME"):
+        root = os.path.expanduser("~")
+    elif w.startswith("~/"):
+        root = os.path.expanduser("~/" + w[2:])
+    elif w.startswith("$HOME/"):
+        root = os.path.expanduser("~/" + w[6:])
+    else:
+        root = w
+    return os.path.join(root, rel)
+
+
 def scp_path(host, rel):
     """scp-style path (relative to the home directory when workdir starts with ~)."""
+    if is_local(host):
+        return local_path(host["workdir"], rel)
     w = host["workdir"].rstrip("/")
     base = w[2:] if w.startswith("~/") else ("" if w == "~" else w)
     return f"{host['ssh']}:{base + '/' if base else ''}{rel}"
@@ -284,7 +302,10 @@ def scp_path(host, rel):
 def ssh(host, script, check=True, stdin_data=None, stdin=None, timeout=None, stdout=None):
     shared = dict(host, workdir=host.get("shared_workdir", host["workdir"]))
     pre = f'export PATH="{host["path"]}:$PATH"; ROOT={root_expr(host)}; SHARED_ROOT={root_expr(shared)}; '
-    cmd = ["ssh", *shlex.split(host["ssh_opts"]), host["ssh"], "sh -c " + shlex.quote(pre + script)]
+    if is_local(host):
+        cmd = ["sh", "-c", pre + script]
+    else:
+        cmd = ["ssh", *shlex.split(host["ssh_opts"]), host["ssh"], "sh -c " + shlex.quote(pre + script)]
     try:
         if stdin is None and stdin_data is None:
             stdin = subprocess.DEVNULL
@@ -292,12 +313,12 @@ def ssh(host, script, check=True, stdin_data=None, stdin=None, timeout=None, std
                            stdout=stdout if stdout is not None else subprocess.PIPE, stderr=subprocess.PIPE, timeout=timeout)
     except subprocess.TimeoutExpired:
         if check:
-            die(f"ssh to {host['name']} timed out")
+            die(f"{host['name']} timed out")
         return None
     out = "" if stdout is not None else p.stdout if isinstance(p.stdout, str) else p.stdout.decode(errors="replace")
     err = p.stderr if isinstance(p.stderr, str) else p.stderr.decode(errors="replace")
     if check and p.returncode != 0:
-        die(f"[{host['name']}] remote step failed ({p.returncode}):\n{(err or out).strip()}")
+        die(f"[{host['name']}] step failed ({p.returncode}):\n{(err or out).strip()}")
     return subprocess.CompletedProcess(cmd, p.returncode, out, err)
 
 
@@ -570,6 +591,8 @@ def project_name(repo):
 
 
 def git_ssh_env(host):
+    if is_local(host):
+        return dict(os.environ)
     return dict(os.environ, GIT_SSH_COMMAND="ssh " + host["ssh_opts"])
 
 
@@ -1682,7 +1705,8 @@ def cmd_doctor(a, cfg):
         else:
             checks.append('echo "  skipped  origin access (run rd doctor inside the repository to test it)"')
     checks.append("exit $fail")
-    print(f"{host['name']} ({host['ssh']}), sync = {host['sync']}, launcher = {host['launcher']}")
+    label = "本机" if is_local(host) else host["ssh"]
+    print(f"{host['name']} ({label}), sync = {host['sync']}, launcher = {host['launcher']}")
     r = ssh(host, "\n".join(checks), check=False, timeout=60)
     if r is None:
         die("timed out")

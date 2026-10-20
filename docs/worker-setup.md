@@ -4,6 +4,21 @@
 
 先确认目标平台。macOS/Linux 使用现有 POSIX 流程；原生 Windows 的 Python、PowerShell、路径、环境文件和后台进程见 [Platforms](platforms.md)，不要执行本页的 POSIX 示例来安装 Windows 环境。
 
+## 本机目标机
+
+要让同一台机器上的另一个 harness 并行干活，不必配 SSH。加一节：
+
+```ini
+[host:self]
+ssh = local
+workdir = ~/rd-self
+sync = direct
+```
+
+本机需要 `git`、`pgrep`（Linux 用 procps）、Python 3.11+，以及要派的代理 CLI。`rd doctor self` 会逐项检查。派 dsh 仍需 `dsh_auth_file`；provider key 缺失的处理见 [代理适配](agents.md)。负载、内存、磁盘阈值与远端一致，超阈值派单会被拦。
+
+以下步骤按 SSH 目标描述。本机目标跳过免密登录与远端 SSH 安装，但 git、Python、代理 CLI 仍须在本机可用。
+
 ## 1. 本机能免密登录
 
 ```bash

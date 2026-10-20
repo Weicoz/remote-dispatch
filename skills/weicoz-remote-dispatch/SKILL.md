@@ -1,11 +1,11 @@
 ---
 name: weicoz-remote-dispatch
-description: 把 Codex 或 DSH 编码代理会话、测试和构建命令经 SSH 派到另一台机器执行，本机只负责派单、看进度和取回提交。只在用户主动要求或明确授权把任务放到别的机器上跑时使用，例如“派到另一台机器／远端／mac mini／服务器上跑”“让别的机器跑测试”“用双机／多机跑”“remote dispatch”“rd run”，或要求添加、检查远端机器。用户没有要求也没有授权时不要使用：派代理、跑测试默认都在本机进行；本机负载高时可以建议派到远端，但要等用户同意。
+description: 把 Codex 或 DSH 编码代理会话、测试和构建命令经 SSH 派到另一台机器，或在本机以独立 worktree 另起一个 harness 会话执行，本机只负责派单、看进度和取回提交。只在用户主动要求或明确授权把任务放到别的机器或另一个 harness 上跑时使用，例如“派到另一台机器／远端／mac mini／服务器上跑”“让别的机器跑测试”“用双机／多机跑”“本机派单给其他 harness”“remote dispatch”“rd run”，或要求添加、检查目标机器。用户没有要求也没有授权时不要使用：派代理、跑测试默认都在当前会话执行；本机负载高时可以建议派到远端，但要等用户同意。
 ---
 
 # Remote Dispatch
 
-把任务派到指定机器，并按员工固定 ID 选择独立配置。实现是 Python 包 `remote_dispatch` 与 `rd` 命令，本技能只负责调用它。
+把任务派到指定机器，并按员工固定 ID 选择独立配置。目标机写 `ssh = local` 时就在本机执行，但仍然使用独立 worktree、任务目录与日志。实现是 Python 包 `remote_dispatch` 与 `rd` 命令，本技能只负责调用它。
 
 - 项目源码：`https://github.com/Weicoz/remote-dispatch`（`src/remote_dispatch`、`docs/`、`tests/`）
 - 技能源文件在项目仓库 `skills/weicoz-remote-dispatch/SKILL.md`；Codeberg `weicoz-skills` 里的同名文件由 `make sync-skill` 同步。
@@ -31,7 +31,7 @@ rd --version          # 验证入口
 
 ## 授权边界
 
-默认所有任务都在本机执行。只有用户主动要求，或对建议明确同意，才派出去。
+默认由当前会话自己执行，不派单。只有用户主动要求，或对建议明确同意，才派出去。本机目标（`ssh = local`）也算派单，同样需要明确同意。
 
 本机负载高、内存紧、磁盘不够，都不是自行改派的理由。可以建议：说明本机状况、`rd hosts` 看到的远端状况、打算把哪件事派到哪台机器，然后等用户答复。答复含糊不算授权。
 
@@ -48,12 +48,35 @@ workdir = ~/remote-dispatch
 sync = origin
 dsh_auth_file = ~/employee/dsh-credentials.yaml   # 只有 dsh 需要
 
+[host:self]                       # 本机目标：另起一个隔离会话，不经过 SSH
+ssh = local
+workdir = ~/remote-dispatch-self
+sync = direct
+dsh_auth_file = ~/.dsh/.credentials.yaml   # 本机派 dsh 时同样必填
+
 [project:myrepo]
 origin_url = git@github.com:me/myrepo.git
 test = uv run pytest -q
 ```
 
 新增机器、目标机装环境与凭据的步骤见 [目标机准备](../../docs/worker-setup.md)。
+
+## 本机派单（不跨机）
+
+同一台机器也能登记成目标机，让另一个 harness 会话并行干活。rd 为每个任务建独立 worktree 与任务目录，不覆盖当前工作区。
+
+```bash
+rd hosts                                  # self 显示为「本机」
+rd doctor self                            # 检查本机 git、pgrep、Python、代理 CLI
+rd run --host self --agent dsh --prompt-file task.md --force-host
+rd run --host self --cmd 'make bench'     # 普通命令，不经隔离
+```
+
+- `ssh = local` 直接执行，不需要 sshd、免密或网络。
+- 只支持 POSIX。Windows 目标必须走 SSH。
+- 本机同样按负载、内存、磁盘阈值拦截；超阈值才用 `--force-host`，先确认不会挤压当前会话。
+- 隔离只覆盖 `codex` 与 `dsh`。`kimi` / `claude` 会被拒绝；要本机并行用这两个，直接调它们自己的 CLI，或改用 `--cmd`。
+- 本机派 dsh 仍需 `dsh_auth_file`。headless profile 的路由缺 provider key 时报 `MISSING_CREDENTIAL`；rd 保留 `DEEPSEEK_*`、`OPENAI_*`、`ANTHROPIC_*` 环境变量，可先 `export DEEPSEEK_API_KEY=...`，或换用带 key 的 profile。裸 `dsh headless` 同样报错即与 rd 无关。
 
 ## 员工 ID 与配置同步
 
@@ -77,6 +100,7 @@ rd run --agent codex --prompt-file task.md --ref HEAD
 rd run --agent dsh --prompt-file task.md          # DSH headless
 rd run --test                                     # 跑项目配置的测试命令
 rd run --cmd 'make bench' --heavy                 # 普通命令，占重任务锁
+rd run --host self --agent codex --prompt-file task.md   # 本机目标加 --host self
 
 rd status --details             # 阶段、摘要与更新时间
 rd wait <job>                   # 阻塞到结束：0 成功，1 失败，2 仍在跑
@@ -102,7 +126,7 @@ rd clean <job>                  # 删除已完成任务的远端 worktree 与日
 | `dsh` | 支持（headless） | 每任务独立 `DSH_HOME` 加 `dsh_auth_file` 凭据副本；不继承宿主 `~/.dsh` |
 | `kimi` / `claude` | 仅模板 | 未实现隔离，`rd run` 会拒绝派单 |
 
-`dsh` 由 `dsh headless --json` 启动，续跑加 `--session-id`；headless 没有 `--model`，模型写在员工 DSH 配置里。目标机不接受 Windows。
+`dsh` 由 `dsh headless --json` 启动，续跑加 `--session-id`；headless 没有 `--model`，模型写在员工 DSH 配置里。本机目标与远端共用同一套模板和隔离。目标机不接受 Windows（本机目标也要求 POSIX）。
 
 ## 发起方为 Windows
 
