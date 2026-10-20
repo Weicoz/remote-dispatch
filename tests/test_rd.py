@@ -668,6 +668,8 @@ print(json.dumps({"session_id":"fixture-session"}))
             rec = rd.all_jobs()[0]
             self.assertEqual(rec["worker_root"], str(custom_remote / "users" / "employee_a"))
             self.assertEqual(rec["shared_root"], str(custom_remote))
+            # 等后台 worker 退出，避免临时目录清理与它写文件竞态。
+            self.wait_success(rec["job"])
 
 
 if __name__ == "__main__":
