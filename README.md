@@ -85,6 +85,16 @@ dsh_auth_file = ~/employee/dsh-credentials.yaml
 - 删除远端 worktree 需要显式 `rd clean`，默认保留未提交与未取回的成果。
 - 不自动跳过宿主账号的权限边界；`rd` 不提升权限、不改系统配置。
 
+## 附带技能
+
+仓库自带智能体技能 `skills/weicoz-remote-dispatch/SKILL.md`，写明派单流程、授权边界与配置约定。装到本机技能目录：
+
+```sh
+ln -s "$PWD/skills/weicoz-remote-dispatch" ~/.agents/skills/weicoz-remote-dispatch
+```
+
+这个文件是技能源；Codeberg `weicoz-skills` 仓库中的同名技能由它同步，参考文档在那里是 `docs/` 的副本。
+
 ## 文档
 
 - `docs/agents.md`：代理模板与自定义
