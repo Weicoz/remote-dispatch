@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """rd — dispatch coding-agent sessions and test commands to remote machines over SSH.
 
-Command dispatch needs local Python 3.8+, git and ssh. Employee Codex profiles
+Command dispatch needs local Python 3.9+, git and ssh. Employee Codex profiles
 need Python 3.11+ on both machines, plus git and Codex on the worker.
 
 Config:  $RD_CONFIG or ~/.config/remote-dispatch/config.ini

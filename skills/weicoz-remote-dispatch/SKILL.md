@@ -1,6 +1,6 @@
 ---
 name: weicoz-remote-dispatch
-version: 1.0.0
+version: 1.0.1
 description: 把 Codex 或 DSH 编码代理会话、测试和构建命令经 SSH 派到另一台机器，或在本机以独立 worktree 另起一个 harness 会话执行，本机只负责派单、看进度和取回提交。只在用户主动要求或明确授权把任务放到别的机器或另一个 harness 上跑时使用，例如“派到另一台机器／远端／mac mini／服务器上跑”“让别的机器跑测试”“用双机／多机跑”“本机派单给其他 harness”“remote dispatch”“rd run”，或要求添加、检查目标机器。用户没有要求也没有授权时不要使用：派代理、跑测试默认都在当前会话执行；本机负载高时可以建议派到远端，但要等用户同意。
 ---
 
@@ -26,7 +26,7 @@ pip install --user .                                               # 或 pip
 rd --version          # 验证入口
 ```
 
-更新：`uv tool upgrade remote-dispatch`，或重跑上面的安装命令。升级包不需要动技能。
+更新：`uv tool upgrade remote-dispatch`，或重跑上面的安装命令。升级包不需要动技能。卸载：`uv tool uninstall remote-dispatch`，pipx / pip 装法同理。
 
 本机要求 Python 3.9+、git、ssh。员工配置隔离要求两端 Python 3.11+，目标机另需对应代理 CLI 与认证。
 
@@ -103,8 +103,12 @@ rd run --agent dsh --prompt-file task.md          # DSH headless
 rd run --test                                     # 跑项目配置的测试命令
 rd run --cmd 'make bench' --heavy                 # 普通命令，占重任务锁
 rd run --host self --agent codex --prompt-file task.md   # 本机目标加 --host self
+rd run --agent dsh --prompt-file task.md --name smoke --project myrepo --timeout 3600   # 命名、项目归属、超时
+rd run --agent dsh --prompt-file next.md --wip --branch rd/manual   # 带未提交改动、指定分支
 
 rd status --details             # 阶段、摘要与更新时间
+rd watch <job>                  # 发起方等待唤醒：0 完成，1 告警，2 该报进度
+rd logs <job>                   # 看任务输出尾部
 rd wait <job>                   # 阻塞到结束：0 成功，1 失败，2 仍在跑
 rd result <job>                 # 收本轮结构化回执
 rd inbox                        # 当前发起会话待收取的结果
@@ -115,7 +119,8 @@ rd stop <job>                   # 终止运行中的任务
 rd clean <job>                  # 删除已完成任务的远端 worktree 与日志
 ```
 
-- 新派单用 `--initiator-session` 绑定当前会话 ID；未传时依次读 `RD_INITIATOR_SESSION`、`CODEX_THREAD_ID`。宿主没给 ID 就标未绑定，不声称结果会送达某会话。
+- 新派单用 `--initiator-session` 绑定当前会话 ID；未传时依次读 `RD_INITIATOR_SESSION`、`CODEX_THREAD_ID`。DSH 宿主不设这两个变量，必须显式传 `--initiator-session "$DSH_SESSION_ID"`；宿主没给 ID 就标未绑定，不声称结果会送达某会话。
+- `--workdir`、`--include`、`--model`、`--effort` 按需覆盖默认值；完整旗标见 `rd run --help`。
 - `ack` 只表示已收取，不表示验收通过，也不授权续派。只有新指令才产生下一轮。
 - `rd fetch` 取回的是候选，合并与验收由发起方判断。
 - `rd clean` 前先收取回执、确认没有需要保留的产物；删除远端 worktree 需用户确认。
