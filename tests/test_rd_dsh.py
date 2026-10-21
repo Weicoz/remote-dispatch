@@ -13,8 +13,20 @@ from remote_dispatch import rd_profiles as profiles
 
 
 class DshTemplateTests(unittest.TestCase):
+    """断言针对内置模板；本机 config.ini 的 [agent:*] 覆盖不参与。"""
+
     def setUp(self):
+        self.temp = tempfile.TemporaryDirectory(prefix="rd-dsh-cfg-")
+        self.addCleanup(self.temp.cleanup)
+        original = rd.CONFIG
+        rd.CONFIG = str(pathlib.Path(self.temp.name) / "config.ini")
+        self.addCleanup(setattr, rd, "CONFIG", original)
         self.cfg = rd.Config()
+
+    def test_agent_template_override_is_honored(self):
+        pathlib.Path(rd.CONFIG).write_text(
+            '[agent:dsh]\nstart = my-dsh {model_args} - < "$RD_PROMPT"\n', encoding="utf-8")
+        self.assertEqual(rd.Config().agent("dsh")["start"], 'my-dsh {model_args} - < "$RD_PROMPT"')
 
     def test_start_and_resume_use_headless_json(self):
         agent = self.cfg.agent("dsh")
