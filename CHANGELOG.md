@@ -2,6 +2,7 @@
 
 ## 未发布
 
+- 新增 `rd clean --expired`：在 `--merged` 的安全条件之上按续跑可能性分级保留 worktree（命令任务确认即回收、已合入 24 小时、已取回未合入 7 天，目标机磁盘不足时收紧），`[retention]` 可调；新增 `rd keep <job> --hours N` 钉住将续跑的任务。
 - 新增 AGY（Antigravity CLI）派单：`agy --print` 经 stdin 传 stream-json 消息、`--conversation` 续跑；每任务独立 `HOME`，只复制目标机 `agy_auth_file` 登录凭据；`--permission-mode`（plan/accept-edits/auto/skip）必填，续跑沿用；终态 `denied_actions` 使回执降为 `partial`；未登录归类为 `authentication` 故障。仅 POSIX。
 - 代理能力集中到 `rd_agents.py`（模板、平台、隔离、凭据、预检、权限档位），`rd run` 预检由登记驱动；`[agent:NAME]` 只能覆盖内置模板。
 - 代理参数（模型、推理强度、权限档位）在推送任务分支前校验。

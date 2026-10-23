@@ -9,6 +9,7 @@ from pathlib import Path
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from unittest.mock import patch
 
@@ -387,6 +388,7 @@ class DispatchTests(unittest.TestCase):
                        "commit", "-qm", "fixture result")
         head = native.git(wt, "rev-parse", "HEAD").stdout.strip()
         (self.worker / "jobs" / record["job"] / "head").write_text(head)
+        self.remote_head_value = head
         if fetch:
             self.git("fetch", "-q", str(self.worker / record["bare"]), record["branch"])
         return head
@@ -509,6 +511,96 @@ class DispatchTests(unittest.TestCase):
         self.assertIn("需指定 --into", output)
         self.assertTrue(Path(rd.job_path(record["job"])).exists())
         self.assertIn("cleaned " + record["job"], self.capture(rd.cmd_clean, self.bulk_args(into=into)))
+
+    def age_ack(self, record, hours):
+        """把本任务全部回执确认时间推到 hours 小时前。"""
+        stamp = time.time() - hours * 3600
+        for path in rd.result_path(record, 1).parent.glob("r*.ack.json"):
+            os.utime(path, (stamp, stamp))
+
+    def expired(self, **overrides):
+        with patch.object(rd, "disk_low", return_value=overrides.pop("low", False)):
+            return self.capture(rd.cmd_clean, self.bulk_args(merged=False, expired=True, **overrides))
+
+    def agent_job(self, record):
+        record["agent"] = "codex"
+        rd.save_job(record)
+        return record
+
+    def test_clean_expired_reclaims_command_jobs_once_acknowledged(self):
+        record = self.dispatch()
+        self.remote_head(record)
+        self.assertIn("回执待收取", self.expired())
+        self.acknowledge(record)
+        self.assertIn("would clean " + record["job"], self.expired(dry_run=True))
+        self.assertTrue((self.worker / "wt" / record["job"]).exists())
+        output = self.expired()
+        self.assertIn("命令任务不能续跑", output)
+        self.assertFalse((self.worker / "wt" / record["job"]).exists())
+        self.assertFalse(Path(rd.job_path(record["job"])).exists())
+
+    def test_clean_expired_keeps_accepted_agent_work_for_a_day(self):
+        record = self.agent_job(self.dispatch())
+        self.remote_head(record)
+        self.acknowledge(record)
+        output = self.expired()
+        self.assertIn("keep " + record["job"], output)
+        self.assertIn("已合入或无新提交", output)
+        self.assertTrue((self.worker / "wt" / record["job"]).exists())
+        self.age_ack(record, 25)
+        self.assertIn("clean " + record["job"], self.expired())
+        self.assertFalse((self.worker / "wt" / record["job"]).exists())
+
+    def test_clean_expired_keeps_unmerged_fetched_work_for_a_week(self):
+        record = self.agent_job(self.dispatch())
+        self.remote_head(record, commit=True, fetch=True)
+        self.acknowledge(record)
+        self.age_ack(record, 6 * 24)
+        self.assertIn("未合入", self.capture(rd.cmd_clean, self.bulk_args()))
+        output = self.expired()
+        self.assertIn("keep " + record["job"], output)
+        self.assertIn("已取回未合入", output)
+        self.age_ack(record, 8 * 24)
+        self.assertIn("clean " + record["job"], self.expired())
+        self.assertFalse((self.worker / "wt" / record["job"]).exists())
+        self.assertEqual(native.git(self.worker / record["bare"], "rev-parse", record["branch"]).stdout.strip(),
+                         self.remote_head_value)
+
+    def test_clean_expired_never_reclaims_unfetched_commits(self):
+        record = self.agent_job(self.dispatch())
+        self.remote_head(record, commit=True)
+        self.acknowledge(record)
+        self.age_ack(record, 365 * 24)
+        self.assertIn("未取回", self.expired(low=True))
+        self.assertTrue((self.worker / "wt" / record["job"]).exists())
+
+    def test_clean_expired_respects_keep_and_low_disk(self):
+        record = self.agent_job(self.dispatch())
+        self.remote_head(record, commit=True, fetch=True)
+        self.acknowledge(record)
+        self.age_ack(record, 30 * 24)
+        rd.cmd_keep(argparse.Namespace(job=record["job"], hours=2), self.cfg)
+        self.assertIn("已用 rd keep 钉住", self.expired(low=True))
+        rd.cmd_keep(argparse.Namespace(job=record["job"], hours=0), self.cfg)
+        self.age_ack(record, 2)
+        self.assertIn("keep " + record["job"], self.expired())
+        output = self.expired(low=True, dry_run=True)
+        self.assertIn("磁盘不足", output)
+        self.assertIn("keep " + record["job"], output)
+        self.age_ack(record, 25)
+        self.assertIn("would clean " + record["job"], self.expired(low=True, dry_run=True))
+        self.assertIn("keep " + record["job"], self.expired(dry_run=True))
+
+    def test_retention_hours_follow_config_and_reject_invalid_values(self):
+        self.assertEqual(self.cfg.retention_hours(), rd.RETENTION_HOURS)
+        self.cfg.cp.add_section("retention")
+        self.cfg.cp.set("retention", "unmerged_hours", "48")
+        with patch.dict(os.environ, {"RD_RETAIN_ACCEPTED_HOURS": "0"}):
+            self.assertEqual(self.cfg.retention_hours(), {"command": 0, "accepted": 0, "unmerged": 48})
+        for bad in ("-1", "soon", "nan"):
+            self.cfg.cp.set("retention", "unmerged_hours", bad)
+            with self.subTest(bad=bad), self.assertRaises(SystemExit):
+                self.cfg.retention_hours()
 
     def test_clean_merged_skips_each_unsafe_state(self):
         record = self.dispatch()

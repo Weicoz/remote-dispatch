@@ -1,6 +1,6 @@
 ---
 name: weicoz-remote-dispatch
-version: 1.1.0
+version: 1.2.0
 description: 把 Codex、DSH 或 AGY（Antigravity CLI）编码代理会话、测试和构建命令经 SSH 派到另一台机器，或在本机以独立 worktree 另起一个 harness 会话执行，本机只负责派单、看进度和取回提交。只在用户主动要求或明确授权把任务放到别的机器或另一个 harness 上跑时使用，例如“派到另一台机器／远端／mac mini／服务器上跑”“让别的机器跑测试”“用双机／多机跑”“本机派单给其他 harness”“remote dispatch”“rd run”，或要求添加、检查目标机器。用户没有要求也没有授权时不要使用：派代理、跑测试默认都在当前会话执行；本机负载高时可以建议派到远端，但要等用户同意。
 ---
 
@@ -121,6 +121,8 @@ rd resume <job> --prompt-file next.md
 rd fetch <job>                  # 取回提交为 rd/<branch>
 rd stop <job>                   # 终止运行中的任务
 rd clean <job>                  # 删除已完成任务的远端 worktree 与日志
+rd clean --expired [--dry-run]  # 按保留期回收过期且安全的 worktree
+rd keep <job> --hours 48        # 明确还要续跑时钉住，--hours 0 取消
 ```
 
 - 新派单用 `--initiator-session` 绑定当前会话 ID；未传时依次读 `RD_INITIATOR_SESSION`、`CODEX_THREAD_ID`。DSH 宿主不设这两个变量，必须显式传 `--initiator-session "$DSH_SESSION_ID"`；宿主没给 ID 就标未绑定，不声称结果会送达某会话。
@@ -128,7 +130,8 @@ rd clean <job>                  # 删除已完成任务的远端 worktree 与日
 - 派 `agy` 必须带 `--permission-mode`，按任务性质选：改代码并提交用 `skip`；只读分析用 `plan`。`plan`、`accept-edits` 在无人值守时会自动拒绝 shell 命令，包括 git 提交。
 - `ack` 只表示已收取，不表示验收通过，也不授权续派。只有新指令才产生下一轮。
 - `rd fetch` 取回的是候选，合并与验收由发起方判断。
-- `rd clean` 前先收取回执、确认没有需要保留的产物；删除远端 worktree 需用户确认。
+- `rd clean <job>` 前先收取回执、确认没有需要保留的产物；删除指定任务的远端 worktree 需用户确认。
+- **过期 worktree 要记得回收**：每次 `rd ack` 收完结果、每次派新单前，在仓库目录跑一次 `rd clean --expired`，把输出里的 clean / keep 各一行报给用户。它只回收同时满足安全条件与保留期的 worktree（命令任务确认即回收；代理任务已合入 24 小时、已取回未合入 7 天；目标机磁盘不足时收紧），不需要逐个确认。判断不了下一步会不会续跑时不要手动删，交给保留期；已经知道还要续跑就先 `rd keep <job> --hours N`。保留期细节见 [缓存保留](https://github.com/Weicoz/remote-dispatch/blob/main/docs/cache-retention.md)。
 - **派单后立即挂巡检**：把 `rd watch <job>` 放进后台作业。它默认 900 秒返回一次：退出码 2＝该报进度、1＝告警、0＝完成。收到 2 时读 `rd status --details` 与 `rd logs` 尾部，向用户报一行真实进展（阶段、文件数、提交、阻塞、执行机资源），再重挂下一次 watch；收到 0／1 时取回结果并验收。任务结束后终结巡检作业。没有定时唤醒能力时改用 `rd wait` 加超时兜底作业，并如实说明边界。
 
 ## 代理支持

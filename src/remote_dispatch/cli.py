@@ -56,6 +56,12 @@ DEFAULTS = {
     "timeout": "3600",
 }
 
+# worktree 只被同一任务的 rd resume 复用；保留时长按续跑可能性分级。
+# command：命令任务不能续跑；accepted：已合入或无新提交；unmerged：已取回未合入，最可能续跑。
+RETENTION_HOURS = {"command": 0, "accepted": 24, "unmerged": 7 * 24}
+# 目标机磁盘低于 min_free_disk_gb 时收紧到这些上限。
+RETENTION_LOW_DISK_HOURS = {"command": 0, "accepted": 0, "unmerged": 24}
+
 SESSION_RE = agents.SESSION_RE
 AGENTS = agents.AGENTS
 
@@ -175,6 +181,19 @@ class Config:
         if interval <= 0:
             die("RD_REPORT_INTERVAL_SECONDS / [monitor] report_interval_seconds must be a positive integer (seconds)", 4)
         return interval
+
+    def retention_hours(self):
+        """过期回收的保留时长（小时），从最后一次回执确认算起；环境变量优先。"""
+        hours = {}
+        for kind, default in RETENTION_HOURS.items():
+            value = os.environ.get("RD_RETAIN_" + kind.upper() + "_HOURS") or self.cp.get("retention", kind + "_hours", fallback=str(default))
+            try:
+                hours[kind] = float(value)
+            except (ValueError, TypeError):
+                hours[kind] = -1
+            if not hours[kind] >= 0:
+                die(f"RD_RETAIN_{kind.upper()}_HOURS / [retention] {kind}_hours 必须是非负小时数。", 4)
+        return hours
 
     def recovery_limit(self):
         value = os.environ.get("RD_MAX_SAME_FAILURE_RESUMES") or self.cp.get("recovery", "max_same_failure_resumes", fallback="1")
@@ -1545,14 +1564,49 @@ def pending_results(cfg, rec, snapshot):
     return False
 
 
-def cmd_clean_merged(a, cfg):
+def last_activity(rec):
+    """最后一次回执确认时间；旧任务没有回执时退回任务登记的更新时间。"""
+    acks = [path.stat().st_mtime for path in result_path(rec, 1).parent.glob("r*.ack.json")]
+    return max(acks) if acks else os.path.getmtime(job_path(rec["job"]))
+
+
+def disk_low(host):
+    """目标机可用磁盘低于 min_free_disk_gb 时收紧保留期；无法读取时按不紧张处理。"""
+    if host["platform"] == "windows":
+        return False
+    reply = ssh(host, 'd="$ROOT"; [ -d "$d" ] || d="$HOME"; df -Pk "$d" | awk \'NR==2{printf "%d",$4/1048576}\'', check=False, timeout=30)
+    free = num(reply.stdout.strip()) if reply and reply.returncode == 0 else None
+    return free is not None and free < float(host["min_free_disk_gb"])
+
+
+def retention_verdict(rec, head, reasons, activity, hours, now):
+    """返回 (可回收, 说明)。只判断复用可能性；未取回、未提交等安全条件由调用方先行拦截。"""
+    if rec.get("keep_until", 0) > now:
+        return False, "已用 rd keep 钉住，到 " + time.strftime("%Y-%m-%d %H:%M", time.localtime(rec["keep_until"]))
+    if not rec.get("agent"):
+        kind, label = "command", "命令任务不能续跑"
+    elif head == rec["base"] or not reasons:
+        kind, label = "accepted", "已合入或无新提交"
+    else:
+        kind, label = "unmerged", "已取回未合入（" + "；".join(reasons) + "）"
+    age = (now - activity) / 3600
+    if age < hours[kind]:
+        return False, f"{label}，保留期 {hours[kind]:g} 小时，还剩 {hours[kind] - age:.1f} 小时"
+    return True, f"{label}，最后确认于 {age:.1f} 小时前，超过保留期 {hours[kind]:g} 小时"
+
+
+def cmd_clean_batch(a, cfg, mode):
+    """--merged 只看合入；--expired 另按续跑可能性分级保留，过期才回收。两者共用同一组安全条件。"""
     if a.job or a.force or a.delete_branch or getattr(a, "discard_reports", False):
-        die("--merged 不与 job、--force、--delete-branch 或 --discard-reports 混用。", 4)
+        die(f"--{mode} 不与 job、--force、--delete-branch 或 --discard-reports 混用。", 4)
     recs = scoped_jobs(a)
     if not recs:
         print("no jobs.")
         return
     states = job_states(cfg, recs)
+    hours = cfg.retention_hours() if mode == "expired" else None
+    pressure = {}
+    now = time.time()
     for rec in recs:
         j = rec["job"]
         snapshot = states.get(j, {})
@@ -1571,8 +1625,9 @@ def cmd_clean_merged(a, cfg):
             host = job_host(cfg, rec)
             head, paths = worktree_changes(host, rec)
             reasons = merge_check(rec, head, getattr(a, "into", None))
-            if reasons:
-                print(f"skip {j}: {'；'.join(reasons)}")
+            unsafe = [r for r in reasons if r.startswith(("未取回", "无法核验"))]
+            if unsafe or (reasons and mode == "merged"):
+                print(f"skip {j}: {'；'.join(unsafe or reasons)}")
                 continue
             if pending_results(cfg, rec, snapshot):
                 print(f"skip {j}: 结果回执待收取；先用 rd result / rd ack")
@@ -1583,19 +1638,55 @@ def cmd_clean_merged(a, cfg):
             if unexpected:
                 print(f"skip {j}: 存在非 --include 路径的未提交内容：{unexpected!r}")
                 continue
+            note = "reports 将保存，分支保留"
+            if mode == "expired":
+                key = (rec["host"], rec.get("worker_root"))
+                if key not in pressure:
+                    pressure[key] = disk_low(host)
+                limits = {k: min(v, RETENTION_LOW_DISK_HOURS[k]) for k, v in hours.items()} if pressure[key] else hours
+                expired, note = retention_verdict(rec, head, reasons, last_activity(rec), limits, now)
+                if pressure[key]:
+                    note += "；目标机磁盘不足，保留期已收紧"
+                if not expired:
+                    print(f"keep {j}: {note}")
+                    continue
             if getattr(a, "dry_run", False):
-                print(f"would clean {j} (reports 将保存，分支保留)")
+                print(f"would clean {j} ({note})")
             else:
+                print(f"clean {j}: {note}")
                 remove_job(a, rec, host)
         except (OSError, ValueError, SystemExit, subprocess.SubprocessError) as error:
             print(f"skip {j}: 核验或清理失败，保留未删除内容与登记：{error}")
 
 
+def cmd_clean_merged(a, cfg):
+    return cmd_clean_batch(a, cfg, "merged")
+
+
+def cmd_keep(a, cfg):
+    rec = load_job(a.job)
+    if rec.get("user_id") and rec["user_id"] != require_user():
+        die("只能钉住当前 RD_USER_ID 的任务。", 4)
+    if a.hours < 0:
+        die("--hours 必须是非负数；0 表示取消钉住。", 4)
+    if a.hours == 0:
+        rec.pop("keep_until", None)
+        print(f"{rec['job']}: 已取消钉住，按默认保留期判断。")
+    else:
+        rec["keep_until"] = time.time() + a.hours * 3600
+        print(f"{rec['job']}: 钉住到 {time.strftime('%Y-%m-%d %H:%M', time.localtime(rec['keep_until']))}，rd clean --expired 不回收。")
+    save_job(rec)
+
+
 def cmd_clean(a, cfg):
+    if getattr(a, "merged", False) and getattr(a, "expired", False):
+        die("--merged 与 --expired 只能选一个。", 4)
     if getattr(a, "merged", False):
         return cmd_clean_merged(a, cfg)
+    if getattr(a, "expired", False):
+        return cmd_clean_batch(a, cfg, "expired")
     if not a.job or getattr(a, "into", None) or getattr(a, "dry_run", False) or getattr(a, "project", None):
-        die("请指定 job；--into、--dry-run 和范围筛选需要 --merged。", 4)
+        die("请指定 job；--into、--dry-run 和范围筛选需要 --merged 或 --expired。", 4)
     rec = load_job(a.job)
     host = job_host(cfg, rec)
     j, b = rec["job"], rec["branch"]
@@ -1858,12 +1949,18 @@ def main():
     p.add_argument("--initiator-session")
     p.set_defaults(fn=cmd_stop)
 
+    p = sub.add_parser("keep", help="钉住任务 worktree，rd clean --expired 不回收；--hours 0 取消")
+    p.add_argument("job")
+    p.add_argument("--hours", type=float, required=True, help="从现在起保留的小时数；0 取消钉住")
+    p.set_defaults(fn=cmd_keep)
+
     p = sub.add_parser("clean", parents=[repo_parser], help="remove a finished job's worktree and logs from the worker")
     p.add_argument("job", nargs="?")
     p.add_argument("--merged", action="store_true", help="按合入、回执及未提交路径条件批量清理当前员工已结束的 job")
+    p.add_argument("--expired", action="store_true", help="同 --merged 的安全条件，再按续跑可能性分级保留：命令任务确认即回收、已合入 24 小时、未合入 7 天；见 [retention]")
     p.add_argument("--into", help="合入目标 REF；默认各 job 的 source_branch")
-    p.add_argument("--dry-run", action="store_true", help="只列出 --merged 计划，不删除")
-    p.add_argument("--project", help="限定项目；未指定时 --merged 在当前仓库内筛选")
+    p.add_argument("--dry-run", action="store_true", help="只列出 --merged / --expired 计划，不删除")
+    p.add_argument("--project", help="限定项目；未指定时 --merged / --expired 在当前仓库内筛选")
     p.add_argument("--delete-branch", action="store_true", help="also delete the job branch (worker and origin)")
     p.add_argument("--force", action="store_true", help="discard uncommitted or unfetched work")
     p.add_argument("--discard-reports", action="store_true", help="skip local reports backup before deleting the remote job")
