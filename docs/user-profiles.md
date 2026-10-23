@@ -25,7 +25,7 @@ rd profile sync mini --confirm-user-id zhangsan --confirm-version <profile-check
 └── tools/              可选：配置引用的配套脚本
 ```
 
-使用 `assets/profile.example` 起步，将审阅后的个人差异合入。复制明确选定的 skills 实体文件；包内软链接被拒绝，避免指向派单端个人路径。脚本拒绝常见凭据文件、隐藏文件、个人运行状态和未支持的配置字段。支持字段以 `src/remote_dispatch/rd_profiles.py` 的 `CONFIG_KEYS` 为准。人工还必须检查技能正文和资源，脚本不能证明任意资源不含敏感内容。
+使用 `examples/profile.example` 起步，将审阅后的个人差异合入。复制明确选定的 skills 实体文件；包内软链接被拒绝，避免指向派单端个人路径。脚本拒绝常见凭据文件、隐藏文件、个人运行状态和未支持的配置字段。支持字段以 `src/remote_dispatch/rd_profiles.py` 的 `CONFIG_KEYS` 为准。人工还必须检查技能正文和资源，脚本不能证明任意资源不含敏感内容。
 
 检查目标机工具和 MCP 服务是否可用；派单端的 `localhost` 不代表目标机上的同一个服务。服务地址、环境变量和技能内部脚本须按目标平台准备，不自动猜测或改写业务接口。
 
@@ -70,6 +70,6 @@ Codex 还必须支持命名 permission profiles。默认 `workspace-write` 将 w
 
 认证只从目标机提供：主机 `codex_auth_file` 指向已授权的认证文件，或 `env_file` 导出配置引用的 API 环境变量。认证文件只复制到当前任务配置，权限 0600；不进入同步包、Git 或日志。不自动读共享账号默认 `auth.json` 或钥匙串。首次登录、验证码和扫码由用户接管。目标机环境只向代理传递基础变量、RD 变量及配置明确引用的 API/MCP 变量。
 
-当前只完成 Codex 员工配置适配，其他代理阻止派单。旧版任务保留原路径，可查看、取回、停止和清理；旧任务无员工配置快照，不能直接续跑。`rd status` 默认展示当前 ID 的任务及旧版任务，指定新任务 ID 时校验归属。ID 是操作防串用检查，不是安全授权边界。
+员工配置包只用于 Codex。DSH 与 AGY 不读配置包，各用任务目录下的独立 `DSH_HOME` 或 `HOME`，只复制目标机上的凭据文件（`dsh_auth_file`、`agy_auth_file`），见 [代理适配](agents.md)。`kimi`、`claude` 阻止派单。旧版任务保留原路径，可查看、取回、停止和清理；旧任务无员工配置快照，不能直接续跑。`rd status` 默认展示当前 ID 的任务及旧版任务，指定新任务 ID 时校验归属。ID 是操作防串用检查，不是安全授权边界。
 
 权限依据：[OpenAI permission profiles](https://learn.chatgpt.com/docs/permissions) 和 [worktree Git 路径保护](https://learn.chatgpt.com/docs/agent-approvals-security#protected-paths-in-writable-roots)。

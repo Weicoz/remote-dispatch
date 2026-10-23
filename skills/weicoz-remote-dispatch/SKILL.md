@@ -1,7 +1,7 @@
 ---
 name: weicoz-remote-dispatch
-version: 1.0.1
-description: 把 Codex 或 DSH 编码代理会话、测试和构建命令经 SSH 派到另一台机器，或在本机以独立 worktree 另起一个 harness 会话执行，本机只负责派单、看进度和取回提交。只在用户主动要求或明确授权把任务放到别的机器或另一个 harness 上跑时使用，例如“派到另一台机器／远端／mac mini／服务器上跑”“让别的机器跑测试”“用双机／多机跑”“本机派单给其他 harness”“remote dispatch”“rd run”，或要求添加、检查目标机器。用户没有要求也没有授权时不要使用：派代理、跑测试默认都在当前会话执行；本机负载高时可以建议派到远端，但要等用户同意。
+version: 1.1.0
+description: 把 Codex、DSH 或 AGY（Antigravity CLI）编码代理会话、测试和构建命令经 SSH 派到另一台机器，或在本机以独立 worktree 另起一个 harness 会话执行，本机只负责派单、看进度和取回提交。只在用户主动要求或明确授权把任务放到别的机器或另一个 harness 上跑时使用，例如“派到另一台机器／远端／mac mini／服务器上跑”“让别的机器跑测试”“用双机／多机跑”“本机派单给其他 harness”“remote dispatch”“rd run”，或要求添加、检查目标机器。用户没有要求也没有授权时不要使用：派代理、跑测试默认都在当前会话执行；本机负载高时可以建议派到远端，但要等用户同意。
 ---
 
 # Remote Dispatch
@@ -47,13 +47,16 @@ rd --version          # 验证入口
 ssh = weicoz@192.168.1.20
 workdir = ~/remote-dispatch
 sync = origin
-dsh_auth_file = ~/employee/dsh-credentials.yaml   # 只有 dsh 需要
+; 只有 dsh 需要；注释必须单独成行，rd 不识别行尾注释
+dsh_auth_file = ~/employee/dsh-credentials.yaml
 
-[host:self]                       # 本机目标：另起一个隔离会话，不经过 SSH
+; 本机目标：另起一个隔离会话，不经过 SSH
+[host:self]
 ssh = local
 workdir = ~/remote-dispatch-self
 sync = direct
-dsh_auth_file = ~/.dsh/.credentials.yaml   # 本机派 dsh 时同样必填
+; 本机派 dsh 时同样必填；agy 默认读 ~/.gemini/antigravity-cli/antigravity-oauth-token
+dsh_auth_file = ~/.dsh/.credentials.yaml
 
 [project:myrepo]
 origin_url = git@github.com:me/myrepo.git
@@ -77,8 +80,8 @@ rd run --host self --cmd 'make bench'     # 普通命令，不经隔离
 - 只支持 POSIX 发起方。Windows 目标必须走 SSH；Windows 发起方写 `ssh = local` 会直接报错。
 - `--host auto` 与 `--tag` 不会选本机目标；本机派单必须显式 `--host self`。
 - 本机同样按负载、内存、磁盘阈值拦截；超阈值才用 `--force-host`，先确认不会挤压当前会话。
-- 隔离只覆盖 `codex` 与 `dsh`。`kimi` / `claude` 会被拒绝；要本机并行用这两个，直接调它们自己的 CLI，或改用 `--cmd`。
-- 本机派 dsh 仍需 `dsh_auth_file`。headless profile 的路由缺 provider key 时报 `MISSING_CREDENTIAL`；rd 保留 `DEEPSEEK_*`、`OPENAI_*`、`ANTHROPIC_*` 环境变量，可先 `export DEEPSEEK_API_KEY=...`，或换用带 key 的 profile。裸 `dsh headless` 同样报错即与 rd 无关。
+- 隔离覆盖 `codex`、`dsh`、`agy`。`kimi` / `claude` 会被拒绝；要本机并行用这两个，直接调它们自己的 CLI，或改用 `--cmd`。
+- 本机派 dsh 仍需 `dsh_auth_file`。headless profile 的路由缺 provider key 时报 `MISSING_CREDENTIAL`；rd 保留 `DEEPSEEK_*`、`OPENAI_*`、`ANTHROPIC_*` 环境变量，本机目标可先 `export DEEPSEEK_API_KEY=...`；SSH 目标不转发派单端变量，要写进目标机 `env_file`。也可以换用带 key 的 profile。裸 `dsh headless` 同样报错即与 rd 无关。
 
 ## 员工 ID 与配置同步
 
@@ -100,6 +103,7 @@ rd doctor mini                  # 在仓库目录执行，检查目标机是否�
 
 rd run --agent codex --prompt-file task.md --ref HEAD
 rd run --agent dsh --prompt-file task.md          # DSH headless
+rd run --agent agy --permission-mode skip --prompt-file task.md   # AGY；权限档位必填
 rd run --test                                     # 跑项目配置的测试命令
 rd run --cmd 'make bench' --heavy                 # 普通命令，占重任务锁
 rd run --host self --agent codex --prompt-file task.md   # 本机目标加 --host self
@@ -121,9 +125,11 @@ rd clean <job>                  # 删除已完成任务的远端 worktree 与日
 
 - 新派单用 `--initiator-session` 绑定当前会话 ID；未传时依次读 `RD_INITIATOR_SESSION`、`CODEX_THREAD_ID`。DSH 宿主不设这两个变量，必须显式传 `--initiator-session "$DSH_SESSION_ID"`；宿主没给 ID 就标未绑定，不声称结果会送达某会话。
 - `--workdir`、`--include`、`--model`、`--effort` 按需覆盖默认值；完整旗标见 `rd run --help`。
+- 派 `agy` 必须带 `--permission-mode`，按任务性质选：改代码并提交用 `skip`；只读分析用 `plan`。`plan`、`accept-edits` 在无人值守时会自动拒绝 shell 命令，包括 git 提交。
 - `ack` 只表示已收取，不表示验收通过，也不授权续派。只有新指令才产生下一轮。
 - `rd fetch` 取回的是候选，合并与验收由发起方判断。
 - `rd clean` 前先收取回执、确认没有需要保留的产物；删除远端 worktree 需用户确认。
+- **派单后立即挂巡检**：把 `rd watch <job>` 放进后台作业。它默认 900 秒返回一次：退出码 2＝该报进度、1＝告警、0＝完成。收到 2 时读 `rd status --details` 与 `rd logs` 尾部，向用户报一行真实进展（阶段、文件数、提交、阻塞、执行机资源），再重挂下一次 watch；收到 0／1 时取回结果并验收。任务结束后终结巡检作业。没有定时唤醒能力时改用 `rd wait` 加超时兜底作业，并如实说明边界。
 
 ## 代理支持
 
@@ -131,9 +137,12 @@ rd clean <job>                  # 删除已完成任务的远端 worktree 与日
 | --- | --- | --- |
 | `codex` | 完整支持 | 每任务独立 `CODEX_HOME` 加员工配置包与认证文件 |
 | `dsh` | 支持（headless） | 每任务独立 `DSH_HOME` 加 `dsh_auth_file` 凭据副本；不继承宿主 `~/.dsh` |
+| `agy` | 支持（print 模式，仅 POSIX） | 每任务独立 `HOME`，只复制目标机 `agy_auth_file` 登录凭据；不加载个人 `~/.gemini` 技能、MCP、插件 |
 | `kimi` / `claude` | 仅模板 | 未实现隔离，`rd run` 会拒绝派单 |
 
 `dsh` 由 `dsh headless --json` 启动，续跑加 `--session-id`；headless 没有 `--model`，模型写在员工 DSH 配置里。本机目标与远端共用同一套模板和隔离。目标机不接受 Windows（本机目标也要求 POSIX）。
+
+`agy` 用 `--print` 加 stream-json 输入输出启动，续跑加 `--conversation`；`--model`、`--effort` 可用。目标机要先由机器主人运行 `agy` 登录；`rd doctor <机器> --agent agy` 分开检查安装与登录。回执出现 `denied_actions` 时 `outcome` 为 `partial`，说明权限档位挡住了操作。
 
 ## 发起方为 Windows
 

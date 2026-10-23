@@ -54,4 +54,4 @@ runner收尾补 executor_exit、finished_at。代理未写结构化结果时，�
 
 默认15分钟周期及配置优先级不变。`watch --keep-on-disconnect` 在本次有界等待内继续只读查询，不顺延截止时间、不重派、不续跑。到期仍有不可达任务时，progress_due携带unreachable状态；发起方报告未确认事实。默认watch保持原遇连接错误提前返回的行为，兼容已有监控。
 
-新任务默认clean前要求本轮结果已收取确认；发起方先保存需要的产物，再按原Git安全检查清理。旧任务的run/status/watch/resume/fetch等调用保持兼容；本协议不要求迁移正在执行的任务或复制全机配置。
+新任务默认clean前要求本轮结果已收取确认；发起方先保存需要的产物，再按原Git安全检查清理。旧任务的status/watch/fetch/stop/clean调用保持兼容；没有员工配置快照的旧任务不能resume，须重新派单；本协议不要求迁移正在执行的任务或复制全机配置。

@@ -7,7 +7,7 @@
 - 任务在一台机器发起、在另一台机器执行，走 git 分支同步（`origin` 或 `direct` 两种模式）。
 - 每轮是一个独立回合：派单 → 收结果（结构化回执）→ 确认 → 续派，不靠猜日志。
 - 支持多台机器：探活、按标签挑机、重任务限流（`rd-heavy` 共享锁）。
-- 员工配置隔离：Codex 每个任务独立 `CODEX_HOME`；DSH 每个任务独立 `DSH_HOME`。宿主个人配置、skills、登录态不继承。
+- 员工配置隔离：Codex 每个任务独立 `CODEX_HOME`；DSH 每个任务独立 `DSH_HOME`；AGY 每个任务独立 `HOME`。宿主个人配置、skills、登录态不继承。
 
 ## 安装
 
@@ -68,6 +68,7 @@ rd resume <job> --prompt-file next.md
 | --- | --- | --- |
 | codex | 完整支持 | 每任务独立 `CODEX_HOME`，员工配置包 + 认证文件 |
 | dsh | 支持（headless） | 每任务独立 `DSH_HOME`，员工凭据文件；不继承宿主 `~/.dsh` |
+| agy | 支持（print 模式，仅 POSIX） | 每任务独立 `HOME`，只复制目标机登录凭据；不加载个人 `~/.gemini` 技能、MCP、插件 |
 | kimi / claude | 仅模板 | 未实现隔离，`rd run --agent` 会拒绝派单 |
 
 DSH 需要在机器清单里给出员工凭据文件：
@@ -76,6 +77,12 @@ DSH 需要在机器清单里给出员工凭据文件：
 [host:mini]
 ssh = weicoz@192.168.1.20
 dsh_auth_file = ~/employee/dsh-credentials.yaml
+```
+
+AGY 要求目标机先由机器主人运行 `agy` 登录（凭据默认 `~/.gemini/antigravity-cli/antigravity-oauth-token`，用 `agy_auth_file` 改），派单时必须指定权限档位；无人值守下只有 `skip` 能执行命令和 git 提交：
+
+```sh
+rd run --agent agy --permission-mode skip --prompt-file task.md
 ```
 
 ## 本机目标机
@@ -87,10 +94,11 @@ dsh_auth_file = ~/employee/dsh-credentials.yaml
 ssh = local
 workdir = ~/remote-dispatch
 sync = direct
-dsh_auth_file = ~/.dsh/.credentials.yaml   ; 派 dsh 时必填
+; 派 dsh 时必填；注释必须单独成行
+dsh_auth_file = ~/.dsh/.credentials.yaml
 ```
 
-`rd hosts` 会把它显示为「本机」。不需要 sshd、免密或外网探针；代理调用模型仍需网络。`--host auto` 不会选本机，必须显式 `--host self`；Windows 发起方不能配置 `ssh = local`。负载、内存、磁盘阈值照样生效，超阈值才用 `--force-host`。只有 codex/dsh 有员工配置隔离，本机派 kimi/claude 同样会被拒。本机 dsh 的 provider key 缺失会报 `MISSING_CREDENTIAL`，处理方法见 [代理适配](docs/agents.md)。
+`rd hosts` 会把它显示为「本机」。不需要 sshd、免密或外网探针；代理调用模型仍需网络。`--host auto` 不会选本机，必须显式 `--host self`；Windows 发起方不能配置 `ssh = local`。负载、内存、磁盘阈值照样生效，超阈值才用 `--force-host`。只有 codex/dsh/agy 有员工配置隔离，本机派 kimi/claude 同样会被拒。本机 dsh 的 provider key 缺失会报 `MISSING_CREDENTIAL`，处理方法见 [代理适配](docs/agents.md)。
 
 ## 安全边界
 
@@ -128,7 +136,7 @@ make sync-skill    # 改完 skills/weicoz-remote-dispatch/SKILL.md 后同步到 
 make check-skill   # 校验技能副本一致，且 SKILL.md 不含相对链接
 ```
 
-代码结构：`src/remote_dispatch/cli.py` 是命令行主入口，`rd_profiles.py` 负责目标机上的配置隔离（同时以单文件形式上传到执行机），`rd_messages.py` / `rd_cache.py` 管回执与缓存，`rd_health.py` 管探活与日志取样，`rd_native.py` 是 Windows 适配层。
+代码结构：`src/remote_dispatch/cli.py` 是命令行主入口，`rd_agents.py` 登记各代理的模板、平台、隔离、凭据与预检，`rd_profiles.py` 负责目标机上的配置隔离（同时以单文件形式上传到执行机），`rd_messages.py` / `rd_cache.py` 管回执与缓存，`rd_health.py` 管探活与日志取样，`rd_native.py` 是 Windows 适配层。
 
 ## 许可
 

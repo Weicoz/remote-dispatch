@@ -9,6 +9,8 @@ import re
 import tempfile
 
 MAX_BYTES = 65536
+# 发起方回执封装远端报告（上限 MAX_BYTES）及任务元数据，需单独留出余量。
+RECEIPT_BYTES = 2 * MAX_BYTES
 OUTCOMES = ("completed", "partial", "blocked", "failed")
 CHECKS = ("passed", "failed", "partial", "not_run", "not_reported")
 
@@ -109,9 +111,16 @@ def runtime_failure(directory, number):
                 error = row.get("error")
                 if isinstance(error, dict):
                     texts.append(str(error.get("message", "")).lower())
+            result = row.get("result") if row.get("event") == "result" else None
+            if isinstance(result, dict):
+                # AGY 终态：失败原因在 result.error；轮数大于零说明模型已开始工作。
+                texts.append(str(result.get("error", "")).lower())
+                if isinstance(result.get("num_turns"), int) and result["num_turns"] > 0:
+                    observed = True
     message = "\n".join(texts)
     patterns = (("model_route", ("workspace routing discovery failed",)),
-                ("authentication", ("401 unauthorized", "invalid_api_key", "authentication token")),
+                ("authentication", ("401 unauthorized", "invalid_api_key", "authentication token",
+                                    "authentication required", "authentication failed")),
                 ("access_denied", ("403 forbidden",)),
                 ("rate_limit", ("429", "rate limit")),
                 ("transport", ("ssl", "tls", "connection reset", "connection timed out", "error sending request")),
@@ -132,6 +141,8 @@ def result_summary(receipt):
     result.update({k: report[k] for k in ("outcome", "checks", "phase") if k in report})
     if isinstance(report.get("runtime_failure"), dict):
         result["runtime_failure"] = {k: report["runtime_failure"].get(k) for k in ("kind", "work_observed", "scan_complete")}
+    if isinstance(report.get("denied_actions"), list):
+        result["denied_actions"] = report["denied_actions"]
     result["summary"] = report.get("summary", "")[:600]
     evidence = report.get("evidence") or {}
     result["evidence"] = {"source_fingerprint": evidence.get("source_fingerprint"),
@@ -191,7 +202,7 @@ def read_json(path):
     path = Path(path)
     if not path.exists():
         return None
-    if any(p.is_symlink() for p in (path, *path.parents)) or path.stat().st_size > MAX_BYTES:
+    if any(p.is_symlink() for p in (path, *path.parents)) or path.stat().st_size > RECEIPT_BYTES:
         raise ValueError("回执路径或大小无效。")
     try:
         return json.loads(path.read_text(encoding="utf-8"))
@@ -231,12 +242,35 @@ def report(directory, job, number, kind, phase="", summary="", outcome="complete
     return data
 
 
+def agy_result(directory, number):
+    """读取 AGY stream-json 的终态事件；只看日志尾部，不保留整段输出。"""
+    path = Path(directory) / ("stdout.r" + str(number) + ".log")
+    if not path.is_file() or path.is_symlink():
+        return None
+    with path.open("rb") as stream:
+        stream.seek(max(0, path.stat().st_size - 4 * MAX_BYTES))
+        lines = stream.read().decode("utf-8", errors="replace").splitlines()
+    for line in reversed(lines):
+        try:
+            row = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(row, dict) and row.get("event") == "result" and isinstance(row.get("result"), dict):
+            return row["result"]
+    return None
+
+
 def finish(directory, job, number, code, agent=None):
     directory, job, number = Path(directory).resolve(), job_id(job), round_id(number)
+    agent = agent or os.environ.get("RD_AGENT")
     path = directory / "reports" / ("result.r" + str(number) + ".json")
+    final = agy_result(directory, number) if agent == "agy" else None
+    reply = directory / ("last.r" + str(number) + ".txt")
+    if final and isinstance(final.get("response"), str) and not reply.exists():
+        # 与 Codex 的 -o 一致：最后回复落到 last.rN.txt，rd logs JOB last 可读。
+        reply.write_text(final["response"][:MAX_BYTES], encoding="utf-8")
     data = read_json(path)
     if data is None:
-        reply = directory / ("last.r" + str(number) + ".txt")
         summary = ""
         if reply.is_file() and not reply.is_symlink():
             with reply.open("rb") as stream:
@@ -247,9 +281,16 @@ def finish(directory, job, number, code, agent=None):
     data.update(executor_exit=int(code), finished_at=utc_now(),
                 reply_file="last.r" + str(number) + ".txt", stdout_file="stdout.r" + str(number) + ".log")
     data.pop("runtime_failure", None)
+    data.pop("denied_actions", None)
+    denied = final.get("denied_actions") if final else None
+    if isinstance(denied, list) and denied:
+        # AGY 无人值守时自动拒绝权限请求却仍报 SUCCESS；被拒操作意味着本轮可能没做完。
+        data["denied_actions"] = [str(item.get("action", "")) if isinstance(item, dict) else str(item) for item in denied][:20]
+        if data["outcome"] == "completed":
+            data["outcome"] = "partial"
     if code != 0:
         data["outcome"] = "failed"
-        if (agent or os.environ.get("RD_AGENT")) == "codex":
+        if agent in ("codex", "agy"):
             failure = runtime_failure(directory, number)
             if failure:
                 data["runtime_failure"] = failure

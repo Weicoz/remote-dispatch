@@ -46,6 +46,9 @@ def network_options(host):
     return options
 
 
+AGY_MODEL_URL = "https://cloudcode-pa.googleapis.com"
+
+
 def model_url(root, uid, version=None):
     """只读取该员工已同步配置中的活动 provider，不读取宿主个人配置或认证文件。"""
     directory = Path(root)
@@ -74,7 +77,8 @@ def network_probe(options, root, uid="", agent="codex"):
     started = time.monotonic()
     budget = options["network_timeout_seconds"]
     try:
-        model = options["network_model_url"] or model_url(root, uid, options.get("profile_fingerprint"))
+        # AGY 不读 Codex 员工配置，模型服务固定为 Google Cloud Code 端点。
+        model = options["network_model_url"] or (AGY_MODEL_URL if agent == "agy" else model_url(root, uid, options.get("profile_fingerprint")))
         # 列表可覆盖通用探测地址；模型端点始终是必需项。
         urls = options["network_urls"] or ["https://pypi.org"]
         parsed = urlsplit(model)

@@ -147,7 +147,7 @@ class LocalSelectionTest(unittest.TestCase):
         with patch.object(rd, "ssh", side_effect=fake_ssh), patch.object(rd, "probe", return_value=info), \
              contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()), \
              self.assertRaises(SystemExit) as result:
-            rd.cmd_doctor(argparse.Namespace(host="self", agent="codex"), cfg)
+            rd.cmd_doctor(argparse.Namespace(host="self", agent=["codex"]), cfg)
         self.assertEqual(result.exception.code, 1)
         self.assertIn('bad "agent codex CLI"', captured["script"])
 

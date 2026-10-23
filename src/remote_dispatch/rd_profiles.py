@@ -301,9 +301,14 @@ def prepare_runtime(job_dir, expected, auth_file=""):
     return runtime
 
 
+# 预检用目标机环境文件里的代理访问模型；代理进程必须拿到同一组网络变量，否则出现“预检通过、模型连不上”。
+NETWORK_KEEP = ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY", "http_proxy", "https_proxy", "all_proxy", "no_proxy",
+                "SSL_CERT_FILE", "SSL_CERT_DIR", "REQUESTS_CA_BUNDLE", "CURL_CA_BUNDLE", "NODE_EXTRA_CA_CERTS")
+
+
 def runtime_environment(runtime, inherited=None):
     config = tomllib.loads((runtime / "config.toml").read_text(encoding="utf-8"))
-    keep = {"HOME", "PATH", "TMPDIR", "LANG", "LC_ALL", "OPENAI_API_KEY", "USERPROFILE", "SystemRoot", "SYSTEMROOT", "COMSPEC", "ComSpec", "PATHEXT", "APPDATA", "LOCALAPPDATA", "TEMP", "TMP", "USERNAME", "USERDOMAIN"}
+    keep = {"HOME", "PATH", "TMPDIR", "LANG", "LC_ALL", "OPENAI_API_KEY", "USERPROFILE", "SystemRoot", "SYSTEMROOT", "COMSPEC", "ComSpec", "PATHEXT", "APPDATA", "LOCALAPPDATA", "TEMP", "TMP", "USERNAME", "USERDOMAIN", *NETWORK_KEEP}
     for provider in config.get("model_providers", {}).values():
         if provider.get("env_key"):
             keep.add(provider["env_key"])
@@ -327,7 +332,7 @@ def runtime_environment(runtime, inherited=None):
 
 DSH_KEEP = ("HOME", "PATH", "TMPDIR", "TMP", "TEMP", "LANG", "LC_ALL", "TERM",
             "USERPROFILE", "SystemRoot", "SYSTEMROOT", "COMSPEC", "ComSpec", "PATHEXT",
-            "APPDATA", "LOCALAPPDATA", "USERNAME", "USERDOMAIN")
+            "APPDATA", "LOCALAPPDATA", "USERNAME", "USERDOMAIN", *NETWORK_KEEP)
 DSH_ENV_PREFIXES = ("RD_", "DSH_", "DEEPSEEK_", "OPENAI_", "ANTHROPIC_")
 DSH_AGENTS_PLACEHOLDER = """# 本任务员工规范
 
@@ -373,7 +378,55 @@ def dsh_environment(home, inherited=None):
     return env
 
 
+AGY_KEEP = ("PATH", "TMPDIR", "TMP", "TEMP", "LANG", "LC_ALL", "TERM", "USER", "LOGNAME", *NETWORK_KEEP)
+AGY_TOKEN = Path(".gemini") / "antigravity-cli" / "antigravity-oauth-token"
+
+
+def prepare_agy_runtime(job_dir, auth_file=""):
+    """AGY 无配置目录变量：给任务独立 HOME，只放目标机自己的登录凭据，隔离个人 MCP、技能、插件与会话。"""
+    job_dir = Path(job_dir).resolve()
+    home = job_dir / "agy-home"
+    marker = home / "rd-isolation.json"
+    if home.exists() and not marker.exists():
+        raise ValueError("任务 AGY 配置目录存在但缺少隔离标记；检查后重派，不覆盖现有目录。")
+    auth = Path(os.path.expandvars(os.path.expanduser(auth_file))) if auth_file else None
+    if auth is None or not auth.is_file():
+        raise ValueError("目标机没有 AGY 登录凭据；先在目标机运行 agy 登录，不得回退其他账号。")
+    home.mkdir(mode=0o700, exist_ok=True)
+    home.chmod(0o700)
+    token = home / AGY_TOKEN
+    token.parent.mkdir(parents=True, exist_ok=True)
+    # 续跑也重新复制：目标机上刷新过的凭据优先，任务内旧副本不回写。
+    shutil.copyfile(auth, token)
+    token.chmod(0o600)
+    marker.write_text(json.dumps({"agent": "agy", "home": str(home)}), encoding="utf-8")
+    return home
+
+
+def agy_environment(home, inherited=None):
+    source = os.environ if inherited is None else inherited
+    env = {k: v for k, v in source.items() if k in AGY_KEEP or k.startswith("RD_")}
+    env["HOME"] = str(home)
+    # HOME 换成任务目录后仍沿用目标机账号的 git 全局配置（身份、凭据助手）。
+    real_home = Path(source.get("HOME") or os.path.expanduser("~"))
+    for candidate in (real_home / ".gitconfig", real_home / ".config" / "git" / "config"):
+        if candidate.is_file():
+            env["GIT_CONFIG_GLOBAL"] = str(candidate)
+            break
+    identity = home.parent / "agy-git.json"
+    if identity.exists():
+        author = json.loads(identity.read_text(encoding="utf-8"))
+        for role in ("AUTHOR", "COMMITTER"):
+            env["GIT_" + role + "_NAME"] = author["name"]
+            env["GIT_" + role + "_EMAIL"] = author["email"]
+    return env
+
+
 def execute(job_dir, command, auth_file="", agent="codex"):
+    if agent == "agy":
+        home = prepare_agy_runtime(job_dir, auth_file)
+        print("Remote Dispatch: AGY isolated home=" + str(home), flush=True)
+        os.execvpe("sh", ["sh", command], agy_environment(home))
     if agent == "dsh":
         home = prepare_dsh_runtime(job_dir, auth_file)
         print("Remote Dispatch: DSH isolated home=" + str(home), flush=True)

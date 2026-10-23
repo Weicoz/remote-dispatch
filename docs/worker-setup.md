@@ -29,7 +29,7 @@ ssh -o BatchMode=yes <用户>@<地址> true
 
 ## 2. 写进机器清单
 
-在 `~/.config/remote-dispatch/config.ini` 加一节，字段说明见 `assets/config.example.ini`：
+在 `~/.config/remote-dispatch/config.ini` 加一节，字段说明见 `examples/config.example.ini`：
 
 ```ini
 [host:box2]
@@ -45,7 +45,10 @@ max_heavy = 1
 - `git`。
 - 要派的代理命令行，并且已经登录。登录是交互步骤，需要机器的主人自己在那台机器上完成。
 - 项目自己的工具链（包管理器、运行时、Docker 等）。
-- 员工 Codex 配置操作：本机与远端 Python 3.11+。Codex 必须支持 `--disable` 关闭 hooks、plugins、memories 和外部记忆导入；其他代理当前不启动。
+- 员工 Codex 配置操作：本机与远端 Python 3.11+。Codex 必须支持 `--disable` 关闭 hooks、plugins、memories 和外部记忆导入。
+- DSH：`dsh headless` 可用，`dsh_auth_file` 指向目标机上的凭据文件。
+- AGY：`python3` 与支持 `--input-format` 的 `agy`；机器主人在目标机运行一次 `agy` 登录，生成 `agy_auth_file`（默认 `~/.gemini/antigravity-cli/antigravity-oauth-token`）。只支持 POSIX。`rd doctor <机器> --agent agy` 分开报告“已安装”和“已登录”。
+- `kimi`、`claude` 当前不启动。
 
 非交互的 SSH 会话不读 `.zshrc`、`.bashrc`，装在用户目录下的命令往往找不到。把这些目录写进该机器的 `path`。默认已包含 `~/.local/bin`、`~/.kimi-code/bin`、`/opt/homebrew/bin`、`/usr/local/bin`。需要的环境变量（例如接口密钥）写进远端的一个文件，用 `env_file` 指过去，任务启动前会被加载。
 
