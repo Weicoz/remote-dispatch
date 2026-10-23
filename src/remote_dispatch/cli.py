@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""rd — dispatch coding-agent sessions and test commands to remote machines over SSH.
+"""rdispatch — dispatch coding-agent sessions and test commands to remote machines over SSH.
 
 Command dispatch needs local Python 3.9+, git and ssh. Employee Codex profiles
 need Python 3.11+ on both machines, plus git and Codex on the worker.
@@ -56,7 +56,7 @@ DEFAULTS = {
     "timeout": "3600",
 }
 
-# worktree 只被同一任务的 rd resume 复用；保留时长按续跑可能性分级。
+# worktree 只被同一任务的 rdispatch resume 复用；保留时长按续跑可能性分级。
 # command：命令任务不能续跑；accepted：已合入或无新提交；unmerged：已取回未合入，最可能续跑。
 RETENTION_HOURS = {"command": 0, "accepted": 24, "unmerged": 7 * 24}
 # 目标机磁盘低于 min_free_disk_gb 时收紧到这些上限。
@@ -97,7 +97,7 @@ mkdir -p "$RD_JOB_DIR/reports"
     rd_nofile_target=$rd_nofile_hard
   fi
   if [ "$rd_nofile_soft" != unlimited ] && [ "$rd_nofile_soft" -lt "$rd_nofile_target" ]; then
-    ulimit -Sn "$rd_nofile_target" || echo "rd: could not raise the job's file descriptor soft limit" >&2
+    ulimit -Sn "$rd_nofile_target" || echo "rdispatch: could not raise the job's file descriptor soft limit" >&2
   fi
   printf 'nofile soft_before=%s soft_after=%s hard=%s\n' "$rd_nofile_soft" "$(ulimit -Sn)" "$rd_nofile_hard"
 } > "$RD_JOB_DIR/reports/resource-limits.r$RD_ROUND.log" 2>&1
@@ -149,7 +149,7 @@ echo "os=$os ncpu=$ncpu load1=$load1 memfree=$memfree swap=$swap disk=$disk runn
 
 
 def die(msg, code=1):
-    print(f"rd: {msg}", file=sys.stderr)
+    print(f"rdispatch: {msg}", file=sys.stderr)
     sys.exit(code)
 
 
@@ -378,7 +378,7 @@ def profile_report(host, uid, local, remote):
     elif state == "unknown":
         print("未确认：此电脑未准备本地配置包，无法比较更新时间；使用已有远端版本。")
     elif state == "missing":
-        print("远端首次使用此 ID。必须询问员工 ID 和是否同步，确认后执行 rd profile sync。")
+        print("远端首次使用此 ID。必须询问员工 ID 和是否同步，确认后执行 rdispatch profile sync。")
     return state
 
 
@@ -615,7 +615,7 @@ def load_job(job):
         with open(job_path(job), encoding="utf-8") as f:
             return json.load(f)
     except FileNotFoundError:
-        die(f"unknown job '{job}'. See: rd status")
+        die(f"unknown job '{job}'. See: rdispatch status")
 
 
 def all_jobs():
@@ -698,7 +698,7 @@ def cmd_result(a, cfg):
             die("该历史轮次尚无本地回执；先在原轮次收取结果。", 4)
         receipt = collect_result(cfg, rec, snapshot)
     if receipt is None:
-        die("结果尚未取得；用 rd status 查看运行或连接状态。", 2)
+        die("结果尚未取得；用 rdispatch status 查看运行或连接状态。", 2)
     result = dict(receipt, delivery_state=delivery(rec, receipt))
     if getattr(a, "summary", False):
         result = messages.result_summary(result)
@@ -737,7 +737,7 @@ def cmd_ack(a, cfg):
     path = result_path(rec, a.round)
     receipt = messages.read_json(path)
     if not receipt or receipt["receipt_id"] != a.receipt_id:
-        die("回执 ID 或轮次不匹配；先收取并核对 rd result。", 4)
+        die("回执 ID 或轮次不匹配；先收取并核对 rdispatch result。", 4)
     messages.atomic_json(path.with_suffix(".ack.json"), dict(receipt_id=a.receipt_id, received_at=messages.utc_now()))
     print("结果已由发起方收取；此确认不代表验收通过，不会自动续派。")
 
@@ -890,7 +890,7 @@ def agent_preflight(host, uid, name, agent):
         profile = remote_profile(host, uid)
         profile_report(host, uid, local, profile)
         if profile is None:
-            die("此 ID 尚无远端配置；先询问是否同步、确认 ID，再执行 rd profile sync。未推送任务分支。", 4)
+            die("此 ID 尚无远端配置；先询问是否同步、确认 ID，再执行 rdispatch profile sync。未推送任务分支。", 4)
     if host["platform"] == "windows":
         if any(agent[k] != AGENTS[name][k] for k in ("start", "resume")):
             die("Windows 使用内置 Codex 参数适配；自定义 POSIX 启动模板不能直接移植。", 4)
@@ -1073,14 +1073,14 @@ def cmd_run(a, cfg):
             rec["dispatch_state"] = "started"
             save_job(rec)
             print(f"started. job id: {job}")
-            print(f"  rd status {job}    rd logs {job}    rd wait {job}    rd fetch {job}")
+            print(f"  rdispatch status {job}    rdispatch logs {job}    rdispatch wait {job}    rdispatch fetch {job}")
         except (SystemExit, Exception, KeyboardInterrupt):
             if rec["dispatch_state"] == "preparing":
                 rec["dispatch_state"] = "preparation_failed"
                 save_job(rec)
-                print(f"rd: 准备失败，job 已登记：{job}；核对后用 rd clean {job} --force --delete-branch 清理本任务。", file=sys.stderr)
+                print(f"rdispatch: 准备失败，job 已登记：{job}；核对后用 rdispatch clean {job} --force --delete-branch 清理本任务。", file=sys.stderr)
             else:
-                print(f"rd: 启动结果待核实，job 已登记：{job}；先用 rd status {job} 检查。", file=sys.stderr)
+                print(f"rdispatch: 启动结果待核实，job 已登记：{job}；先用 rdispatch status {job} 检查。", file=sys.stderr)
             raise
 
 
@@ -1154,7 +1154,7 @@ def describe(rec, st):
     if rec.get("user_id"):
         bits.append("ID=" + rec["user_id"])
     if rec.get("dispatch_state") == "preparation_failed":
-        bits.append("preparation failed; registered for rd clean")
+        bits.append("preparation failed; registered for rdispatch clean")
     if s == "done":
         code = st.get("exit")
         label = {"0": "ok", "124": "timed out", "97": "setup failed", "98": "profile/auth setup failed", "96": "worktree missing", "143": "stopped"}.get(code, "failed")
@@ -1168,7 +1168,7 @@ def describe(rec, st):
     if st.get("dirty") not in (None, "", "0"):
         bits.append(f"{st['dirty']} uncommitted file(s) left in worktree")
     if rec["sync"] == "origin" and st.get("push_rc") not in (None, "", "0"):
-        bits.append("PUSH FAILED (see: rd logs JOB --file push.log)")
+        bits.append("PUSH FAILED (see: rdispatch logs JOB --file push.log)")
     line = "  ".join(bits)
     if s == "running" and st.get("last"):
         line += f"\n    last output: {st['last']}"
@@ -1400,7 +1400,7 @@ def check_recovery(rec, receipt, args, cfg):
         if count > limit:
             break
     if count > limit:
-        die("重复模型启动故障，已停止续跑；用 rd result --summary 查看分类。取得修复证据后才用 --retry-after-repair，纯上下文故障可以显式 --new-context。", 4)
+        die("重复模型启动故障，已停止续跑；用 rdispatch result --summary 查看分类。取得修复证据后才用 --retry-after-repair，纯上下文故障可以显式 --new-context。", 4)
 
 
 def cmd_resume(a, cfg):
@@ -1416,7 +1416,7 @@ def cmd_resume(a, cfg):
     host["probe_profile_fingerprint"] = (rec.get("profile") or {}).get("fingerprint")
     st = remote_state(host, [rec["job"]]).get(rec["job"], {})
     if st.get("state") in ("running", "starting"):
-        die("the job is still running; rd stop it first or wait")
+        die("the job is still running; rdispatch stop it first or wait")
     if st.get("state") in ("missing", "unreachable"):
         die(f"job is {st.get('state')} on {host['name']}")
     info = probe(host)
@@ -1582,7 +1582,7 @@ def disk_low(host):
 def retention_verdict(rec, head, reasons, activity, hours, now):
     """返回 (可回收, 说明)。只判断复用可能性；未取回、未提交等安全条件由调用方先行拦截。"""
     if rec.get("keep_until", 0) > now:
-        return False, "已用 rd keep 钉住，到 " + time.strftime("%Y-%m-%d %H:%M", time.localtime(rec["keep_until"]))
+        return False, "已用 rdispatch keep 钉住，到 " + time.strftime("%Y-%m-%d %H:%M", time.localtime(rec["keep_until"]))
     if not rec.get("agent"):
         kind, label = "command", "命令任务不能续跑"
     elif head == rec["base"] or not reasons:
@@ -1630,7 +1630,7 @@ def cmd_clean_batch(a, cfg, mode):
                 print(f"skip {j}: {'；'.join(unsafe or reasons)}")
                 continue
             if pending_results(cfg, rec, snapshot):
-                print(f"skip {j}: 结果回执待收取；先用 rd result / rd ack")
+                print(f"skip {j}: 结果回执待收取；先用 rdispatch result / rdispatch ack")
                 continue
             included = rec.get("include_paths", [])
             unexpected = [p for p in paths if not any(
@@ -1674,7 +1674,7 @@ def cmd_keep(a, cfg):
         print(f"{rec['job']}: 已取消钉住，按默认保留期判断。")
     else:
         rec["keep_until"] = time.time() + a.hours * 3600
-        print(f"{rec['job']}: 钉住到 {time.strftime('%Y-%m-%d %H:%M', time.localtime(rec['keep_until']))}，rd clean --expired 不回收。")
+        print(f"{rec['job']}: 钉住到 {time.strftime('%Y-%m-%d %H:%M', time.localtime(rec['keep_until']))}，rdispatch clean --expired 不回收。")
     save_job(rec)
 
 
@@ -1693,14 +1693,14 @@ def cmd_clean(a, cfg):
     st = remote_state(host, [j]).get(j, {})
     unlaunched = rec.get("dispatch_state") in ("preparing", "preparation_failed")
     if st.get("state") == "running" or (st.get("state") == "starting" and not unlaunched):
-        die("the job is still running; rd stop it first")
+        die("the job is still running; rdispatch stop it first")
     if st.get("state") == "unreachable":
         die(f"{host['name']} is unreachable; nothing was removed")
     if rec.get("handoff_version") and not a.force and not unlaunched:
         require_initiator(rec, a)
         receipt = collect_result(cfg, rec, st)
         if not receipt or delivery(rec, receipt) != "received":
-            die("先用 rd result 收取结果，再用 rd ack 确认；未交付回执不清理。", 4)
+            die("先用 rdispatch result 收取结果，再用 rdispatch ack 确认；未交付回执不清理。", 4)
     if st.get("state") != "missing" and not a.force:
         if host["platform"] == "windows":
             info = native.request(host, "clean-check", {"job": j})
@@ -1714,7 +1714,7 @@ def cmd_clean(a, cfg):
             die(f"{dirty.strip()} uncommitted file(s) in the remote worktree would be lost. Check them, or --force.")
         have = git(["rev-parse", "-q", "--verify", f"refs/remotes/rd/{b}"], rec["repo"], check=False).stdout.strip()
         if head and head != rec["base"] and head != have:
-            die("the job has commits you have not fetched. Run rd fetch first, or --force.")
+            die("the job has commits you have not fetched. Run rdispatch fetch first, or --force.")
     remove_job(a, rec, host)
 
 
@@ -1774,7 +1774,7 @@ def cmd_doctor(a, cfg):
     names = requested or list(AGENTS)
     checks = ['ok() { echo "  ok    $1"; }; bad() { echo "  MISSING  $1"; fail=1; }; fail=0',
               'command -v git >/dev/null && ok "git $(git --version | cut -d" " -f3)" || bad git',
-              'command -v pgrep >/dev/null && ok pgrep || bad "pgrep (needed for timeouts and rd stop)"']
+              'command -v pgrep >/dev/null && ok pgrep || bad "pgrep (needed for timeouts and rdispatch stop)"']
     if host["launcher"] == "tmux":
         checks.append('command -v tmux >/dev/null && ok tmux || bad "tmux (launcher = tmux)"')
     for name in names:
@@ -1809,7 +1809,7 @@ def cmd_doctor(a, cfg):
                           f'&& ok "can read {url}" || bad "git access to {url} (worker needs its own credentials '
                           f'with push rights, or use sync = direct)"')
         else:
-            checks.append('echo "  skipped  origin access (run rd doctor inside the repository to test it)"')
+            checks.append('echo "  skipped  origin access (run rdispatch doctor inside the repository to test it)"')
     checks.append("exit $fail")
     label = "本机" if is_local(host) else host["ssh"]
     print(f"{host['name']} ({label}), sync = {host['sync']}, launcher = {host['launcher']}")
@@ -1831,9 +1831,9 @@ def main():
                 sys.stdin.reconfigure(encoding="utf-8")
             except Exception:
                 pass
-    ap = argparse.ArgumentParser(prog="rd", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap = argparse.ArgumentParser(prog="rdispatch", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("-C", "--dir", dest="top_dir", help="本地仓库目录（默认为当前工作目录）")
-    ap.add_argument("--version", action="version", version=f"rd {__version__}")
+    ap.add_argument("--version", action="version", version=f"rdispatch {__version__}")
     sub = ap.add_subparsers(dest="command", required=True)
 
     repo_parser = argparse.ArgumentParser(add_help=False)
@@ -1949,7 +1949,7 @@ def main():
     p.add_argument("--initiator-session")
     p.set_defaults(fn=cmd_stop)
 
-    p = sub.add_parser("keep", help="钉住任务 worktree，rd clean --expired 不回收；--hours 0 取消")
+    p = sub.add_parser("keep", help="钉住任务 worktree，rdispatch clean --expired 不回收；--hours 0 取消")
     p.add_argument("job")
     p.add_argument("--hours", type=float, required=True, help="从现在起保留的小时数；0 取消钉住")
     p.set_defaults(fn=cmd_keep)
@@ -1972,6 +1972,12 @@ def main():
         a.fn(a, Config())
     except ValueError as error:
         die(str(error), 4)
+
+
+def legacy_main():
+    """旧入口 rd：与 oh-my-zsh、PowerShell、CMD 的 rd 别名冲突，过渡一个版本后移除。"""
+    print("rdispatch: 命令已从 rd 改名为 rdispatch；rd 入口将在下个版本移除。", file=sys.stderr)
+    main()
 
 
 if __name__ == "__main__":

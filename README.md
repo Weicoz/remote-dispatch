@@ -1,4 +1,6 @@
-# Remote Dispatch（`rd`）
+# Remote Dispatch（`rdispatch`）
+
+> 0.2.0 起命令从 `rd` 改名为 `rdispatch`：`rd` 在 oh-my-zsh 是 `rmdir` 别名、在 PowerShell 是 `Remove-Item`、在 CMD 是内置 `rmdir`。旧入口 `rd` 保留一个版本，执行时提示改名。
 
 把编码代理任务和测试命令经 SSH 派到另一台机器，或在本机另起一个隔离的 harness 会话执行。
 
@@ -19,7 +21,7 @@ pipx install git+https://github.com/Weicoz/remote-dispatch        # 或者
 pip install --user git+https://github.com/Weicoz/remote-dispatch
 ```
 
-在仓库目录内可以直接 `uv tool install .`。从 GitHub 安装后升级：`uv tool upgrade remote-dispatch`。检查版本：`rd --version`。
+在仓库目录内可以直接 `uv tool install .`。从 GitHub 安装后升级：`uv tool upgrade remote-dispatch`。检查版本：`rdispatch --version`。
 
 ## 五分钟上手
 
@@ -39,27 +41,27 @@ test = uv run pytest -q
 2. 看机器活不活：
 
 ```sh
-rd hosts
+rdispatch hosts
 ```
 
 3. 在仓库里派一单代理任务：
 
 ```sh
-rd run --agent codex --prompt-file task.md --ref HEAD
+rdispatch run --agent codex --prompt-file task.md --ref HEAD
 ```
 
 4. 看状态、取结果：
 
 ```sh
-rd status <job>
-rd result <job>          # 结构化回执；--summary 只要摘要
-rd fetch <job>           # 把提交取回为 rd/<branch>
+rdispatch status <job>
+rdispatch result <job>          # 结构化回执；--summary 只要摘要
+rdispatch fetch <job>           # 把提交取回为 rd/<branch>
 ```
 
 5. 续跑一轮：
 
 ```sh
-rd resume <job> --prompt-file next.md
+rdispatch resume <job> --prompt-file next.md
 ```
 
 ## 支持的代理
@@ -69,7 +71,7 @@ rd resume <job> --prompt-file next.md
 | codex | 完整支持 | 每任务独立 `CODEX_HOME`，员工配置包 + 认证文件 |
 | dsh | 支持（headless） | 每任务独立 `DSH_HOME`，员工凭据文件；不继承宿主 `~/.dsh` |
 | agy | 支持（print 模式，仅 POSIX） | 每任务独立 `HOME`，只复制目标机登录凭据；不加载个人 `~/.gemini` 技能、MCP、插件 |
-| kimi / claude | 仅模板 | 未实现隔离，`rd run --agent` 会拒绝派单 |
+| kimi / claude | 仅模板 | 未实现隔离，`rdispatch run --agent` 会拒绝派单 |
 
 DSH 需要在机器清单里给出员工凭据文件：
 
@@ -82,12 +84,12 @@ dsh_auth_file = ~/employee/dsh-credentials.yaml
 AGY 要求目标机先由机器主人运行 `agy` 登录（凭据默认 `~/.gemini/antigravity-cli/antigravity-oauth-token`，用 `agy_auth_file` 改），派单时必须指定权限档位；无人值守下只有 `skip` 能执行命令和 git 提交：
 
 ```sh
-rd run --agent agy --permission-mode skip --prompt-file task.md
+rdispatch run --agent agy --permission-mode skip --prompt-file task.md
 ```
 
 ## 本机目标机
 
-同一台机器也能当目标机：让另一个 harness 会话并行干活，rd 建独立 worktree，不碰当前工作区。
+同一台机器也能当目标机：让另一个 harness 会话并行干活，rdispatch 建独立 worktree，不碰当前工作区。
 
 ```ini
 [host:self]
@@ -98,14 +100,14 @@ sync = direct
 dsh_auth_file = ~/.dsh/.credentials.yaml
 ```
 
-`rd hosts` 会把它显示为「本机」。不需要 sshd、免密或外网探针；代理调用模型仍需网络。`--host auto` 不会选本机，必须显式 `--host self`；Windows 发起方不能配置 `ssh = local`。负载、内存、磁盘阈值照样生效，超阈值才用 `--force-host`。只有 codex/dsh/agy 有员工配置隔离，本机派 kimi/claude 同样会被拒。本机 dsh 的 provider key 缺失会报 `MISSING_CREDENTIAL`，处理方法见 [代理适配](docs/agents.md)。
+`rdispatch hosts` 会把它显示为「本机」。不需要 sshd、免密或外网探针；代理调用模型仍需网络。`--host auto` 不会选本机，必须显式 `--host self`；Windows 发起方不能配置 `ssh = local`。负载、内存、磁盘阈值照样生效，超阈值才用 `--force-host`。只有 codex/dsh/agy 有员工配置隔离，本机派 kimi/claude 同样会被拒。本机 dsh 的 provider key 缺失会报 `MISSING_CREDENTIAL`，处理方法见 [代理适配](docs/agents.md)。
 
 ## 安全边界
 
 - 只做派单与取回，不代替你验收；检查状态是执行方自报，最终验收由发起方判断。
 - 凭据文件只在目标机读取，复制进任务目录后 `chmod 600`，不写回执、不进日志。
-- 删除远端 worktree 需要显式 `rd clean`，默认保留未提交与未取回的成果。
-- 不自动跳过宿主账号的权限边界；`rd` 不提升权限、不改系统配置。
+- 删除远端 worktree 需要显式 `rdispatch clean`，默认保留未提交与未取回的成果。
+- 不自动跳过宿主账号的权限边界；`rdispatch` 不提升权限、不改系统配置。
 
 ## 附带技能
 

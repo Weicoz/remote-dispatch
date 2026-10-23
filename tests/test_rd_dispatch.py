@@ -580,7 +580,7 @@ class DispatchTests(unittest.TestCase):
         self.acknowledge(record)
         self.age_ack(record, 30 * 24)
         rd.cmd_keep(argparse.Namespace(job=record["job"], hours=2), self.cfg)
-        self.assertIn("已用 rd keep 钉住", self.expired(low=True))
+        self.assertIn("已用 rdispatch keep 钉住", self.expired(low=True))
         rd.cmd_keep(argparse.Namespace(job=record["job"], hours=0), self.cfg)
         self.age_ack(record, 2)
         self.assertIn("keep " + record["job"], self.expired())

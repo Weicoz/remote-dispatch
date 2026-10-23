@@ -1,12 +1,12 @@
 # 合票后的缓存保留与回收
 
-## worktree 过期回收（rd clean --expired）
+## worktree 过期回收（rdispatch clean --expired）
 
-rd 的 worktree 只被同一任务的 `rd resume` 复用；新派单总是新建 worktree。所以“留不留”判断的是这个任务还会不会续跑：删早了，续跑要重新下载依赖和构建；一直不删，磁盘被旧任务占满。`rd clean --expired` 按续跑可能性分级保留，只回收过期且安全的 worktree。
+rdispatch 的 worktree 只被同一任务的 `rdispatch resume` 复用；新派单总是新建 worktree。所以“留不留”判断的是这个任务还会不会续跑：删早了，续跑要重新下载依赖和构建；一直不删，磁盘被旧任务占满。`rdispatch clean --expired` 按续跑可能性分级保留，只回收过期且安全的 worktree。
 
-安全条件与 `--merged` 相同，任一不满足就永不自动回收：任务已结束；没有未取回的提交、合入关系可核验；全部轮次回执已收取并 `rd ack`；worktree 除 `--include` 路径外没有未提交内容。回收前保存 reports，任务分支保留在目标机仓库，之后仍可 `rd fetch` 或以该分支重新派单，但不能再 `rd resume`。
+安全条件与 `--merged` 相同，任一不满足就永不自动回收：任务已结束；没有未取回的提交、合入关系可核验；全部轮次回执已收取并 `rdispatch ack`；worktree 除 `--include` 路径外没有未提交内容。回收前保存 reports，任务分支保留在目标机仓库，之后仍可 `rdispatch fetch` 或以该分支重新派单，但不能再 `rdispatch resume`。
 
-保留期从最后一次回执确认（`rd ack`）算起：
+保留期从最后一次回执确认（`rdispatch ack`）算起：
 
 | 任务 | 默认保留 | 理由 |
 | --- | --- | --- |
@@ -16,11 +16,11 @@ rd 的 worktree 只被同一任务的 `rd resume` 复用；新派单总是新建
 
 目标机可用磁盘低于 `min_free_disk_gb` 时收紧：已合入的立即回收，未合入的上限 24 小时。
 
-调整保留期写在 `[retention]`（`command_hours`、`accepted_hours`、`unmerged_hours`），环境变量 `RD_RETAIN_<KIND>_HOURS` 优先。明确还要续跑的任务用 `rd keep <job> --hours N` 钉住，`--hours 0` 取消。
+调整保留期写在 `[retention]`（`command_hours`、`accepted_hours`、`unmerged_hours`），环境变量 `RD_RETAIN_<KIND>_HOURS` 优先。明确还要续跑的任务用 `rdispatch keep <job> --hours N` 钉住，`--hours 0` 取消。
 
 ```bash
-rd clean --expired --dry-run    # 先看计划：每个任务给出 keep / would clean 与理由
-rd clean --expired              # 只回收过期且安全的 worktree
+rdispatch clean --expired --dry-run    # 先看计划：每个任务给出 keep / would clean 与理由
+rdispatch clean --expired              # 只回收过期且安全的 worktree
 ```
 
 ## 合票后的缓存回收
@@ -46,4 +46,4 @@ python3 "$RD_JOB_DIR/rd_cache.py" \
 
 工具拒绝跨员工、越界／符号链接、跟踪文件、未合入来源、未关闭过程、重叠路径；每次删除都更新0600回执，失败也保存已删清单。输出回执位于待删缓存之外。没有可用关闭证据时标未清理，继续产品交付，不为回收缓存重跑测试。
 
-POSIX文件与Git夹具可直接验证；Windows不能凭本地夹具声称实际清理通过。此入口不改共享锁、代理、系统配置，也不取代`rd clean`删除worktree所需的现有确认流程。
+POSIX文件与Git夹具可直接验证；Windows不能凭本地夹具声称实际清理通过。此入口不改共享锁、代理、系统配置，也不取代`rdispatch clean`删除worktree所需的现有确认流程。

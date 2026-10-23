@@ -15,7 +15,7 @@ workdir = ~/rd-self
 sync = direct
 ```
 
-本机需要 `git`、`pgrep`（Linux 用 procps）、Python 3.11+，以及要派的代理 CLI。`rd doctor self` 会逐项检查。派 dsh 仍需 `dsh_auth_file`；provider key 缺失的处理见 [代理适配](agents.md)。负载、内存、磁盘阈值与远端一致，超阈值派单会被拦。
+本机需要 `git`、`pgrep`（Linux 用 procps）、Python 3.11+，以及要派的代理 CLI。`rdispatch doctor self` 会逐项检查。派 dsh 仍需 `dsh_auth_file`；provider key 缺失的处理见 [代理适配](agents.md)。负载、内存、磁盘阈值与远端一致，超阈值派单会被拦。
 
 以下步骤按 SSH 目标描述。本机目标跳过免密登录与远端 SSH 安装，但 git、Python、代理 CLI 仍须在本机可用。
 
@@ -25,7 +25,7 @@ sync = direct
 ssh -o BatchMode=yes <用户>@<地址> true
 ```
 
-不通就先配好 SSH 密钥。`rd` 不处理密码和交互式登录。
+不通就先配好 SSH 密钥。`rdispatch` 不处理密码和交互式登录。
 
 ## 2. 写进机器清单
 
@@ -38,7 +38,7 @@ sync = direct
 max_heavy = 1
 ```
 
-并发怎么定：**没有会话数上限**，一台机器同时能接几个任务由负载决定——每次派单前 `rd` 都会实测负载、空闲内存和磁盘，超过 `max_load_per_core`、低于 `min_free_mem_pct` 或 `min_free_disk_gb` 就不派。`max_heavy` 不是会话上限，它是重命令的排队口：经 `rd-heavy` 或 `--heavy` 跑的完整测试这类命令同一时刻只放行这么多个，其余排队等，避免几套完整测试同时把内存耗尽。先看项目一个测试进程占多少内存，乘以并发数，不能超过机器的空闲内存；16 GB 的机器一般是 1。
+并发怎么定：**没有会话数上限**，一台机器同时能接几个任务由负载决定——每次派单前 `rdispatch` 都会实测负载、空闲内存和磁盘，超过 `max_load_per_core`、低于 `min_free_mem_pct` 或 `min_free_disk_gb` 就不派。`max_heavy` 不是会话上限，它是重命令的排队口：经 `rd-heavy` 或 `--heavy` 跑的完整测试这类命令同一时刻只放行这么多个，其余排队等，避免几套完整测试同时把内存耗尽。先看项目一个测试进程占多少内存，乘以并发数，不能超过机器的空闲内存；16 GB 的机器一般是 1。
 
 ## 3. 远端装好要用的东西
 
@@ -47,7 +47,7 @@ max_heavy = 1
 - 项目自己的工具链（包管理器、运行时、Docker 等）。
 - 员工 Codex 配置操作：本机与远端 Python 3.11+。Codex 必须支持 `--disable` 关闭 hooks、plugins、memories 和外部记忆导入。
 - DSH：`dsh headless` 可用，`dsh_auth_file` 指向目标机上的凭据文件。
-- AGY：`python3` 与支持 `--input-format` 的 `agy`；机器主人在目标机运行一次 `agy` 登录，生成 `agy_auth_file`（默认 `~/.gemini/antigravity-cli/antigravity-oauth-token`）。只支持 POSIX。`rd doctor <机器> --agent agy` 分开报告“已安装”和“已登录”。
+- AGY：`python3` 与支持 `--input-format` 的 `agy`；机器主人在目标机运行一次 `agy` 登录，生成 `agy_auth_file`（默认 `~/.gemini/antigravity-cli/antigravity-oauth-token`）。只支持 POSIX。`rdispatch doctor <机器> --agent agy` 分开报告“已安装”和“已登录”。
 - `kimi`、`claude` 当前不启动。
 
 非交互的 SSH 会话不读 `.zshrc`、`.bashrc`，装在用户目录下的命令往往找不到。把这些目录写进该机器的 `path`。默认已包含 `~/.local/bin`、`~/.kimi-code/bin`、`/opt/homebrew/bin`、`/usr/local/bin`。需要的环境变量（例如接口密钥）写进远端的一个文件，用 `env_file` 指过去，任务启动前会被加载。
@@ -74,7 +74,7 @@ test = <完整测试命令>
 小节名是 `origin` 地址的仓库名（没有 `origin` 时是目录名）。
 
 - `setup` 在每个任务第一次启动前执行一次，失败则任务以 97 结束。新 worktree 没有依赖环境，不配这一项的话，代理第一件事就是自己摸索怎么装，既慢又不稳定。
-- `test` 是 `rd run --test` 跑的命令，默认按重命令排队。不需要排队时加 `test_heavy = false`。
+- `test` 是 `rdispatch run --test` 跑的命令，默认按重命令排队。不需要排队时加 `test_heavy = false`。
 - `origin_url` 只在远端访问仓库的地址和本机不同时才写。
 
 ## 6. 体检
@@ -82,11 +82,11 @@ test = <完整测试命令>
 在项目目录里执行：
 
 ```bash
-rd doctor box2
-rd run --cmd 'git log -1 --oneline' --host box2 --name smoke
+rdispatch doctor box2
+rdispatch run --cmd 'git log -1 --oneline' --host box2 --name smoke
 ```
 
-第二条跑通（`rd wait` 返回 0，`rd logs` 能看到提交）说明同步、启动、日志都正常。跑完 `rd clean <job> --delete-branch`。
+第二条跑通（`rdispatch wait` 返回 0，`rdispatch logs` 能看到提交）说明同步、启动、日志都正常。跑完 `rdispatch clean <job> --delete-branch`。
 
 ## 远端目录结构
 

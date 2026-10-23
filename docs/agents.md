@@ -16,11 +16,11 @@
 | `kimi` | `kimi --auto`，stream-json 输出 | `--model`（别名见远端 `~/.kimi-code/config.toml`） | 不支持 | 命令取自帮助文档，未实跑 |
 | `claude` | `claude -p`，跳过权限询问，stream-json 输出 | `--model` | 不支持 | 命令取自帮助文档，未实跑 |
 
-未实跑的组合第一次使用时要确认两件事：启动后 `rd logs <job>` 有输出、文件确实写进了 worktree；续跑时 `rd resume` 打印出了会话编号。会话编号取不到，就在日志里找到它的字段名，按下面的方法改 `session_regex`。
+未实跑的组合第一次使用时要确认两件事：启动后 `rdispatch logs <job>` 有输出、文件确实写进了 worktree；续跑时 `rdispatch resume` 打印出了会话编号。会话编号取不到，就在日志里找到它的字段名，按下面的方法改 `session_regex`。
 
 ### dsh 的凭据
 
-`rd run --agent dsh` 要求目标机配置 `dsh_auth_file`，本机目标也不例外。隔离 `DSH_HOME` 里只复制这份凭据与 `AGENTS.md`。
+`rdispatch run --agent dsh` 要求目标机配置 `dsh_auth_file`，本机目标也不例外。隔离 `DSH_HOME` 里只复制这份凭据与 `AGENTS.md`。
 
 headless profile 的模型路由需要 provider key。缺失时报：
 
@@ -29,18 +29,18 @@ llm-deepseek: no API key for provider route "deepseek-official"
 code: MISSING_CREDENTIAL
 ```
 
-裸跑 `dsh headless --json '只回复 OK'` 也报同样错误时与 rd 无关。处理：把 key 写进凭据文件，或把它导出到目标机 `env_file` 指向的文件。派单端 `export DEEPSEEK_API_KEY=...` 只对本机目标（`ssh = local`）有效；SSH 不转发派单端环境变量。rd 只向 DSH 保留 `RD_`、`DSH_`、`DEEPSEEK_`、`OPENAI_`、`ANTHROPIC_` 前缀与代理网络变量（`HTTP(S)_PROXY`、`ALL_PROXY`、`NO_PROXY`、CA 证书路径），其余不传。
+裸跑 `dsh headless --json '只回复 OK'` 也报同样错误时与 rdispatch 无关。处理：把 key 写进凭据文件，或把它导出到目标机 `env_file` 指向的文件。派单端 `export DEEPSEEK_API_KEY=...` 只对本机目标（`ssh = local`）有效；SSH 不转发派单端环境变量。rdispatch 只向 DSH 保留 `RD_`、`DSH_`、`DEEPSEEK_`、`OPENAI_`、`ANTHROPIC_` 前缀与代理网络变量（`HTTP(S)_PROXY`、`ALL_PROXY`、`NO_PROXY`、CA 证书路径），其余不传。
 
 ### agy 的登录、隔离与权限
 
-AGY 没有配置目录变量，rd 给每个任务一个独立 `HOME`（任务目录下的 `agy-home/`），只把目标机自己的登录凭据复制进去，权限 0600。个人 `~/.gemini` 里的技能、MCP、插件、设置与会话都不加载，任务会话也只写在 `agy-home/` 里。凭据不进员工配置包，也不跨机器同步。
+AGY 没有配置目录变量，rdispatch 给每个任务一个独立 `HOME`（任务目录下的 `agy-home/`），只把目标机自己的登录凭据复制进去，权限 0600。个人 `~/.gemini` 里的技能、MCP、插件、设置与会话都不加载，任务会话也只写在 `agy-home/` 里。凭据不进员工配置包，也不跨机器同步。
 
-- 凭据位置由 `agy_auth_file` 指定，默认 `~/.gemini/antigravity-cli/antigravity-oauth-token`。目标机先由机器主人运行一次 `agy` 完成登录；缺这个文件时 `rd run` 在推送任务分支前停止。每轮启动都会重新复制，目标机上刷新过的凭据优先。
+- 凭据位置由 `agy_auth_file` 指定，默认 `~/.gemini/antigravity-cli/antigravity-oauth-token`。目标机先由机器主人运行一次 `agy` 完成登录；缺这个文件时 `rdispatch run` 在推送任务分支前停止。每轮启动都会重新复制，目标机上刷新过的凭据优先。
 - `HOME` 换成任务目录后，git 通过 `GIT_CONFIG_GLOBAL` 继续读目标机账号的 `~/.gitconfig`，提交身份与凭据助手不变。
 - `--permission-mode` 必填，无默认值：`plan`、`accept-edits`、`auto`、`skip`（`--dangerously-skip-permissions`）。无人值守时 AGY 无法弹出确认，`plan` 与 `accept-edits` 会自动拒绝 shell 命令（包括 git 提交）；`auto` 在部分账号不可用，会退回默认模式。要代理改代码并提交，只能用 `skip`。续跑沿用原档位，显式传 `--permission-mode` 才改。
-- 被拒绝的权限操作不会让 AGY 报错：退出码仍为 0、状态仍为 `SUCCESS`。rd 读到终态里的 `denied_actions` 时，把回执的 `outcome` 降为 `partial` 并列出被拒动作，`rd result --summary` 可见。
-- 提示词不走命令行参数：rd 用 python3 把提示词编码成一条 `{"event":"user","message":{"role":"user","content":...}}`，经 stdin 传给 `agy --input-format stream-json`，长度不受参数上限限制。
-- 终态 `result.response` 写入 `last.r<轮次>.txt`，`rd logs <job> last` 可读；会话编号取 `conversation_id`。
+- 被拒绝的权限操作不会让 AGY 报错：退出码仍为 0、状态仍为 `SUCCESS`。rdispatch 读到终态里的 `denied_actions` 时，把回执的 `outcome` 降为 `partial` 并列出被拒动作，`rdispatch result --summary` 可见。
+- 提示词不走命令行参数：rdispatch 用 python3 把提示词编码成一条 `{"event":"user","message":{"role":"user","content":...}}`，经 stdin 传给 `agy --input-format stream-json`，长度不受参数上限限制。
+- 终态 `result.response` 写入 `last.r<轮次>.txt`，`rdispatch logs <job> last` 可读；会话编号取 `conversation_id`。
 - 未登录时 agy 约 5 秒内退出（退出码 1、`status = ERROR`），回执归类为 `authentication` 故障。
 - 连通探针默认检查 `https://cloudcode-pa.googleapis.com`，可用 `network_model_url` 覆盖。
 - 只支持 POSIX 目标；Windows 目标拒绝派 AGY。
@@ -64,7 +64,7 @@ AGY 没有配置目录变量，rd 给每个任务一个独立 `HOME`（任务目
 
 ```ini
 [agent:dsh]
-; 换成目标机上的包装脚本；隔离、凭据与回执仍由 rd 处理
+; 换成目标机上的包装脚本；隔离、凭据与回执仍由 rdispatch 处理
 start = my-dsh headless --json {model_args} - < "$RD_PROMPT"
 resume = my-dsh headless --json --session-id {session} {model_args} - < "$RD_PROMPT"
 ```
@@ -74,9 +74,9 @@ resume = my-dsh headless --json --session-id {session} {model_args} - < "$RD_PRO
 各字段：
 
 - `start`：首次启动。
-- `resume`：续跑。不写就不能 `rd resume`。
+- `resume`：续跑。不写就不能 `rdispatch resume`。
 - `model`、`effort`：对应 `--model`、`--effort` 的参数写法。不写表示不支持，用户传了会报错。
 - `session_regex`：从输出里取会话编号的正则，第一个括号是编号。默认匹配 `session_id`、`sessionId`、`thread_id` 三种字段名；`agy` 内置为 `conversation_id`。
-- `bin`：`rd doctor` 用来检查是否安装的命令名，默认取 `start` 的第一个词；`agy` 内置为 `agy`。
+- `bin`：`rdispatch doctor` 用来检查是否安装的命令名，默认取 `start` 的第一个词；`agy` 内置为 `agy`。
 
 只覆盖一个字段时，其余字段沿用内置定义。

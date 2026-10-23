@@ -55,9 +55,9 @@ CPU 使用 Windows 采样利用率，默认上限 `max_cpu_pct=85`；空闲内�
 ## Acceptance
 
 ```bash
-rd doctor win --agent codex
-rd hosts
-rd profile check win
+rdispatch doctor win --agent codex
+rdispatch hosts
+rdispatch profile check win
 ```
 
 初次同步仍先询问员工 ID、是否同步，并审阅清单和指纹。确认同步后，在已授权的测试仓库执行最小命令任务，保存 job id，等待、读日志并取回。确认 SSH 已退出后任务仍运行，再验 Codex 首次启动、提交回传和同一配置版本续跑。登录和系统权限步骤由用户接管。
@@ -68,14 +68,14 @@ rd profile check win
 
 当本机（派单控制端）为 Windows 时，需特别注意命令行环境与系统别名：
 
-1. **PowerShell 别名陷阱**：Windows PowerShell 和 PowerShell 7 默认将 `rd` 绑定为 `Remove-Item` 别名。如果在 PowerShell 中直接执行 `rd run ...`，会触发文件删除命令！
-   - **安全方案**：使用 `python -m remote_dispatch <command>`，或调用包装脚本 `rd.cmd`、`rd-remote.cmd`、`rd-remote.ps1`（包内 `bin/`），或在当前会话移除别名 `Remove-Item Alias:rd -Force`。
-2. **CMD 内置命令陷阱**：CMD 内置了 `rd`（`rmdir`）命令。请使用 `python -m remote_dispatch` 或 `rd-remote.cmd`。
+1. **旧命令名 `rd` 的别名陷阱**：0.2.0 起命令改名为 `rdispatch`，正是因为 `rd` 在 PowerShell 是 `Remove-Item` 别名（`rd run ...` 会删除名为 `run` 的文件）、在 CMD 是内置 `rmdir`、在 oh-my-zsh 是 `rmdir` 别名。Windows 上不要用旧名 `rd`。
+   - **入口**：`rdispatch`，或 `python -m remote_dispatch <command>`，或包内 `bin/rdispatch.cmd`、`bin/rdispatch.ps1`。旧的 `bin/rd-remote.cmd`、`bin/rd-remote.ps1` 保留一个版本后移除。
+2. **CMD 内置命令**：CMD 的内置 `rd`（`rmdir`）优先于同名脚本，任何名为 `rd.cmd` 的包装都不会被执行，所以包内不再提供。
 3. **本地仓库与目录自定义**：
    - 默认使用当前终端所在目录（`cwd`）。
    - 支持通过 `-C <路径>` 或 `--dir <路径>` 指定 Windows 绝对路径（例如 `-C D:\Projects\myrepo`）。
    - 支持通过 `--workdir <路径>` 覆盖远端的目标存储路径。
 4. **状态与配置目录**：自动映射至 `%USERPROFILE%\.config\remote-dispatch\config.ini` 与 `%USERPROFILE%\.local\state\remote-dispatch`，支持环境变量 `RD_CONFIG` 和 `RD_STATE` 自定义。
-5. **不能配置本机目标**：Windows 发起方写 `ssh = local` 不受支持，`rd` 会直接报错。本机目标只支持 POSIX 发起方；Windows 上的并行会话请登记成 SSH 目标机。
+5. **不能配置本机目标**：Windows 发起方写 `ssh = local` 不受支持，`rdispatch` 会直接报错。本机目标只支持 POSIX 发起方；Windows 上的并行会话请登记成 SSH 目标机。
 
 实现依据：[Microsoft OpenSSH 配置](https://learn.microsoft.com/en-us/windows-server/administration/openssh/openssh-server-configuration)、[Python subprocess Windows flags](https://docs.python.org/3/library/subprocess.html#subprocess.CREATE_BREAKAWAY_FROM_JOB)、[OpenSSH 维护者关于后台进程与 SSH 管道的记录](https://github.com/PowerShell/Win32-OpenSSH/issues/2452)。

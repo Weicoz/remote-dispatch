@@ -2,10 +2,10 @@
 
 ## 同步确认
 
-每次首次登记或主动同步，代理先确认员工自选 ID；已有 `RD_USER_ID` 时展示该值，没有时询问。再准备选定配置包，运行 `rd profile check <机器>`，展示机器、员工目录、文件清单、变化、版本指纹和源更新时间，询问是否同步。收到明确答复后才执行：
+每次首次登记或主动同步，代理先确认员工自选 ID；已有 `RD_USER_ID` 时展示该值，没有时询问。再准备选定配置包，运行 `rdispatch profile check <机器>`，展示机器、员工目录、文件清单、变化、版本指纹和源更新时间，询问是否同步。收到明确答复后才执行：
 
 ```bash
-rd profile sync mini --confirm-user-id zhangsan --confirm-version <profile-check-输出的完整指纹>
+rdispatch profile sync mini --confirm-user-id zhangsan --confirm-version <profile-check-输出的完整指纹>
 ```
 
 两个确认参数不是员工日常固定配置：它们记录本次同步已确认的 ID 和版本。清单变化后必须重新检查和确认。ID 缺失、确认 ID 错误、确认版本过期、远端同步竞争或本地比远端旧时停止同步。提醒不会自动更新，拒绝更新时使用旧配置；首次没有远端配置则不派任务。
@@ -70,6 +70,6 @@ Codex 还必须支持命名 permission profiles。默认 `workspace-write` 将 w
 
 认证只从目标机提供：主机 `codex_auth_file` 指向已授权的认证文件，或 `env_file` 导出配置引用的 API 环境变量。认证文件只复制到当前任务配置，权限 0600；不进入同步包、Git 或日志。不自动读共享账号默认 `auth.json` 或钥匙串。首次登录、验证码和扫码由用户接管。目标机环境只向代理传递基础变量、RD 变量及配置明确引用的 API/MCP 变量。
 
-员工配置包只用于 Codex。DSH 与 AGY 不读配置包，各用任务目录下的独立 `DSH_HOME` 或 `HOME`，只复制目标机上的凭据文件（`dsh_auth_file`、`agy_auth_file`），见 [代理适配](agents.md)。`kimi`、`claude` 阻止派单。旧版任务保留原路径，可查看、取回、停止和清理；旧任务无员工配置快照，不能直接续跑。`rd status` 默认展示当前 ID 的任务及旧版任务，指定新任务 ID 时校验归属。ID 是操作防串用检查，不是安全授权边界。
+员工配置包只用于 Codex。DSH 与 AGY 不读配置包，各用任务目录下的独立 `DSH_HOME` 或 `HOME`，只复制目标机上的凭据文件（`dsh_auth_file`、`agy_auth_file`），见 [代理适配](agents.md)。`kimi`、`claude` 阻止派单。旧版任务保留原路径，可查看、取回、停止和清理；旧任务无员工配置快照，不能直接续跑。`rdispatch status` 默认展示当前 ID 的任务及旧版任务，指定新任务 ID 时校验归属。ID 是操作防串用检查，不是安全授权边界。
 
 权限依据：[OpenAI permission profiles](https://learn.chatgpt.com/docs/permissions) 和 [worktree Git 路径保护](https://learn.chatgpt.com/docs/agent-approvals-security#protected-paths-in-writable-roots)。

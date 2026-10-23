@@ -1,3 +1,4 @@
 @echo off
 setlocal
-python "%~dp0rd" %*
+rem Legacy entry, removed in the next release. Use rdispatch.cmd.
+python -m remote_dispatch %*

@@ -5,13 +5,13 @@
 发起方掌握任务范围和验收。接收方只执行当前指令，完成后等待发起方明确续派；等待表示任务进程已结束而原会话可恢复，不要求代理持续消耗模型调用。
 
 ```bash
-rd run --agent codex --host mini --initiator-session <当前会话ID> --prompt-file task.md
-rd status <job> --details --initiator-session <当前会话ID>
-rd watch <job> --keep-on-disconnect
-rd result <job> --summary --initiator-session <当前会话ID>
-rd ack <job> --round 1 --receipt-id <result返回的receipt_id> --initiator-session <当前会话ID>
+rdispatch run --agent codex --host mini --initiator-session <当前会话ID> --prompt-file task.md
+rdispatch status <job> --details --initiator-session <当前会话ID>
+rdispatch watch <job> --keep-on-disconnect
+rdispatch result <job> --summary --initiator-session <当前会话ID>
+rdispatch ack <job> --round 1 --receipt-id <result返回的receipt_id> --initiator-session <当前会话ID>
 # 发起方读完结果并决定修复或复检后，继续原接收会话。
-rd resume <job> --prompt-file followup.md --initiator-session <当前会话ID>
+rdispatch resume <job> --prompt-file followup.md --initiator-session <当前会话ID>
 ```
 
 参数优先于 `RD_INITIATOR_SESSION`，该变量优先于宿主实际提供的 `CODEX_THREAD_ID`。未配置且宿主未提供时新任务未绑定；既有任务不自动迁移或推断所属会话。绑定ID是路由元数据，不是鉴权凭据。同员工的其他会话必须显式使用原ID才能接管结果或续派，CLI不据此提供操作系统级隔离。
@@ -44,7 +44,7 @@ runner收尾补 executor_exit、finished_at。代理未写结构化结果时，�
 
 `evidence`只接受`source_fingerprint`、`checks`、`artifacts`和布尔`cleanup_confirmed`。分项检查为`{name,status,artifact?}`，status沿用检查状态；产物为`{path,state,sha256?,bytes?,kind?}`，state为`present/missing/unverified`。索引最大64KiB；大原件留私有目录，不把完整源码散列表和日志反复打印进上下文。
 
-`rd result --summary`最多返回600字摘要、来源指纹、分项状态计数、缺失／未核产物数量、模型故障分类和本机完整回执路径。默认完整JSON接口不变。所有执行方证据仍待发起方验收，不能把`present`或回收自述等同独立核验。
+`rdispatch result --summary`最多返回600字摘要、来源指纹、分项状态计数、缺失／未核产物数量、模型故障分类和本机完整回执路径。默认完整JSON接口不变。所有执行方证据仍待发起方验收，不能把`present`或回收自述等同独立核验。
 
 发起方结果另含 initiator_session、receiver_session、receipt_id、captured_at、head/dirty 和 needs_initiator_review。检查状态来自执行方报告，不是调度器独立验收。`delivery_state=pending/received` 只表示收取，原始执行/检查失败仍保留。
 

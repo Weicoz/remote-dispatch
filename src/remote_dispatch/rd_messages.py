@@ -267,7 +267,7 @@ def finish(directory, job, number, code, agent=None):
     final = agy_result(directory, number) if agent == "agy" else None
     reply = directory / ("last.r" + str(number) + ".txt")
     if final and isinstance(final.get("response"), str) and not reply.exists():
-        # 与 Codex 的 -o 一致：最后回复落到 last.rN.txt，rd logs JOB last 可读。
+        # 与 Codex 的 -o 一致：最后回复落到 last.rN.txt，rdispatch logs JOB last 可读。
         reply.write_text(final["response"][:MAX_BYTES], encoding="utf-8")
     data = read_json(path)
     if data is None:
