@@ -50,7 +50,7 @@ Windows 的元数据使用 JSON，配置和二进制包按 Base64 分块经 SSH 
 
 后台采用 Python `DETACHED_PROCESS`、`CREATE_NEW_PROCESS_GROUP` 和 `CREATE_BREAKAWAY_FROM_JOB`，标准输入关闭，输出重定向任务日志，不继承 SSH 管道。目标 OpenSSH 不允许脱离 Job Object 时返回失败，不回退到断线后被杀的前台进程。首次设备验收必须在 SSH 命令返回后回读任务状态和最终输出。超时、停止使用 `taskkill /T /F`；重任务锁仍为整机级目录锁。
 
-CPU 使用 Windows 采样利用率，默认上限 `max_cpu_pct=85`；空闲内存和磁盘沿用统一阈值。资源探针失败时不派单。Windows 的 CPU 采样不是 Unix 一分钟 load average，不混用两者。
+CPU 使用 Windows 采样利用率，默认上限 `max_cpu_pct=85`；空闲内存和磁盘沿用统一阈值；页面文件只报已用量、不采样换页速率，因此只提示不拦。资源探针失败时不派单。Windows 的 CPU 采样不是 Unix 一分钟 load average，不混用两者。
 
 ## Acceptance
 

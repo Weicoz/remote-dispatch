@@ -1,6 +1,6 @@
 ---
 name: weicoz-remote-dispatch
-version: 1.3.0
+version: 1.3.1
 description: 把 Codex、DSH 或 AGY（Antigravity CLI）编码代理会话、测试和构建命令经 SSH 派到另一台机器，或在本机以独立 worktree 另起一个 harness 会话执行，本机只负责派单、看进度和取回提交。只在用户主动要求或明确授权把任务放到别的机器或另一个 harness 上跑时使用，例如“派到另一台机器／远端／mac mini／服务器上跑”“让别的机器跑测试”“用双机／多机跑”“本机派单给其他 harness”“remote dispatch”“rdispatch run”“rd run”，或要求添加、检查目标机器。用户没有要求也没有授权时不要使用：派代理、跑测试默认都在当前会话执行；本机负载高时可以建议派到远端，但要等用户同意。
 ---
 
@@ -81,6 +81,7 @@ rdispatch run --host self --cmd 'make bench'     # 普通命令，不经隔离
 - 只支持 POSIX 发起方。Windows 目标必须走 SSH；Windows 发起方写 `ssh = local` 会直接报错。
 - `--host auto` 与 `--tag` 不会选本机目标；本机派单必须显式 `--host self`。
 - 本机同样按负载、内存、磁盘阈值拦截；超阈值才用 `--force-host`，先确认不会挤压当前会话。
+- 交换区只按换页速率判忙；`note: swap … GB used … not counted as busy` 是冷交换区提示，不是拦截，无需 `--force-host`。
 - 隔离覆盖 `codex`、`dsh`、`agy`。`kimi` / `claude` 会被拒绝；要本机并行用这两个，直接调它们自己的 CLI，或改用 `--cmd`。
 - 本机派 dsh 仍需 `dsh_auth_file`。headless profile 的路由缺 provider key 时报 `MISSING_CREDENTIAL`；rdispatch 保留 `DEEPSEEK_*`、`OPENAI_*`、`ANTHROPIC_*` 环境变量，本机目标可先 `export DEEPSEEK_API_KEY=...`；SSH 目标不转发派单端变量，要写进目标机 `env_file`。也可以换用带 key 的 profile。裸 `dsh headless` 同样报错即与 rdispatch 无关。
 

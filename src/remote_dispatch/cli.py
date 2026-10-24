@@ -52,7 +52,12 @@ DEFAULTS = {
     "max_load_per_core": "1.5",
     "min_free_mem_pct": "10",
     "min_free_disk_gb": "10",
+    # 交换区已用量只反映历史累积（macOS 不主动回收冷页），超过它只提示不拦；
+    # 拦派单看换页速率：持续高速换页，或交换区快用尽且仍在换页。
     "max_swap_used_gb": "15",
+    "max_swap_io_mb_s": "10",
+    "min_swap_free_gb": "1",
+    "swap_active_mb_s": "1",
     "timeout": "3600",
 }
 
@@ -128,12 +133,20 @@ os=$(uname -s)
 if [ "$os" = Darwin ]; then
   ncpu=$(sysctl -n hw.ncpu); load1=$(sysctl -n vm.loadavg | awk '{print $2}')
   memfree=$(memory_pressure 2>/dev/null | awk -F': ' '/free percentage/ {gsub("%","",$2); print $2}')
-  swap=$(sysctl -n vm.swapusage | awk '{print $6}')
+  swap=$(sysctl -n vm.swapusage | awk '{print $6}'); swapfree=$(sysctl -n vm.swapusage | awk '{print $9}')
+  pg=$(sysctl -n hw.pagesize)
+  swapped() { vm_stat | awk '/^Swap(ins|outs):/ {sub(/\./, "", $2); s += $2} END {print s}'; }
 else
   ncpu=$(nproc 2>/dev/null); load1=$(cut -d' ' -f1 /proc/loadavg 2>/dev/null)
   memfree=$(awk '/MemTotal/{t=$2}/MemAvailable/{a=$2}END{if(t)printf "%d",a*100/t}' /proc/meminfo 2>/dev/null)
   swap=$(awk '/SwapTotal/{t=$2}/SwapFree/{f=$2}END{printf "%dM",(t-f)/1024}' /proc/meminfo 2>/dev/null)
+  swapfree=$(awk '/SwapFree/{printf "%dM",$2/1024}' /proc/meminfo 2>/dev/null)
+  pg=$(getconf PAGESIZE 2>/dev/null || echo 4096)
+  swapped() { awk '/^pswp(in|out) / {s += $2} END {print s}' /proc/vmstat 2>/dev/null; }
 fi
+# 换页速率（KB/s）：短采样换入+换出页数，取不到留空，不当作 0。
+a=$(swapped); sleep 3; b=$(swapped)
+swapio=$(awk -v a="$a" -v b="$b" -v p="$pg" 'BEGIN {if (a != "" && b != "") printf "%d", (b - a) * p / 1024 / 3}')
 d="$ROOT"; [ -d "$d" ] || d="$HOME"
 disk=$(df -Pk "$d" | awk 'NR==2{printf "%d",$4/1048576}')
 running=0
@@ -144,7 +157,7 @@ heavy=0
 for s in "$SHARED_ROOT"/locks/heavy.*/; do
   [ -f "$s/pid" ] && kill -0 "$(cat "$s/pid")" 2>/dev/null && heavy=$((heavy+1))
 done
-echo "os=$os ncpu=$ncpu load1=$load1 memfree=$memfree swap=$swap disk=$disk running=$running heavy=$heavy"
+echo "os=$os ncpu=$ncpu load1=$load1 memfree=$memfree swap=$swap swapfree=$swapfree swapio=$swapio disk=$disk running=$running heavy=$heavy"
 """
 
 
@@ -498,10 +511,11 @@ def assess(host, info):
     disk = num(info.get("disk"))
     if disk is not None and disk < float(host["min_free_disk_gb"]):
         why.append(f"only {disk:.0f} GB disk free")
-    swap = info.get("swap")
-    swap_mb = num(swap[:-1]) if isinstance(swap, str) and swap.upper().endswith("M") else num(swap)
-    if swap_mb is not None and swap_mb / 1024 > float(host["max_swap_used_gb"]):
-        why.append(f"swap {swap_mb / 1024:.1f} GB used")
+    io, free = swap_io_mb_s(info), mb(info.get("swapfree"))
+    if io is not None and io > float(host["max_swap_io_mb_s"]):
+        why.append(f"swapping {io:.1f} MB/s")
+    elif io is not None and io >= float(host["swap_active_mb_s"]) and free is not None and free / 1024 < float(host["min_swap_free_gb"]):
+        why.append(f"swap nearly full ({free / 1024:.1f} GB free) while swapping {io:.1f} MB/s")
     if info.get("os") == "Windows":
         cpu = num(info.get("cpu_pct"))
         if cpu is None:
@@ -511,6 +525,26 @@ def assess(host, info):
     if mem is None or disk is None:
         why.append("memory or disk probe unknown")
     return why
+
+
+def mb(v):
+    """探针的交换量（如 "18500.00M"）换算成 MB；取不到返回 None。"""
+    return num(v[:-1]) if isinstance(v, str) and v.upper().endswith("M") else num(v)
+
+
+def swap_io_mb_s(info):
+    io = num(info.get("swapio"))
+    return None if io is None else io / 1024
+
+
+def notes(host, info):
+    """不拦派单、只提示的情况。"""
+    used = mb(info.get("swap"))
+    if used is None or used / 1024 <= float(host["max_swap_used_gb"]):
+        return []
+    io = swap_io_mb_s(info)
+    rate = "paging rate unknown" if io is None else f"paging {io:.1f} MB/s"
+    return [f"swap {used / 1024:.1f} GB used ({rate}), not counted as busy"]
 
 
 def probe_all(hosts):
@@ -530,9 +564,12 @@ def fmt_probe(host, info, why):
         network = info.get("network", {})
         net = ", ".join(f"{item['kind']} {item['target']}={'ok' if item['ok'] else item['error']}" for item in network.get("checks", [])) or network.get("error", "unknown")
     name = host["name"] + (" (本机)" if is_local(host) else "")
+    io = swap_io_mb_s(info)
+    hint = "".join(f"  (note: {n})" for n in notes(host, info))
     return (f"{name:<12} {cpu}  mem-free {unk('memfree', '%')}  "
-            f"swap {unk('swap')}  disk {unk('disk', 'G')}  sessions {unk('running')}  "
-            f"heavy {unk('heavy')}/{host['max_heavy']}  network [{net}]  -> {verdict}")
+            f"swap {unk('swap')} used/{unk('swapfree')} free io {'?' if io is None else f'{io:.1f}'}MB/s  "
+            f"disk {unk('disk', 'G')}  sessions {unk('running')}  "
+            f"heavy {unk('heavy')}/{host['max_heavy']}  network [{net}]  -> {verdict}{hint}")
 
 
 def pick_host(cfg, name, tags):

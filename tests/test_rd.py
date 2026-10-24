@@ -135,19 +135,42 @@ class WatchTests(unittest.TestCase):
 
 
 class AssessSwapTests(unittest.TestCase):
-    def info(self, swap):
+    def info(self, swap, swapfree="4096.00M", swapio="0", memfree="50"):
         return {"reachable": True, "os": "Darwin", "ncpu": "10", "load1": "1",
-                "memfree": "50", "disk": "100", "swap": swap}
+                "memfree": memfree, "disk": "100", "swap": swap, "swapfree": swapfree, "swapio": swapio}
 
-    def test_swap_over_threshold_blocks(self):
-        why = rd.assess(dict(rd.DEFAULTS), self.info("16384.00M"))
-        self.assertTrue(any(w.startswith("swap 16.0 GB") for w in why), why)
+    def test_cold_swap_used_high_passes_with_note(self):
+        info = self.info("18944.00M", swapio="52")
+        self.assertEqual(rd.assess(dict(rd.DEFAULTS), info), [])
+        self.assertTrue(rd.notes(dict(rd.DEFAULTS), info)[0].startswith("swap 18.5 GB used"))
+        self.assertIn("not counted as busy", rd.fmt_probe(dict(rd.DEFAULTS, name="m4", ssh="m4"), info, []))
 
-    def test_swap_under_threshold_passes(self):
-        self.assertEqual(rd.assess(dict(rd.DEFAULTS), self.info("1043.94M")), [])
+    def test_swap_under_threshold_has_no_note(self):
+        info = self.info("1043.94M")
+        self.assertEqual(rd.assess(dict(rd.DEFAULTS), info), [])
+        self.assertEqual(rd.notes(dict(rd.DEFAULTS), info), [])
+
+    def test_memory_pressure_blocks(self):
+        why = rd.assess(dict(rd.DEFAULTS), self.info("1043.94M", memfree="5"))
+        self.assertTrue(any(w.startswith("only 5% memory free") for w in why), why)
+
+    def test_heavy_paging_blocks(self):
+        why = rd.assess(dict(rd.DEFAULTS), self.info("1043.94M", swapio=str(20 * 1024)))
+        self.assertTrue(any(w.startswith("swapping 20.0 MB/s") for w in why), why)
+
+    def test_swap_nearly_full_while_paging_blocks(self):
+        why = rd.assess(dict(rd.DEFAULTS), self.info("18944.00M", swapfree="512.00M", swapio=str(2 * 1024)))
+        self.assertTrue(any(w.startswith("swap nearly full (0.5 GB free)") for w in why), why)
+
+    def test_swap_nearly_full_but_idle_passes(self):
+        self.assertEqual(rd.assess(dict(rd.DEFAULTS), self.info("18944.00M", swapfree="512.00M", swapio="40")), [])
 
     def test_swap_unknown_does_not_block(self):
-        self.assertEqual(rd.assess(dict(rd.DEFAULTS), self.info("")), [])
+        self.assertEqual(rd.assess(dict(rd.DEFAULTS), self.info("", swapfree="", swapio="")), [])
+
+    def test_thresholds_follow_host_config(self):
+        host = dict(rd.DEFAULTS, max_swap_io_mb_s="1")
+        self.assertTrue(rd.assess(host, self.info("1043.94M", swapio=str(2 * 1024))))
 
     def test_windows_pagefile_probe(self):
         done = lambda out: subprocess.CompletedProcess([], 0, stdout=out, stderr="")
@@ -157,8 +180,10 @@ class AssessSwapTests(unittest.TestCase):
             self.assertEqual(native.win_pagefile_used(), "?")
         with patch.object(native.subprocess, "run", side_effect=OSError("no powershell")):
             self.assertEqual(native.win_pagefile_used(), "?")
-        info = dict(self.info("16384M"), os="Windows", cpu_pct="20")
-        self.assertTrue(any(w.startswith("swap 16.0 GB") for w in rd.assess(dict(rd.DEFAULTS), info)))
+        info = {"reachable": True, "os": "Windows", "ncpu": "8", "cpu_pct": "20",
+                "memfree": "50", "disk": "100", "swap": "16384M"}
+        self.assertEqual(rd.assess(dict(rd.DEFAULTS), info), [])
+        self.assertIn("paging rate unknown", rd.notes(dict(rd.DEFAULTS), info)[0])
 
 
 class MonitorConfigTests(unittest.TestCase):
