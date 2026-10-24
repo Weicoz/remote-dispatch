@@ -142,4 +142,4 @@ make check-skill   # 校验技能副本一致，且 SKILL.md 不含相对链接
 
 ## 许可
 
-MIT。见 `LICENSE`。
+私有软件，保留所有权利。见 `LICENSE`。
