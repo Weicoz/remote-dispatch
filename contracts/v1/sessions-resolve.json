@@ -17,7 +17,8 @@
         "has_new_reply": false,
         "session_id": "session-one",
         "probable": false,
-        "identity_text": null
+        "identity_text": null,
+        "updated_at": "2026-10-25T00:00:00+00:00"
       },
       "matched_by": "session_id"
     }

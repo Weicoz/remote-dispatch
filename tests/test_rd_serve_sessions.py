@@ -118,6 +118,83 @@ else:
                         "agent": "codex", "kind": kind, "value": value, "source": "hook"}}}}]}]}
         (self.herdr_config.parent / "session.json").write_text(json.dumps(snapshot), encoding="utf-8")
 
+    def test_snapshot_keeps_latest_session_event_time_across_rotation_and_restart_without_query_writes(self):
+        from remote_dispatch import rd_events, rd_messages
+        from remote_dispatch.rd_projects import project_id
+        self.transcript()
+        self.saved_session()
+        service = self.start(poll_interval=3600)
+        stream = self.open_events()
+        self.next_event(stream)  # initial session.changed
+        self.next_event(stream)  # initial session.message
+        stream.close()
+        service.close()
+        with patch.object(rd_messages, "utc_now", return_value="2026-10-25T01:02:03+00:00"):
+            rd_events.emit(self.state, "session.message", dict(user_id="fixture", pane_id="w1:p1",
+                session_id="session-one", harness="codex",
+                project_id=project_id("demo", "https://example.test/user/demo.git"),
+                message_id="new-message", kind="assistant", message_time="2026-10-25T00:00:00Z"))
+        rd_events.EventLog(self.state, max_bytes=1).publish("job.created", dict(user_id="fixture", job="other"))
+        self.start(poll_interval=3600)
+        stream = self.open_events()
+        for _ in range(4):
+            self.next_event(stream)
+        stream.close()
+        before = self.snapshot()
+        self.assertEqual(self.sessions()[0]["updated_at"], "2026-10-25T01:02:03+00:00")
+        self.assertEqual(self.sessions()[0]["updated_at"], "2026-10-25T01:02:03+00:00")
+        self.assertEqual(self.snapshot(), before)
+
+    def test_session_without_events_has_unknown_update_time_until_collected(self):
+        service = self.start(poll_interval=3600)
+        stream = self.open_events()
+        initial = self.next_event(stream)[2]
+        stream.close()
+        self.data["agents"].append(self.agent("w1:p2"))
+        self.save_fixture()
+        self.assertIsNone(self.sessions()[1]["updated_at"])
+        service.wake.set()
+        stream = self.open_events("/v1/events?after=" + str(initial["seq"]))
+        changed = self.next_event(stream)[2]
+        stream.close()
+        self.assertEqual(changed["data"]["pane_id"], "w1:p2")
+        self.assertEqual(self.sessions()[1]["updated_at"], changed["time"])
+
+    def test_replaced_session_does_not_inherit_old_or_other_users_event_time(self):
+        from remote_dispatch import rd_events
+        from remote_dispatch.rd_projects import project_id
+        self.transcript()
+        self.saved_session()
+        self.start(poll_interval=3600)
+        stream = self.open_events()
+        self.next_event(stream)
+        self.next_event(stream)
+        stream.close()
+        self.transcript("session-two")
+        self.saved_session("session-two")
+        self.assertIsNone(self.sessions()[0]["updated_at"])
+        data = dict(user_id="other", pane_id="w1:p1", session_id="session-two", harness="codex",
+                    project_id=project_id("demo", "https://example.test/user/demo.git"))
+        rd_events.emit(self.state, "session.changed", data)
+        self.assertIsNone(self.sessions()[0]["updated_at"])
+        rd_events.emit(self.state, "session.changed", dict(data, user_id="fixture", removed=True))
+        self.assertIsNone(self.sessions()[0]["updated_at"])
+
+    def test_input_updates_snapshot_event_time_but_idempotent_replay_does_not(self):
+        from remote_dispatch import rd_messages
+        self.start(poll_interval=3600)
+        stream = self.open_events()
+        self.next_event(stream)
+        with patch.object(rd_messages, "utc_now", return_value="2026-10-25T02:00:00+00:00"):
+            self.assertEqual(self.input({"text": "新输入"})[0], 200)
+        changed = self.next_event(stream)[2]
+        stream.close()
+        self.assertEqual(changed["time"], "2026-10-25T02:00:00+00:00")
+        self.assertEqual(self.sessions()[0]["updated_at"], "2026-10-25T02:00:00+00:00")
+        with patch.object(rd_messages, "utc_now", return_value="2026-10-25T03:00:00+00:00"):
+            self.assertEqual(self.input({"text": "幂等重放"})[0], 200)
+        self.assertEqual(self.sessions()[0]["updated_at"], "2026-10-25T02:00:00+00:00")
+
     def test_saved_identity_wins_over_newer_transcript_and_messages_have_stable_after_cursor(self):
         self.transcript()
         self.transcript("newer", "其他会话")
@@ -237,6 +314,11 @@ else:
             session_device = {"id": "phone", "session_access": True}
         with patch.object(rd_serve, "Handler", PairedHandler):
             service = self.start(poll_interval=3600)
+        # Compare snapshots after the initial background event has been committed.
+        stream = self.open_events()
+        while self.next_event(stream)[1] != "session.changed":
+            pass
+        stream.close()
         project = self.request("/v1/projects")[1]["projects"][0]
         self.assertEqual({key: project[key] for key in row}, row)
         self.assertFalse(project["session_only"])

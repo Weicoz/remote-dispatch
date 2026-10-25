@@ -133,6 +133,15 @@ class Sessions:
 
     def discover(self):
         rows = []
+        latest = {}
+        for event in events.read_after(self.service.state, 0):
+            data = event["data"]
+            if data.get("user_id") != self.service.user_id or event["type"] not in ("session.changed", "session.message"):
+                continue
+            if data.get("removed"):
+                latest.pop(data["pane_id"], None)
+            else:
+                latest[data["pane_id"]] = event
         saved = self.herdr.snapshot()
         local_hosts = {host["name"]: host for host in self.service.config.hosts() if cli.is_local(host)}
         execution_roots = [Path(cli.local_path(host["workdir"], "")).resolve() for host in local_hosts.values()]
@@ -160,6 +169,9 @@ class Sessions:
                              status=status, status_text=STATUS_TEXT[status], has_new_reply=raw_status == "done",
                              session_id=identity, probable=probable,
                              identity_text="可能是这个会话" if probable else None)
+            event = latest.get(row["pane_id"])
+            row["updated_at"] = event["time"] if event and all(
+                event["data"].get(key) == row[key] for key in ("session_id", "harness", "project_id")) else None
             rows.append(dict(row=row, transcript=transcript, origin=origin))
         return rows
 

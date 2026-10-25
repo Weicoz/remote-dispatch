@@ -56,3 +56,8 @@ JSON 类型，另用行为断言覆盖实际值、用户隔离、纯查询、锁
   成功 body 与 GET 相同。同键返回首次结果，失败保留原选择。
 - `network-addresses-write-invalid.json`：禁用项也不能含通配地址，返回
   400 `invalid_listen_address`；其他失败与本机边界见 `docs/serve.md`。
+- `sessions-list.json` / `sessions-projects.json` / `sessions-resolve.json`：会话快照
+  增加可选 `updated_at`（带时区 ISO 8601 字符串，未知为 `null`）。来源为当前用户、
+  同一 pane／会话 ID／harness／项目最近一次持久 `session.changed` 或
+  `session.message` 的事件 `time`，包含轮转段；详情见 `docs/serve.md`。
+  老服务可省略此字段。事件结构不变，查询和无变化的轮询不补造更新时间。
