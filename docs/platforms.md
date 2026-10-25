@@ -9,7 +9,7 @@
 
 本机目标把 `ssh` 写成 `local`，进程直接在本机启动，不经过 sshd，也不跑外网探针。Windows 目标必须走 SSH，`local` 与 `platform = windows` 同时出现会被拒绝；Windows 发起方也不能配置 `ssh = local`，运行时会直接报错。本机目标同样使用独立 worktree、任务目录与负载阈值，且不会被 `--host auto` 选中，必须显式指定。
 
-管理员在机器清单一次配置平台，员工只选择机器和自己的 ID。`platform` 默认 `posix`，旧 macOS/Linux 清单继续使用。Windows 必须显式设置 `platform = windows`；不能把检测失败当成空闲机器。原生 Windows 无需 Git Bash 或 WSL；WSL 通过 Linux SSH 服务连接时按 Linux 主机登记，不混用 Windows 和 Linux 的路径。
+管理员在机器清单一次配置平台，用户选择机器，ID 默认由电脑用户名规范化并固定，也可用 RD_USER_ID 显式覆盖。`platform` 默认 `posix`，旧 macOS/Linux 清单继续使用。Windows 必须显式设置 `platform = windows`；不能把检测失败当成空闲机器。原生 Windows 无需 Git Bash 或 WSL；WSL 通过 Linux SSH 服务连接时按 Linux 主机登记，不混用 Windows 和 Linux 的路径。
 
 ## Windows Setup
 
@@ -60,7 +60,7 @@ rdispatch hosts
 rdispatch profile check win
 ```
 
-初次同步仍先询问员工 ID、是否同步，并审阅清单和指纹。确认同步后，在已授权的测试仓库执行最小命令任务，保存 job id，等待、读日志并取回。确认 SSH 已退出后任务仍运行，再验 Codex 首次启动、提交回传和同一配置版本续跑。登录和系统权限步骤由用户接管。
+初次同步仍须展示实际用户 ID，询问是否同步，并审阅清单和指纹。确认同步后，在已授权的测试仓库执行最小命令任务，保存 job id，等待、读日志并取回。确认 SSH 已退出后任务仍运行，再验 Codex 首次启动、提交回传和同一配置版本续跑。登录和系统权限步骤由用户接管。
 
 不得把 PowerShell 编码测试或 macOS 上的 worker 协议测试报告成真实 Windows 实跑。仓库测试使用临时本地 worker 和假 Codex，不发模型 API 请求。当前实际验证范围以本次交付报告为准。
 

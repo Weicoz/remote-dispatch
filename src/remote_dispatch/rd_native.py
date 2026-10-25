@@ -340,6 +340,8 @@ def handle(q, incoming):
         sandbox_help = subprocess.run(shell_command("& 'codex' sandbox --help" if os.name == "nt" else "codex sandbox --help"), capture_output=True, text=True)
         names = {line.split()[0] for line in flags.stdout.splitlines() if line.split()}
         return {"tools": tools, "python": sys.version.split()[0], "features": set(("hooks", "plugins", "memories", "external_agent_memory_import")) <= names and "--permission-profile" in sandbox_help.stdout, "ok": all(tools.values()) and sys.version_info >= (3, 11)}
+    if op == "controller-register":
+        return profiles.register_controller(root, q["fingerprint"])
     if op == "profile-read":
         current = root / "profiles/current.json"
         return {"root": str(root), "manifest": json.loads(current.read_text(encoding="utf-8")) if current.exists() else None}

@@ -110,9 +110,11 @@ class WorkflowTests(unittest.TestCase):
                                   prompt_file=str(prompt), model=None, effort=None, timeout=30,
                                   force_host=False, new_context=new, retry_after_repair=None)
         with patch.object(rd, "STATE", str(self.root)), \
+             patch.object(rd, "CONFIG", str(self.root / "config.ini")), \
              patch.object(rd, "require_user", return_value="fixture"), \
              patch.object(rd, "load_job", return_value=record), \
-             patch.object(rd, "job_host", return_value={"name": "fixture", "platform": "posix", "timeout": 30}), \
+             patch.object(rd, "job_host", return_value=dict(rd.DEFAULTS, name="fixture", ssh="local", timeout=30,
+                          workdir=str(self.root / "worker/users/fixture"), shared_workdir=str(self.root / "worker"))), \
              patch.object(rd, "remote_state", return_value={"job-a": {"state": "done", "exit": "1", "round": str(number)}}), \
              patch.object(rd, "collect_result", return_value=receipt), \
              patch.object(rd, "find_session", return_value=None), \

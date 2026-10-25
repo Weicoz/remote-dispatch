@@ -4,6 +4,7 @@ import contextlib
 import importlib.machinery
 import importlib.util
 import io
+import getpass
 import json
 import os
 from pathlib import Path
@@ -262,8 +263,11 @@ class ProfileTests(FixtureBase, unittest.TestCase):
         with patch.object(profiles, "host_skill_paths", return_value=[]), self.assertRaises(ValueError):
             profiles.prepare_runtime(job, manifest)
 
-    def test_missing_id_stops_before_any_repo_or_remote_work(self):
-        with patch.dict(os.environ, {"RD_USER_ID": ""}), patch.object(rd, "local_repo") as repo:
+    def test_invalid_default_id_stops_before_any_repo_or_remote_work(self):
+        with patch.dict(os.environ, {"RD_USER_ID": ""}), \
+             patch.object(rd, "CONFIG", str(self.root / "config.ini")), \
+             patch.object(getpass, "getuser", return_value="中文 !!!"), \
+             patch.object(rd, "local_repo") as repo:
             with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as failure:
                 rd.cmd_run(argparse.Namespace(), None)
             self.assertEqual(failure.exception.code, 4)
@@ -610,6 +614,50 @@ print(json.dumps({"session_id":"fixture-session"}))
         with self.assertRaises(SystemExit) as complete:
             rd.cmd_wait(argparse.Namespace(job=job, timeout=10, interval=0.05), self.cfg)
         self.assertEqual(complete.exception.code, 0)
+
+    def test_default_user_uses_own_provider_and_other_controller_warns_on_resume(self):
+        config = self.source / "config.toml"
+        config.write_text(config.read_text() + '\nmodel_provider="fixture"\n[model_providers.fixture]\nbase_url="https://model.example.invalid/v1"\n')
+        curl = self.bin / "curl"
+        curl.write_text('#!/bin/sh\ncase "$*" in *https://model.example.invalid*|*https://pypi.org*) printf 403;; *) exit 7;; esac\n')
+        curl.chmod(0o755)
+        self.sync()
+        repo = self.root / "repo"
+        repo.mkdir()
+        subprocess.run(["git", "init", "-q", str(repo)], check=True)
+        subprocess.run(["git", "-C", str(repo), "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "--allow-empty", "-qm", "base"], check=True)
+        prompt = self.root / "task.md"
+        prompt.write_text("Fixture only; no model API request.\n")
+        args = argparse.Namespace(dir=str(repo), agent="codex", prompt_file=str(prompt), cmd=None,
+            test=False, heavy=False, host="fixture", force_host=False, tag=[], ref="HEAD", wip=False,
+            branch=None, name="fixture", project=None, include=[], model=None, effort=None, timeout=15,
+            initiator_session="fixture-origin")
+        def worker(host, script, **kwargs):
+            if script == rd.PROBE:
+                return subprocess.CompletedProcess([], 0, "ncpu=4 load1=0 memfree=80 disk=100", "")
+            return self.local_shell(host, script, **kwargs)
+        with patch.dict(os.environ, {"RD_USER_ID": ""}), \
+             patch.object(getpass, "getuser", return_value="Employee_A"), \
+             patch.object(rd, "ssh", side_effect=worker), \
+             patch.object(profiles, "host_skill_paths", return_value=[]), \
+             patch.object(rd, "scp_path", side_effect=lambda h, rel: str(Path(h["workdir"]) / rel)), \
+             contextlib.redirect_stdout(io.StringIO()):
+            rd.cmd_run(args, self.cfg)
+            record = rd.all_jobs()[0]
+            self.assertEqual(record["user_id"], "employee_a")
+            self.wait_success(record["job"])
+            other_config = self.root / "other-controller/config.ini"
+            other_config.parent.mkdir()
+            other_config.write_text(Path(rd.CONFIG).read_text())
+            errors, output = io.StringIO(), io.StringIO()
+            with patch.object(rd, "CONFIG", str(other_config)), \
+                 contextlib.redirect_stderr(errors), contextlib.redirect_stdout(output):
+                rd.cmd_resume(argparse.Namespace(job=record["job"], session=None, prompt_file=str(prompt),
+                    force_host=False, model=None, effort=None, timeout=15, initiator_session="fixture-origin"), self.cfg)
+                self.wait_success(record["job"])
+            self.assertIn("其他控制端", errors.getvalue())
+            self.assertIn("resumed ", output.getvalue())
+            self.assertEqual(rd.load_job(record["job"])["rounds"], 2)
 
     def test_real_git_and_worker_scripts_run_fetch_and_resume_original_profile(self):
         first = self.sync()

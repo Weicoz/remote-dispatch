@@ -329,9 +329,26 @@ def ssh(host, script, check=True, stdin_data=None, stdin=None, timeout=None, std
 
 def require_user():
     try:
-        return profiles.user_id()
+        return profiles.user_id(config_dir=Path(CONFIG).parent)
     except ValueError as error:
         die(str(error), 4)
+
+
+def check_controller(host, uid):
+    try:
+        fingerprint = profiles.controller_fingerprint(Path(CONFIG).parent)
+        if host["platform"] == "windows":
+            conflict = native.request(host, "controller-register", {"fingerprint": fingerprint})
+        else:
+            code = "import json,sys; q=json.load(sys.stdin); n={'__name__':'rd_identity'}; exec(q['code'],n); print(json.dumps(n['register_controller'](sys.argv[1],q['fingerprint'])))"
+            result = ssh(host, "python3 -c " + shlex.quote(code) + ' "$ROOT"',
+                         stdin_data=json.dumps({"code": Path(HERE, "rd_profiles.py").read_text(encoding="utf-8"),
+                                                "fingerprint": fingerprint}))
+            conflict = json.loads(result.stdout)
+    except ValueError as error:
+        die(str(error), 4)
+    if conflict:
+        print(f"警告：用户 ID {uid} 已由其他控制端首次使用；本次派单继续。", file=sys.stderr)
 
 
 def scoped_host(host, uid):
@@ -391,7 +408,7 @@ def profile_report(host, uid, local, remote):
     elif state == "unknown":
         print("未确认：此电脑未准备本地配置包，无法比较更新时间；使用已有远端版本。")
     elif state == "missing":
-        print("远端首次使用此 ID。必须询问员工 ID 和是否同步，确认后执行 rdispatch profile sync。")
+        print("远端首次使用此用户 ID。请确认是否同步，确认后执行 rdispatch profile sync。")
     return state
 
 
@@ -449,9 +466,7 @@ def probe(host):
         options = health.network_options(host)
         if host.get("probe_profile_fingerprint"):
             options["profile_fingerprint"] = host["probe_profile_fingerprint"]
-    uid = os.environ.get("RD_USER_ID", "")
-    if uid:
-        profiles.user_id(uid)
+    uid = require_user()
     if host["platform"] == "windows":
         try:
             return dict(native.request(host, "probe", {"network_options": options, "user_id": uid,
@@ -1028,6 +1043,7 @@ def cmd_run(a, cfg):
             host["shared_workdir"] = custom_root
             if is_local(host) and not custom_root.startswith(("/", "~", "$HOME")):
                 die("本机目标的 --workdir 必须是绝对路径或 ~ 开头。", 4)
+        check_controller(host, uid)
         if host["platform"] == "windows" and a.test:
             a.cmd = proj.get("test_windows", a.cmd)
         profile = None
@@ -1490,6 +1506,7 @@ def cmd_resume(a, cfg):
         rec["session"] = session
         rec["model"] = a.model or rec.get("model")
         rec["effort"] = a.effort or rec.get("effort")
+    check_controller(host, rec["user_id"])
     save_job(rec)
     launch(host, rec, rec["rounds"], command, prompt, a.timeout or host["timeout"])
     print(f"resumed {rec['job']} (round {rec['rounds']}, session {session or 'pending new context'})")
@@ -1878,10 +1895,10 @@ def main():
 
     sub.add_parser("hosts", help="probe every configured machine").set_defaults(fn=cmd_hosts)
 
-    p = sub.add_parser("profile", help="检查或确认同步员工 Codex 配置（不自动同步）")
+    p = sub.add_parser("profile", help="检查或确认同步用户 Codex 配置（不自动同步）")
     p.add_argument("action", choices=["check", "sync"])
     p.add_argument("host")
-    p.add_argument("--confirm-user-id", help="用户明确确认后的员工 ID，必须等于 RD_USER_ID")
+    p.add_argument("--confirm-user-id", help="用户明确确认后的用户 ID，必须等于当前采用的用户 ID")
     p.add_argument("--confirm-version", help="用户审阅的本地完整配置指纹，来自 profile check")
     p.set_defaults(fn=cmd_profile)
 

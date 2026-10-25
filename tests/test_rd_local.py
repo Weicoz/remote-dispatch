@@ -2,6 +2,7 @@
 import argparse
 import contextlib
 import io
+import getpass
 import os
 from pathlib import Path
 import subprocess
@@ -189,6 +190,121 @@ class LocalEndToEndTest(unittest.TestCase):
                                   test=False, heavy=False, host="self", force_host=True, tag=[], ref="HEAD",
                                   wip=False, branch=None, name="e2e", project=None, include=[], model=None,
                                   effort=None, timeout=15, initiator_session=None, workdir=None)
+
+    def wait_for_completion(self, record):
+        deadline = time.time() + 20
+        while time.time() < deadline:
+            state = rd.job_states(self.cfg, [record])[record["job"]]
+            if state.get("state") == "done":
+                self.assertEqual(state.get("exit"), "0")
+                return
+            time.sleep(0.1)
+        self.fail("本机派单未在 20 秒内完成")
+
+    def test_run_uses_normalized_username_and_keeps_it_after_rename(self):
+        with patch.dict(os.environ, {"RD_USER_ID": ""}), \
+             patch.object(getpass, "getuser", return_value=" Alice Smith "):
+            rd.cmd_run(self.args(), self.cfg)
+            first = rd.all_jobs()[0]
+            self.assertEqual(first["user_id"], "alice-smith")
+            self.assertTrue(first["job"].startswith("alice-smith-"))
+            self.wait_for_completion(first)
+        # 新一轮从配置读回，电脑用户名变化不改变派单归属。
+        with patch.dict(os.environ, {"RD_USER_ID": ""}), \
+             patch.object(getpass, "getuser", return_value="Other User"):
+            output = io.StringIO()
+            with contextlib.redirect_stdout(output):
+                rd.cmd_profile(argparse.Namespace(action="check", host="self"), self.cfg)
+            self.assertIn("ID=alice-smith ", output.getvalue())
+
+    def test_default_username_normalization_boundaries_are_visible_in_profile_check(self):
+        cases = [("ALICE", "alice"), (" Alice Smith ", "alice-smith"),
+                 ("张Alice三", "alice"), ("A" * 80, "a" * 64)]
+        for number, (username, expected) in enumerate(cases):
+            with self.subTest(username=username):
+                output = io.StringIO()
+                config = self.root / str(number) / "config.ini"
+                with patch.object(rd, "CONFIG", str(config)), \
+                     patch.dict(os.environ, {"RD_USER_ID": ""}), \
+                     patch.object(getpass, "getuser", return_value=username), \
+                     contextlib.redirect_stdout(output):
+                    rd.cmd_profile(argparse.Namespace(action="check", host="self"), self.cfg)
+                self.assertIn("ID=" + expected + " ", output.getvalue())
+                output = io.StringIO()
+                with patch.object(rd, "CONFIG", str(config)), \
+                     patch.dict(os.environ, {"RD_USER_ID": ""}), \
+                     patch.object(getpass, "getuser", return_value="Changed Name"), \
+                     contextlib.redirect_stdout(output):
+                    rd.cmd_profile(argparse.Namespace(action="check", host="self"), self.cfg)
+                self.assertIn("ID=" + expected + " ", output.getvalue())
+
+    def test_explicit_user_id_overrides_saved_default_without_replacing_it(self):
+        with patch.dict(os.environ, {"RD_USER_ID": ""}), \
+             patch.object(getpass, "getuser", return_value="Alice"):
+            rd.cmd_profile(argparse.Namespace(action="check", host="self"), self.cfg)
+        with patch.dict(os.environ, {"RD_USER_ID": "custom-id"}), \
+             patch.object(getpass, "getuser", side_effect=AssertionError("不应取用户名")):
+            rd.cmd_run(self.args(), self.cfg)
+            record = rd.all_jobs()[0]
+            self.assertEqual(record["user_id"], "custom-id")
+            self.wait_for_completion(record)
+        with patch.dict(os.environ, {"RD_USER_ID": ""}), \
+             patch.object(getpass, "getuser", return_value="Bob"):
+            output = io.StringIO()
+            with contextlib.redirect_stdout(output):
+                rd.cmd_profile(argparse.Namespace(action="check", host="self"), self.cfg)
+            self.assertIn("ID=alice ", output.getvalue())
+        with patch.dict(os.environ, {"RD_USER_ID": "INVALID"}), self.assertRaises(SystemExit) as failure:
+            rd.cmd_run(self.args(), self.cfg)
+        self.assertEqual(failure.exception.code, 4)
+        self.assertEqual(len(rd.all_jobs()), 1)
+
+    def test_invalid_default_username_exits_with_manual_id_hint(self):
+        for username in ("中文", " !!! ", "_alice", "CON", "LPT1"):
+            with self.subTest(username=username):
+                errors = io.StringIO()
+                with patch.dict(os.environ, {"RD_USER_ID": ""}), \
+                     patch.object(getpass, "getuser", return_value=username), \
+                     contextlib.redirect_stderr(errors), self.assertRaises(SystemExit) as failure:
+                    rd.cmd_run(self.args(), self.cfg)
+                self.assertEqual(failure.exception.code, 4)
+                self.assertIn("手动设置 RD_USER_ID", errors.getvalue())
+                self.assertEqual(rd.all_jobs(), [])
+
+    def test_another_controller_with_same_id_warns_and_still_dispatches(self):
+        with patch.dict(os.environ, {"RD_USER_ID": "shared-user"}):
+            errors = io.StringIO()
+            with contextlib.redirect_stderr(errors):
+                rd.cmd_run(self.args(), self.cfg)
+            first = rd.all_jobs()[0]
+            self.wait_for_completion(first)
+            self.assertNotIn("警告", errors.getvalue())
+            # 同一控制端再次使用保持安静。
+            errors = io.StringIO()
+            with contextlib.redirect_stderr(errors):
+                rd.cmd_run(self.args(), self.cfg)
+            for record in rd.all_jobs():
+                self.wait_for_completion(record)
+            self.assertNotIn("警告", errors.getvalue())
+            other_config = self.root / "other-controller/config.ini"
+            other_config.parent.mkdir()
+            other_config.write_text(self.config_path.read_text())
+            errors, output = io.StringIO(), io.StringIO()
+            with patch.object(rd, "CONFIG", str(other_config)), \
+                 contextlib.redirect_stderr(errors), contextlib.redirect_stdout(output):
+                rd.cmd_run(self.args(), self.cfg)
+            for record in rd.all_jobs():
+                self.wait_for_completion(record)
+            self.assertIn("警告", errors.getvalue())
+            self.assertIn("其他控制端", errors.getvalue())
+            self.assertIn("started. job id:", output.getvalue())
+            self.assertEqual(len(rd.all_jobs()), 3)
+            errors = io.StringIO()
+            with contextlib.redirect_stderr(errors):
+                rd.cmd_run(self.args(), self.cfg)
+            for record in rd.all_jobs():
+                self.wait_for_completion(record)
+            self.assertNotIn("警告", errors.getvalue())
 
     def test_run_status_fetch_clean_on_this_machine(self):
         rd.cmd_run(self.args(), self.cfg)
