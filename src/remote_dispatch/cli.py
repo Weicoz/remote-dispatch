@@ -755,7 +755,8 @@ def cmd_result(a, cfg):
         receipt = queries(cfg).result(rec, a.round or rec["rounds"], snapshot)
     if receipt is None:
         die("结果尚未取得；用 rdispatch status 查看运行或连接状态。", 2)
-    result = dict(receipt, delivery_state=delivery(rec, receipt))
+    result = dict(receipt, delivery_state=delivery(rec, receipt),
+                  acknowledgement=queries(cfg).acknowledgement(rec, receipt))
     if getattr(a, "summary", False):
         result = messages.result_summary(result)
         result["receipt_path"] = str(result_path(rec, receipt["round"]))
@@ -781,24 +782,30 @@ def cmd_inbox(a, cfg):
             if path.name.endswith(".ack.json"):
                 continue
             receipt = messages.read_json(path)
-            if delivery(rec, receipt) == "pending":
+            ack = queries(cfg).acknowledgement(rec, receipt)
+            if not ack:
                 receipts.append(dict(receipt, delivery_state="pending"))
+            elif ack.get("acked_by") and ack["acked_by"] != owner:
+                receipts.append(dict(receipt, delivery_state="received", delegated=True,
+                                     acknowledgement=ack, summary=messages.result_summary(receipt)["summary"]))
     print(json.dumps(dict(initiator_session=owner, results=receipts, unreachable=unavailable), ensure_ascii=False, indent=2))
 
 
 @locked_job
 def cmd_ack(a, cfg):
     rec = load_job(a.job)
-    require_initiator(rec, a)
     job_host(cfg, rec)
+    signer = messages.identifier(getattr(a, "acked_by", None) or initiator_session(a) or "cli", "签收方")
+    via = getattr(a, "via", "cli")
     path = result_path(rec, a.round)
     receipt = queries(cfg).result(rec, a.round)
     if not receipt or receipt["receipt_id"] != a.receipt_id:
         die("回执 ID 或轮次不匹配；先收取并核对 rdispatch result。", 4)
     if messages.read_json(path) is None:
         messages.atomic_json(path, receipt, limit=messages.RECEIPT_BYTES)
-    messages.atomic_json(path.with_suffix(".ack.json"), dict(receipt_id=a.receipt_id, received_at=messages.utc_now()))
-    print("结果已由发起方收取；此确认不代表验收通过，不会自动续派。")
+    messages.atomic_json(path.with_suffix(".ack.json"), dict(receipt_id=a.receipt_id, received_at=messages.utc_now(),
+                                                           acked_by=signer, via=via))
+    print(f"结果已由 {signer} 签收；此确认不代表验收通过，不会自动续派。")
 
 
 # ---------------------------------------------------------------- run / resume
@@ -1544,16 +1551,55 @@ def cmd_fetch(a, cfg):
 @locked_job
 def cmd_stop(a, cfg):
     rec = load_job(a.job)
-    require_initiator(rec, a)
     host = job_host(cfg, rec)
-    if host["platform"] == "windows":
-        native.request(host, "stop", {"job": rec["job"]})
+    stopper = messages.identifier(getattr(a, "stopped_by", None) or initiator_session(a) or "cli", "停止者")
+    before = job_states(cfg, [rec]).get(rec["job"], {})
+    request = rec.get("stop_requests", {}).get(str(rec["rounds"]))
+    if request is None and before.get("state") in ("running", "starting"):
+        request = dict(stopped_by=stopper, via=getattr(a, "via", "cli"), requested_at=messages.utc_now())
+        rec.setdefault("stop_requests", {})[str(rec["rounds"])] = request
+        save_job(rec)
+    # Keep the original actor across failures after the target has been killed.
+    already_stopped = request and before.get("state") == "done" and str(before.get("exit")) == "143"
+    if already_stopped:
+        snapshot = before
         print("stopped or already finished")
+    else:
+        if before.get("state") == "unreachable":
+            die("停止结果尚未确认；请核对 rdispatch status 后重试。", 4)
+        if host["platform"] == "windows":
+            native.request(host, "stop", {"job": rec["job"]})
+            print("stopped or already finished")
+        else:
+            r = ssh(host, KILLTREE + f'; D="$ROOT/jobs/{rec["job"]}"; p=$(cat "$D/pid" 2>/dev/null); '
+                    'if [ -n "$p" ] && kill -0 "$p" 2>/dev/null; then killtree "$p"; echo 143 > "$D/exit_code"; '
+                    'echo stopped; else echo "not running"; fi')
+            print(r.stdout.strip())
+        snapshot = job_states(cfg, [rec]).get(rec["job"], {}) if request else before
+    if not request:
         return
-    r = ssh(host, KILLTREE + f'; D="$ROOT/jobs/{rec["job"]}"; p=$(cat "$D/pid" 2>/dev/null); '
-            'if [ -n "$p" ] && kill -0 "$p" 2>/dev/null; then killtree "$p"; echo 143 > "$D/exit_code"; '
-            'echo stopped; else echo "not running"; fi')
-    print(r.stdout.strip())
+    if snapshot.get("state") == "done" and str(snapshot.get("exit")) != "143":
+        # The round finished on its own while stop was reaching the target.
+        rec["stop_requests"].pop(str(rec["rounds"]), None)
+        save_job(rec)
+        return
+    if snapshot.get("state") != "done" or str(snapshot.get("exit")) != "143":
+        die("停止结果尚未确认；请核对 rdispatch status 后重试。", 4)
+    receipt = queries(cfg).result(rec, rec["rounds"], snapshot)
+    if receipt.get("stopped_by") and queries(cfg).acknowledgement(rec, receipt):
+        return
+    stopper, stopped_at = request["stopped_by"], request["requested_at"]
+    receipt.update(executor_exit=143, stopped_by=stopper, stopped_at=stopped_at,
+                   suppress_push=True, review_state="pending", needs_initiator_review=True)
+    report = dict(receipt.get("report") or dict(schema=1, kind="result", job=rec["job"], round=rec["rounds"],
+                                               checks="not_reported", summary="派单已主动停止，仍需验收。"))
+    report.update(outcome="failed", updated_at=stopped_at)
+    receipt["report"] = report
+    receipt["receipt_id"] = query.receipt_id(receipt)
+    path = result_path(rec, rec["rounds"])
+    messages.atomic_json(path, receipt, limit=messages.RECEIPT_BYTES)
+    messages.atomic_json(path.with_suffix(".ack.json"), dict(receipt_id=receipt["receipt_id"], received_at=messages.utc_now(),
+                                                           acked_by=stopper, via=request["via"]))
 
 
 def backup_reports(host, rec):
@@ -1985,6 +2031,8 @@ def main():
     p.add_argument("--round", type=int, required=True)
     p.add_argument("--receipt-id", required=True)
     p.add_argument("--initiator-session")
+    p.add_argument("--acked-by", help="签收方会话 ID 或设备名；默认当前会话，无会话时为 cli")
+    p.add_argument("--via", choices=["cli", "serve"], default="cli", help="签收渠道（默认 cli）")
     p.set_defaults(fn=cmd_ack)
 
     p = sub.add_parser("resume", help="continue an agent job in the same session")
@@ -2009,6 +2057,8 @@ def main():
     p = sub.add_parser("stop", help="kill a running job")
     p.add_argument("job")
     p.add_argument("--initiator-session")
+    p.add_argument("--stopped-by", help="停止者会话 ID 或设备名；默认当前会话，无会话时为 cli")
+    p.add_argument("--via", choices=["cli", "serve"], default="cli", help="停止及自动签收渠道（默认 cli）")
     p.set_defaults(fn=cmd_stop)
 
     p = sub.add_parser("keep", help="钉住任务 worktree，rdispatch clean --expired 不回收；--hours 0 取消")
