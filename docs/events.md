@@ -21,6 +21,7 @@
 | `receipt.acked` | 签收、代签、停止自动签收；receipt_id、acked_by、received_at、via |
 | `review.updated` | 通过、打回、作废；review_state、reviewed_by、reviewed_at |
 | `host.changed` | 后台显式观察到目标机变化；host、reachable、负载、资源、full |
+| `network.addresses_changed` | serve 启动或本机写接口改变实际监听候选；user_id、candidates（address/port）、spki_sha256；幂等重放和失败不发事件 |
 | `project.changed` | 登记、hide、show、rebuild 改变项目；用户、项目 ID、计数、时间、hidden、removed |
 
 停止产生的状态、回执与签收事件均带 `suppress_push=true`，推送渠道必须遵守。

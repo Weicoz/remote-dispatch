@@ -129,6 +129,143 @@ class NetworkTests(unittest.TestCase):
         self.assertEqual(after["spki_sha256"], info["spki_sha256"])
         self.assertEqual(self.request("/v1/jobs", connection=self.tls(after), headers=headers)[0], 200)
 
+    @unittest.skipUnless(shutil.which("openssl"), "openssl is required for TLS certificates")
+    def test_local_listener_write_binds_persists_and_replays_without_rebinding(self):
+        service = self.start()
+        pin = self.network_info()["spki_sha256"]
+        body = {"listen_addresses": [{"address": "127.0.0.1", "port": 0}]}
+        first = self.request("/v1/network", "POST", body, key="select")
+        self.assertEqual(first[0], 200)
+        info = self.network_info()
+        self.assertEqual(info["listen_addresses"], [dict(address="127.0.0.1", port=0, enabled=True)])
+        self.assertEqual(info["spki_sha256"], pin)
+        self.assertEqual(info, first[1])
+        self.assertEqual(self.request("/v1/jobs", connection=self.tls(info))[0], 403)
+        self.assertEqual(self.request("/v1/network", "POST", {"listen_addresses": []}, key="select"), first)
+        self.assertEqual(self.network_info(), info)
+        service.close()
+        self.assertFalse(self.path.exists())
+        self.start()
+        restored = self.network_info()
+        self.assertEqual(restored["listen_addresses"], info["listen_addresses"])
+        self.assertEqual(restored["spki_sha256"], pin)
+        self.assertEqual(len(restored["candidates"]), 1)
+        self.assertEqual(self.request("/v1/network", "POST", {}, key="select"), first)
+
+    @unittest.skipUnless(shutil.which("openssl"), "openssl is required for TLS certificates")
+    def test_listener_selection_rebinds_emits_events_and_keeps_disabled_choices_after_restart(self):
+        self.configure_network()
+        service = self.start()
+        before = self.network_info()
+        _, headers = self.pair(before)
+        self.assertEqual(self.request("/v1/network", "POST", {"listen_addresses": []},
+            connection=self.tls(before), headers=headers), (403, {"error": {"reason": "local_only"}}))
+        self.assertEqual(self.network_info(), before)
+        connection = UnixHTTPConnection(self.path)
+        connection.timeout = 3
+        connection.request("GET", "/v1/events")
+        stream = connection.getresponse()
+        self.addCleanup(stream.close)
+        disabled = {"listen_addresses": [dict(address="127.0.0.1", port=0, enabled=False)]}
+        result = self.request("/v1/network", "POST", disabled, key="disable")
+        self.assertEqual(result, (200, dict(spki_sha256=before["spki_sha256"], candidates=[], **disabled)))
+        with self.assertRaises(OSError):
+            socket.create_connection(("127.0.0.1", before["candidates"][0]["port"]), timeout=3)
+        changes = []
+        while True:
+            line = stream.readline()
+            if line.startswith(b"data: "):
+                event = json.loads(line[6:])
+                if event["type"] == "network.addresses_changed":
+                    changes.append(event["data"])
+                    if event["data"]["candidates"] == []:
+                        break
+        self.assertEqual(changes[-1], dict(user_id="fixture", candidates=[], spki_sha256=before["spki_sha256"]))
+        stream.close()
+        service.close()
+        service = self.start()
+        self.assertEqual(self.network_info(), result[1])
+        enabled = {"listen_addresses": [dict(address="127.0.0.1", port=0)]}
+        self.assertEqual(self.request("/v1/network", "POST", enabled, key="enable")[0], 200)
+        restored = self.network_info()
+        self.assertEqual(len(restored["candidates"]), 1)
+        self.assertEqual(restored["spki_sha256"], before["spki_sha256"])
+        self.assertEqual(self.request("/v1/jobs", connection=self.tls(restored), headers=headers)[0], 200)
+        # Identical selection retains the actual random port and emits no new event.
+        count = len([row for row in events.read_after(self.state, 0) if row["type"] == "network.addresses_changed"])
+        self.assertEqual(self.request("/v1/network", "POST", enabled, key="same")[1], restored)
+        self.assertEqual(len([row for row in events.read_after(self.state, 0)
+                              if row["type"] == "network.addresses_changed"]), count)
+        self.assertEqual(self.request("/v1/network", "POST", {"listen_addresses": []}, key="empty")[0], 200)
+        self.assertEqual(self.network_info()["listen_addresses"], [])
+        service.close()
+        self.start()
+        self.assertEqual(self.network_info()["candidates"], [])
+
+    def test_listener_write_requires_key_and_rejects_unsafe_or_invalid_choices_without_changes(self):
+        self.start()
+        before = self.network_info()
+        self.assertEqual(self.request("/v1/network", "POST", {"listen_addresses": []}, key=None),
+                         (400, {"error": {"reason": "idempotency_key_required"}}))
+        invalid = [{}, {"listen_addresses": {}}, {"listen_addresses": [None]}]
+        for address in ("0.0.0.0", "::", "8.8.8.8", "localhost", "224.0.0.1", "::ffff:8.8.8.8"):
+            for enabled in (True, False):
+                invalid.append({"listen_addresses": [dict(address=address, enabled=enabled)]})
+        for fields in (dict(port=-1), dict(port=65536), dict(port=True), dict(enabled="yes")):
+            invalid.append({"listen_addresses": [dict(address="127.0.0.1", **fields)]})
+        invalid.append({"listen_addresses": [dict(address="127.0.0.1"), dict(address="127.0.0.1")]})
+        invalid.append({"listen_addresses": [dict(address=2130706433, port=0)]})
+        for index, body in enumerate(invalid):
+            with self.subTest(body=body):
+                result = self.request("/v1/network", "POST", body, key="invalid-" + str(index))
+                self.assertEqual(result, (400, {"error": {"reason": "invalid_listen_address"}}))
+                self.assertEqual(self.network_info(), before)
+        # Failed results also use the first response for that key.
+        self.assertEqual(self.request("/v1/network", "POST", {"listen_addresses": []}, key="invalid-0"),
+                         (400, {"error": {"reason": "invalid_listen_address"}}))
+
+    @unittest.skipUnless(shutil.which("openssl"), "openssl is required for TLS certificates")
+    def test_listener_bind_failure_keeps_previous_live_listener_and_caches_failure(self):
+        self.configure_network()
+        self.start()
+        before = self.network_info()
+        _, headers = self.pair(before)
+        with socket.socket() as occupied:
+            occupied.bind(("127.0.0.1", 0))
+            occupied.listen()
+            port = occupied.getsockname()[1]
+            body = {"listen_addresses": [dict(address="127.0.0.1", port=port)]}
+            failed = self.request("/v1/network", "POST", body, key="busy")
+        self.assertEqual(failed, (409, {"error": {"reason": "listen_address_unavailable"}}))
+        self.assertEqual(self.network_info(), before)
+        self.assertEqual(self.request("/v1/jobs", connection=self.tls(before), headers=headers)[0], 200)
+        self.assertEqual(self.request("/v1/network", "POST", {"listen_addresses": []}, key="busy"), failed)
+        self.assertEqual(self.network_info(), before)
+
+    @unittest.skipUnless(shutil.which("openssl"), "openssl is required for TLS certificates")
+    def test_listener_storage_and_event_failure_keep_selection_and_allow_same_key_retry(self):
+        self.configure_network()
+        service = self.start()
+        before = self.network_info()
+        _, headers = self.pair(before)
+        replace = os.replace
+        disabled = {"listen_addresses": [dict(address="127.0.0.1", port=0, enabled=False)]}
+        for target_name in ("devices.json", "events.jsonl"):
+            def unavailable(source, target):
+                if Path(target).name == target_name:
+                    raise OSError("fixture disk failure")
+                return replace(source, target)
+            with self.subTest(target=target_name), patch("os.replace", side_effect=unavailable):
+                self.assertEqual(self.request("/v1/network", "POST", disabled, key="disk"),
+                                 (503, {"error": {"reason": "network_unavailable"}}))
+            self.assertEqual(self.network_info(), before)
+            self.assertEqual(self.request("/v1/jobs", connection=self.tls(before), headers=headers)[0], 200)
+        service.close()
+        self.start()
+        self.assertEqual(self.network_info()["listen_addresses"], before["listen_addresses"])
+        self.assertEqual(self.request("/v1/network", "POST", disabled, key="disk")[0], 200)
+        self.assertEqual(self.network_info()["candidates"], [])
+
     def test_wildcard_public_hostname_and_invalid_listeners_are_rejected_before_starting(self):
         for address in ("0.0.0.0", "::", "8.8.8.8", "localhost", "224.0.0.1", "::ffff:8.8.8.8"):
             with self.subTest(address=address):
@@ -372,7 +509,8 @@ class NetworkTests(unittest.TestCase):
                 for row, example in zip(actual, expected):
                     structure(row, example)
         contracts = Path(__file__).resolve().parents[1] / "contracts" / "v1"
-        for name in ("addresses", "pairing-window", "pair", "push-tokens", "revoke", "unauthorized"):
+        for name in ("addresses", "pairing-window", "pair", "push-tokens", "revoke", "unauthorized",
+                     "addresses-write-invalid", "addresses-write"):
             with self.subTest(contract=name):
                 example = json.loads((contracts / ("network-" + name + ".json")).read_text())
                 request = substitute(example["request"])
@@ -381,6 +519,23 @@ class NetworkTests(unittest.TestCase):
                     connection=self.tls(info) if remote else None, headers=request.get("headers"))
                 self.assertEqual(status, example["response"]["status"])
                 structure(response, example["response"]["body"])
+                if name.startswith("addresses-write"):
+                    self.assertEqual(response, substitute(example["response"]["body"]))
+                    if example["events"]:
+                        connection = UnixHTTPConnection(self.path)
+                        connection.timeout = 3
+                        connection.request("GET", "/v1/events")
+                        stream = connection.getresponse()
+                        self.addCleanup(stream.close)
+                        while True:
+                            line = stream.readline()
+                            if line.startswith(b"data: "):
+                                event = json.loads(line[6:])
+                                if event["type"] == "network.addresses_changed" and not event["data"]["candidates"]:
+                                    structure(event, example["events"][0])
+                                    self.assertEqual(event["data"], substitute(example["events"][0]["data"]))
+                                    break
+                        stream.close()
                 if name == "pairing-window":
                     substitutions["PAIR_CODE"] = response["code"]
                 if name == "pair":

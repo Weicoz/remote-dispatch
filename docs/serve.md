@@ -156,10 +156,45 @@ listen_addresses = [{"address":"192.168.1.20","port":8443,"enabled":true},{"addr
 允许 LAN 私网、链路本地、Tailscale CGNAT、IPv6 ULA 和回环地址；
 拒绝公网、主机名、通配地址（包括 `0.0.0.0`、`::`）、重复项和无效端口。
 地址须已属于控制端接口，否则启动失败并回收本次已打开的监听器与 socket。
-修改地址配置后由编排方重启；运行中的服务不重读配置。
+未通过下文写接口保存过选择时，启动读取此配置；之后使用 RD_STATE 中保存的选择。
+直接修改 INI 不会覆盖已保存的选择，也不会触发运行中的服务重读。
 `GET /v1/network`（仅 Unix socket）返回实际已绑定的 `candidates: [{address, port}]`
-和 `spki_sha256`。启动时与已记录列表不同才发布 `network.addresses_changed`，
+和 `spki_sha256`，另有可选字段 `listen_addresses: [{address, port, enabled}]`，
+包含已禁用项，供设置页读回勾选状态。启动时与已记录列表不同才发布 `network.addresses_changed`，
 事件携带相同的候选列表和指纹；清空配置也发布空列表。所有候选共用证书。
+
+### 本机更新监听地址（票 39）
+
+`POST /v1/network` 仅 Unix socket 可调用，沿用 `local_only` 鉴权边界；
+已认证 HTTPS 请求返回 403 `local_only`。带 `Content-Type: application/json`、
+非空 `Idempotency-Key`，body 为：
+
+```json
+{"listen_addresses":[{"address":"192.168.1.20","port":8443,"enabled":true},{"address":"100.90.1.20","port":8443,"enabled":false}]}
+```
+
+这是完整替换列表；`enabled` 缺省 true、`port` 缺省 8443，端口 0 让系统分配随机端口。
+地址须为明确的 LAN／VPN／回环 IP，所有条目（包括禁用项）都拒绝通配、公网、主机名、
+重复项及无效字段。空列表或全禁用时只保留 Unix socket，禁用项仍可从 GET 读回。
+成功 200，body 与 `GET /v1/network` 相同，包含 `listen_addresses/candidates/spki_sha256`。
+配置端口 0 在 `listen_addresses` 中仍为 0，`candidates` 返回实际绑定的端口。
+
+接口复用网络状态锁与文件锁，将选择和首次响应保存在私有
+`RD_STATE/network/devices.json`，重启后优先于 INI。相同本机调用方同键返回首次状态码
+和 body（包括失败），即使正文或网络管理路径改变；重放不重新绑定、不补发事件。
+重启后端口 0 的实际端口可能改变，当前地址以 GET 为准。
+新增监听成功、状态和事件写入成功后，才释放被取消的监听器；未改变的监听器保留。
+失败保留原选择、原监听器和候选列表，回收本次新增监听器。
+已接受的 HTTPS 连接可继续使用，设备吊销和服务退出仍会关闭连接。
+候选实际列表变化时发布 `network.addresses_changed`，字段与读取候选事件相同，
+所有地址使用原有证书指纹；仅改禁用项或原样保存不产生地址事件。
+
+错误 reason：400 `idempotency_key_required / invalid_request / invalid_listen_address`；
+409 `listen_address_unavailable`（地址不属于本机或端口占用）；
+503 `network_unavailable`（证书、存储或事件不可用）或 `serve_stopping`。
+业务失败结果可换新键重试；存储／事件失败会回滚，修复后可用原键重试。
+契约为 `contracts/v1/network-addresses-write*.json`，测试覆盖即时绑定、释放、
+安全校验、幂等重放、重启恢复、失败回滚与 SSE 事件。
 
 首次启动使用系统 `openssl` 生成 EC P-256 自签证书，之后用标准库 `ssl` 加载，
 最低 TLS 1.2。证书和私钥保存在 `RD_STATE/network/server.pem`、`server.key`，
@@ -246,7 +281,8 @@ PYTHONPATH=src python3 -m unittest tests.test_rd_serve_network tests.test_rd_pus
 由编排方按现有安装流程更新 Python 包，在隔离 RD_STATE 配置控制端实际 LAN／VPN
 地址后启动 serve（勿在实现会话部署或重启测试栈）。用 Unix socket 手动开窗口，
 扫码后从 iPhone 校验 SPKI、保存 Keychain 令牌、读取接口并连 SSE；从 Mac 吊销，
-核对立即断流和重连被拒。修改候选地址并由编排方重启，核对事件补读、同一指纹、
+核对立即断流和重连被拒。用 Unix socket 调用 `POST /v1/network` 修改勾选地址，核对即时重新绑定、失败保留原选择、
+同键重放与重启恢复、事件补读、同一指纹、
 LAN／Tailscale／EasyTier 路由与只绑定勾选地址；退出后核对监听端口与 socket 已释放。
 真实 APNs 需要用户密钥及可取消发送器，由编排方／端到端执行；本票测试从不连 Apple。
 App 二维码、Keychain、实际握手固定校验、VPN 切换和真机推送不属于 Python 夹具验证。

@@ -1,0 +1,45 @@
+{
+  "request": {
+    "method": "POST",
+    "path": "/v1/network",
+    "headers": {
+      "Content-Type": "application/json",
+      "Idempotency-Key": "listen-selection-1"
+    },
+    "body": {
+      "listen_addresses": [
+        {
+          "address": "127.0.0.1",
+          "port": 0,
+          "enabled": false
+        }
+      ]
+    }
+  },
+  "response": {
+    "status": 200,
+    "body": {
+      "spki_sha256": "SPKI",
+      "candidates": [],
+      "listen_addresses": [
+        {
+          "address": "127.0.0.1",
+          "port": 0,
+          "enabled": false
+        }
+      ]
+    }
+  },
+  "events": [
+    {
+      "seq": 1,
+      "time": "2026-10-25T00:00:00+00:00",
+      "type": "network.addresses_changed",
+      "data": {
+        "user_id": "fixture",
+        "spki_sha256": "SPKI",
+        "candidates": []
+      }
+    }
+  ]
+}
