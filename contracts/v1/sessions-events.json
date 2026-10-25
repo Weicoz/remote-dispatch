@@ -1,0 +1,46 @@
+{
+  "request": {
+    "method": "GET",
+    "path": "/v1/events?after=0"
+  },
+  "response": {
+    "status": 200,
+    "body": null
+  },
+  "events": [
+    {
+      "seq": 1,
+      "time": "2026-10-25T00:00:00+00:00",
+      "type": "session.changed",
+      "data": {
+        "pane_id": "w1:p1",
+        "harness": "codex",
+        "project": "demo",
+        "project_id": "example-project-id",
+        "status": "idle",
+        "status_text": "空闲",
+        "has_new_reply": false,
+        "session_id": "session-one",
+        "probable": false,
+        "identity_text": null,
+        "user_id": "fixture",
+        "removed": false
+      }
+    },
+    {
+      "seq": 2,
+      "time": "2026-10-25T00:00:00+00:00",
+      "type": "session.message",
+      "data": {
+        "user_id": "fixture",
+        "pane_id": "w1:p1",
+        "session_id": "session-one",
+        "project_id": "example-project-id",
+        "harness": "codex",
+        "message_id": "codex:line:1:0",
+        "kind": "assistant",
+        "message_time": "2026-10-25T00:00:00Z"
+      }
+    }
+  ]
+}

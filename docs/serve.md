@@ -315,3 +315,66 @@ N 为 1–200，默认 20。每项含：
 运行并结束两轮后读取 harness-stats、断线重连 SSE 核对统计事件。
 真实 SSH／Windows 目标机的启动时间采集、App 读取新增字段由编排方端到端执行。
 本票测试仅用短路径 Unix socket，不监听 TCP；结束后关闭服务并删除 socket。
+## 会话接口（票 25）
+
+会话路由在 `rd_serve_sessions.py`，所有 Herdr 子进程调用与保存快照读取在
+`rd_herdr.py`。只调用已有 Herdr 的 `agent list`、`pane read`、
+`pane send-text/send-keys` 与 `terminal session observe`，不启动或续接 harness。
+Herdr 的环境和命名 session 沿用服务进程；可用 `HERDR_CONFIG_PATH` 指定配置文件。
+实时状态来自 `agent list`；`session.json` 仅用于身份定位。
+实时 `agent_session` 与滞后保存的身份冲突时，以实时身份为准；配置的本机目标执行目录
+及已有本机派单的执行根下的 pane 不纳入发起会话。
+
+- `GET /v1/sessions`：仅返回可映射到 Git 项目的 Claude Code、Codex、Kimi、AGY
+  agent pane。`id` 等于不透明的 `pane_id`；路径使用该值。
+  `status` 为 `working/idle/blocked/unknown`，`status_text` 为对应显示文字；
+  Herdr `done` 映射为 `idle` 与 `has_new_reply=true`。
+  `session_id` 不可得时为 null，模糊匹配时 `probable=true` 与
+  `identity_text="可能是这个会话"`。
+- `GET /v1/sessions/{id}/screen`：`{pane_id,text}`，当前可见 ANSI 屏幕。
+- `GET /v1/sessions/{id}/terminal`：SSE 的 `event` 为 `terminal.frame` 或
+  `terminal.closed`，`data` 保留对应 Herdr NDJSON 行的原始字节，不解码或重编码帧。
+  这不是持久事件流，不提供 `Last-Event-ID` 补读；重连重新观察当前终端。
+  断连或服务停止会结束并回收本次观察子进程。
+- `GET /v1/sessions/{id}/messages?after=<消息ID>`：复用票 24 转换器，返回
+  `supported/messages`；`after` 不含自身，未知游标返回 400。
+  先按 Herdr v3 保存快照的 `agent_session {agent,kind,value}` 定位；支持 ID 和路径引用。
+  读不到身份时才按 cwd 与修改时间匹配。Claude 读取
+  `$CLAUDE_CONFIG_DIR/projects/*/*.jsonl`（默认 `~/.claude`），Codex 读取
+  `$CODEX_HOME/sessions/**/rollout-*.jsonl`（默认 `~/.codex`）。不支持的格式返回
+  `supported=false/reason=unsupported_format/text="不支持"`，可继续使用终端。
+- `POST /v1/sessions/{id}/input`：JSON 只接受 `{text}` 或 `{keys:[...]}`，必须带
+  `Idempotency-Key`（1–256 个可打印 ASCII 非空白字符）。文本写入后发送 Enter；
+  按键接受 `enter/esc/up/down/tab/ctrl+c`。本接口直接作用于原 pane。
+  成功返回 `{pane_id,accepted:true}`。
+- `GET /v1/jobs/{job}/session`：当前用户派单的会话反查，先匹配 `initiator_session`，
+  再匹配 `initiator_herdr.pane_id`。返回 `session/matched_by`；都不存在时返回
+  `session=null/reason=session_closed/text="会话已关闭"`。未知或其他用户派单返回 404。
+- `GET /v1/projects`：合并持久索引与当前可见会话项目，`session_only` 区分仅会话项目；
+  仅会话项目 `dispatch_count=0`，不写索引，会话关闭即消失。项目摘要由票 22 扩展。
+  Herdr 不可用时仍返回持久项目；公开项目字段不包含 origin 凭据。
+
+配置 `[serve] session_access=false` 关闭会话访问（默认 true）。关闭时所有会话路由及
+反查返回 403 `session_access_disabled`，项目不混入仅会话项，普通事件流不泄露会话事件。
+Unix socket 请求默认是本机。设备鉴权层须将可信的设备记录放在 handler 的
+`session_device` 属性；设备记录缺少 `session_access=true` 时默认拒绝，HTTP 请求头不能
+开启权限。真实配对与 HTTPS 接入由票 21 编排复测。
+
+输入复用 serve 写入串行通道和独立 `locks/sessions/input.lock`，事件锁仍在最内层。
+幂等结果按用户、可信设备与键隔离，保存于 `RD_STATE/sessions/inputs/`，不保存输入正文。
+同键重试和服务重启均返回首次结果。跨外部写入崩溃时保留
+409 `session_input_result_unknown`，不自动重发；Herdr 写入失败返回并记住
+503 `session_input_unavailable`，需核对原 pane。输入无效返回 400 `invalid_session_input`；
+输入锁竞争返回 409 `session_input_busy`。
+
+后台采集追加 `session.changed`（含 `removed`）与 `session.message`
+（仅消息 ID、种类和时间，不含正文），复用 `/v1/events` 的序号、轮转和补读。
+输入成功也发布 `session.changed`，与首次幂等结果在同一事务发布，重试不重复发布。
+查询本身不发布事件；Herdr 读取失败不当作会话关闭。新增 `contracts/v1/sessions-*.json`
+给出本票请求、响应和事件样例；终端样例另用 `frames` 保存原始 NDJSON。
+
+检查：`PYTHONPATH=src python3 -m unittest tests.test_rd_serve_sessions -v`。
+测试将假 `herdr` 放在临时 PATH，使用临时配置、会话记录与短 Unix socket 路径。
+编排方安装本票包后，在隔离环境复测四种 harness 的列表、状态、ANSI 帧、审批按键，
+以及 App 消息增量和派单反查。不要把 Herdr 的 idle 当成菜单识别成功；Kimi 信任菜单
+存在已知漏报。实现会话不连接真实 Herdr、不部署测试栈、不重启既有服务。

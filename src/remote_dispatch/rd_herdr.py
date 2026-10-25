@@ -1,0 +1,127 @@
+"""The single subprocess boundary for Herdr; never launches a harness."""
+import json
+import os
+from pathlib import Path
+import select
+import socket
+import subprocess
+import threading
+
+
+class Herdr:
+    def __init__(self):
+        self.observers = set()
+        self.observers_lock = threading.Lock()
+        self.closed = False
+
+    @staticmethod
+    def reap(process):
+        if process.poll() is None:
+            try:
+                process.kill()
+            except ProcessLookupError:
+                pass
+        process.wait()
+
+    def close(self):
+        with self.observers_lock:
+            self.closed = True
+            observers = list(self.observers)
+        for process, connection in observers:
+            try:
+                connection.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
+            self.reap(process)
+
+    def snapshot(self):
+        config = Path(os.environ.get("HERDR_CONFIG_PATH", Path.home() / ".config/herdr/config.toml"))
+        directory = config.parent
+        session = os.environ.get("HERDR_SESSION")
+        if session:
+            # Session selection is process configuration, never an HTTP argument.
+            if Path(session).name != session or session in (".", ".."):
+                return {}
+            directory = directory / "sessions" / session
+        try:
+            saved = json.loads((directory / "session.json").read_text(encoding="utf-8"))
+            if saved.get("version") != 3:
+                return {}
+            panes = {}
+            for workspace in saved["workspaces"]:
+                for tab in workspace["tabs"]:
+                    for raw, pane in tab["panes"].items():
+                        if not isinstance(pane, dict):
+                            continue
+                        number = workspace["public_pane_numbers"].get(raw)
+                        if type(number) is not int or number < 1:
+                            continue
+                        encoded = ""
+                        while number:
+                            number, digit = divmod(number - 1, 32)
+                            encoded = "123456789ABCDEFGHJKMNPQRSTVWXYZ0"[digit] + encoded
+                        panes[workspace["id"] + ":p" + encoded] = pane
+            return panes
+        except (OSError, ValueError, KeyError, TypeError, AttributeError):
+            return {}
+
+    def command(self, *args):
+        return ["herdr", *args]
+
+    def run(self, *args):
+        process = subprocess.run(self.command(*args), capture_output=True,
+                                 env=dict(os.environ, HERDR_ENV="1"))
+        if process.returncode:
+            raise OSError("herdr_unavailable")
+        return process.stdout.decode("utf-8")
+
+    def agents(self):
+        try:
+            result = json.loads(self.run("agent", "list"))
+            if isinstance(result, dict):
+                result = result.get("result", result)
+            rows = result["agents"] if isinstance(result, dict) else result
+        except (ValueError, KeyError, TypeError) as error:
+            raise OSError("herdr_unavailable") from error
+        if not isinstance(rows, list) or any(not isinstance(row, dict) for row in rows):
+            raise OSError("herdr_unavailable")
+        return rows
+
+    def screen(self, pane):
+        return self.run("pane", "read", pane, "--source", "visible", "--format", "ansi")
+
+    def input(self, pane, body):
+        if "text" in body:
+            self.run("pane", "send-text", pane, "--", body["text"])
+            self.run("pane", "send-keys", pane, "enter")
+        else:
+            self.run("pane", "send-keys", pane, *body["keys"])
+
+    def frames(self, pane, stop, connection):
+        with self.observers_lock:
+            if self.closed or stop.is_set():
+                return
+            process = subprocess.Popen(self.command("terminal", "session", "observe", pane),
+                                   stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                                   env=dict(os.environ, HERDR_ENV="1"), bufsize=0)
+            self.observers.add((process, connection))
+        try:
+            pending = b""
+            while not stop.is_set():
+                ready, _, _ = select.select([process.stdout, connection], [], [], 0.1)
+                if connection in ready and not connection.recv(1, socket.MSG_PEEK):
+                    return
+                if process.stdout not in ready:
+                    continue
+                data = os.read(process.stdout.fileno(), 65536)
+                if not data:
+                    break
+                pending += data
+                while b"\n" in pending:
+                    line, pending = pending.split(b"\n", 1)
+                    yield line
+        finally:
+            self.reap(process)
+            process.stdout.close()
+            with self.observers_lock:
+                self.observers.discard((process, connection))

@@ -1,0 +1,16 @@
+{
+  "request": {
+    "method": "GET",
+    "path": "/v1/jobs/closed/session"
+  },
+  "response": {
+    "status": 200,
+    "body": {
+      "session": null,
+      "matched_by": null,
+      "reason": "session_closed",
+      "text": "会话已关闭"
+    }
+  },
+  "events": []
+}

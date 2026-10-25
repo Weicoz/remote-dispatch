@@ -25,6 +25,7 @@ from .rd_query import Query, result_path
 from .rd_serve_writes import Writes
 from .rd_serve_projects import ProjectRoutes
 from . import rd_harness_stats
+from .rd_serve_sessions import Sessions
 
 
 WRITE_COMMANDS = {"run", "resume", "ack", "review", "stop", "project", "inbox", "keep", "clean"}
@@ -124,6 +125,8 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         try:
+            if self.server.service.sessions.handle_get(self):
+                return
             if urlsplit(self.path).path == "/v1/events":
                 return self.events()
             status, body = self.server.service.read(self.path)
@@ -137,7 +140,8 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         try:
-            if self.server.service.project_routes.post(self):
+            if (self.server.service.project_routes.post(self)
+                    or self.server.service.sessions.handle_post(self)):
                 return
             if self.path != "/_cli/v1":
                 return self.server.service.writes.handle(self)
@@ -174,7 +178,7 @@ class Handler(BaseHTTPRequestHandler):
             while not service.stop.is_set() and network.stream_allowed(self):
                 for row in events.read_after(service.state, cursor):
                     cursor = row["seq"]
-                    if not service.visible(row):
+                    if not service.visible(row) or not service.sessions.event_allowed(self, row):
                         continue
                     body = service.redact(dict(row, data=events.display_data(row["type"], row["data"])))
                     data = json.dumps(body, ensure_ascii=False, separators=(",", ":"))
@@ -217,6 +221,7 @@ class Service:
         self.poller = None
         self.project_routes = ProjectRoutes(self)
         self.sensitive = set()
+        self.sessions = Sessions(self)
         for host in self.config.hosts():
             for key, value in host.items():
                 if value and (key in ("env_file", "ssh_opts", "ssh") or "auth_file" in key):
@@ -264,6 +269,7 @@ class Service:
         self.stop.set()
         self.wake.set()
         self.network.close()
+        self.sessions.close()
         if self.thread is not None:
             self.server.shutdown()
             self.thread.join()
@@ -363,6 +369,7 @@ class Service:
         log = events.EventLog(self.state)
         while not self.stop.is_set():
             self.wake.clear()
+            self.sessions.collect()
             try:
                 records = self.records()
             except (ValueError, OSError, SystemExit):
@@ -454,6 +461,9 @@ class Service:
         return result.stdout
 
     def read(self, target):
+        session_response = self.sessions.read(target)
+        if session_response is not None:
+            return session_response
         url = urlsplit(target)
         path = unquote(url.path)
         args = parse_qs(url.query)

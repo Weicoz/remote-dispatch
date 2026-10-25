@@ -1,0 +1,15 @@
+{
+  "request": {
+    "method": "GET",
+    "path": "/v1/sessions/w1:p1/terminal"
+  },
+  "response": {
+    "status": 200,
+    "body": null
+  },
+  "events": [],
+  "frames": [
+    "{\"type\":\"terminal.frame\", \"data\":\"G1szMW1oaRtbMG0=\",\"seq\":7}",
+    "{\"type\":\"terminal.closed\",\"reason\":\"closed\"}"
+  ]
+}
