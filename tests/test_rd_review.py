@@ -10,6 +10,7 @@ import unittest
 from unittest.mock import patch
 
 from remote_dispatch import cli as rd
+from remote_dispatch import rd_events as events
 
 
 class ReviewTests(unittest.TestCase):
@@ -49,8 +50,11 @@ class ReviewTests(unittest.TestCase):
         if operation == "probe":
             return self.probe
         if operation == "resume-checkpoint":
-            return {}
-        if operation in ("upload", "controller-register", "resume-rollback"):
+            return dict(state=dict(self.state))
+        if operation == "resume-rollback":
+            self.state = dict(data["checkpoint"]["state"])
+            return None
+        if operation in ("upload", "controller-register"):
             return None
         if operation == "launch":
             self.launched.append(data)
@@ -131,6 +135,7 @@ class ReviewTests(unittest.TestCase):
                                          ("probe", self.probe, "resume_host_unavailable"),
                                          ("launch", self.probe, "resume_launch_failed")):
             with self.subTest(operation=operation, probe=probe):
+                before_events = events.read_after(rd.STATE, 0)
                 self.fail_operation, self.probe = operation, probe
                 code, out, err = self.review("--reject", "继续")
                 self.assertNotEqual(code, 0)
@@ -141,6 +146,66 @@ class ReviewTests(unittest.TestCase):
                 code, out, err = self.command("status", "fixture-job", "--json")
                 self.assertEqual(json.loads(out)[0]["rounds"], 1)
                 self.assertFalse(list((self.root / "state/results").glob("**/*.review.json")))
+                self.assertEqual(events.read_after(rd.STATE, 0), before_events)
+
+    def test_successful_reject_publishes_old_round_review_and_new_round_state(self):
+        code, out, err = self.review("--reject", "继续", "--reviewed-by", "device")
+        self.assertEqual(code, 0, err)
+        rows = events.read_after(rd.STATE, 0)
+        review = next(row for row in rows if row["type"] == "review.updated")
+        self.assertEqual((review["data"]["round"], review["data"]["review_state"]), (1, "rejected"))
+        self.assertEqual(review["data"]["reviewed_by"], "device")
+        self.assertTrue(any(row["type"] == "receipt.acked" and row["data"]["acked_by"] == "device" for row in rows))
+        self.assertTrue(any(row["type"] == "job.state_changed" and row["data"]["round"] == 2 for row in rows))
+
+    def test_event_publish_failure_rolls_back_review_and_started_rejection_without_partial_events(self):
+        replace = os.replace
+        def fail_events(source, destination):
+            if Path(destination) == Path(rd.STATE) / "events.jsonl":
+                raise OSError("fixture event disk full")
+            return replace(source, destination)
+        for options in (("--accept",), ("--void",), ("--reject", "继续")):
+            with self.subTest(options=options):
+                before = events.read_after(rd.STATE, 0)
+                with patch.object(os, "replace", side_effect=fail_events):
+                    code, out, err = self.review(*options)
+                self.assertEqual(code, 4, err)
+                result = self.result()
+                self.assertEqual((result["review_state"], result["delivery_state"]), ("pending", "pending"))
+                self.assertEqual(rd.load_job("fixture-job")["rounds"], 1)
+                self.assertEqual(self.state["state"], "done")
+                self.assertEqual(events.read_after(rd.STATE, 0), before)
+
+    def test_accept_and_void_publish_review_for_original_round(self):
+        self.assertEqual(self.review("--accept")[0], 0)
+        rows = [row for row in events.read_after(rd.STATE, 0) if row["type"] == "review.updated"]
+        self.assertEqual([(row["data"]["round"], row["data"]["review_state"]) for row in rows], [(1, "accepted")])
+        self.rec["job"] = "void-job"
+        self.report["job"] = "void-job"
+        rd.save_job(self.rec)
+        self.assertEqual(self.command("review", "void-job", "--round", "1", "--void")[0], 0)
+        rows = [row for row in events.read_after(rd.STATE, 0) if row["type"] == "review.updated"]
+        self.assertEqual([(row["data"]["job"], row["data"]["review_state"]) for row in rows],
+                         [("fixture-job", "accepted"), ("void-job", "voided")])
+
+    def test_plain_resume_restores_target_and_local_round_if_event_publish_fails_after_launch(self):
+        prompt = self.root / "continue.md"
+        prompt.write_text("继续")
+        replace = os.replace
+        # Only fail the new-round event batch; collecting the old receipt is a
+        # separate successful write and may legitimately publish old-round data.
+        def fail_new_round(source, destination):
+            if Path(destination) == Path(rd.STATE) / "events.jsonl" and self.state["state"] == "running":
+                raise OSError("fixture event disk full")
+            return replace(source, destination)
+        with patch.object(os, "replace", side_effect=fail_new_round):
+            code, out, err = self.command("resume", "fixture-job", "--prompt-file", str(prompt))
+        self.assertEqual(code, 4, err)
+        self.assertIn("event_write_failed", err)
+        self.assertTrue(self.launched)
+        self.assertEqual(rd.load_job("fixture-job")["rounds"], 1)
+        self.assertEqual((self.state["state"], self.state["round"]), ("done", "1"))
+        self.assertFalse(any(row["data"].get("round") == 2 for row in events.read_after(rd.STATE, 0)))
 
     def test_duplicate_review_reports_original_actor_time_and_state_without_changes(self):
         self.assertEqual(self.review("--accept", "--reviewed-by", "device-a")[0], 0)

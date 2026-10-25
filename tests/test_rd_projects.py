@@ -12,6 +12,7 @@ import unittest
 from unittest.mock import patch
 
 from remote_dispatch import cli as rd
+from remote_dispatch import rd_events as events
 from remote_dispatch.rd_lock import JobLock
 
 
@@ -76,7 +77,37 @@ class ProjectHistoryTests(unittest.TestCase):
         self.assertEqual(rows["explicit"]["first_dispatch_at"], "2026-10-23 08:00:00")
         self.assertIsNone(rows["未归属"]["first_dispatch_at"])
         after = self.snapshot()
-        self.assertEqual({key: after[key] for key in before}, before)
+        # Rebuild is a write command: only its event history and index may grow.
+        original_records = {key: value for key, value in before.items() if key != "events.jsonl"}
+        self.assertEqual({key: after[key] for key in original_records}, original_records)
+
+    def test_hide_show_and_rebuild_publish_only_changed_projects_for_current_user(self):
+        rd.save_job(dict(job="alice-job", user_id="alice-team", project="app"))
+        row = self.command("project", "rebuild")[0]
+        self.command("project", "hide", row["id"])
+        self.command("project", "show", row["id"])
+        self.command("project", "rebuild")
+        rows = [item for item in events.read_after(self.state, 0) if item["type"] == "project.changed"]
+        self.assertEqual([item["data"]["hidden"] for item in rows], [False, True, False])
+        self.assertTrue(all(item["data"]["user_id"] == "alice-team" for item in rows))
+        self.assertTrue(all(item["data"]["project_id"] == row["id"] for item in rows))
+
+    def test_event_write_failure_restores_project_visibility_and_allows_retry(self):
+        rd.save_job(dict(job="alice-job", user_id="alice-team", project="app"))
+        row = self.command("project", "rebuild")[0]
+        before = events.read_after(self.state, 0)
+        replace = os.replace
+        def fail_events(source, destination):
+            if Path(destination) == self.state / "events.jsonl":
+                raise OSError("fixture event disk full")
+            return replace(source, destination)
+        with patch.object(os, "replace", side_effect=fail_events), contextlib.redirect_stderr(io.StringIO()), \
+             self.assertRaises(SystemExit) as error:
+            self.command("project", "hide", row["id"])
+        self.assertEqual(error.exception.code, 4)
+        self.assertFalse(rd.queries(rd.Config()).projects("alice-team")[0]["hidden"])
+        self.assertEqual(events.read_after(self.state, 0), before)
+        self.assertTrue(self.command("project", "hide", row["id"])["hidden"])
 
     def test_project_commands_are_user_scoped_and_unknown_id_does_not_write(self):
         rd.save_job(dict(job="alice-job", user_id="alice-team", project="app"))

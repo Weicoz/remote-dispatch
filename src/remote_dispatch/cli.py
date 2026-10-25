@@ -32,6 +32,7 @@ from . import rd_agents as agents
 from . import rd_query as query
 from . import rd_projects as projects
 from . import rd_review as reviews
+from . import rd_events as events
 from .rd_lock import JobBusy, JobLock
 from . import rd_initiator as initiators
 
@@ -675,7 +676,18 @@ def job_path(job):
 
 
 def save_job(rec):
-    messages.atomic_json(Path(STATE).resolve() / "jobs" / (messages.job_id(rec["job"]) + ".json"), rec, limit=None)
+    path = Path(STATE).resolve() / "jobs" / (messages.job_id(rec["job"]) + ".json")
+    with events.write_transaction([path]):
+        try:
+            previous = json.loads(path.read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            previous = None
+        messages.atomic_json(path, rec, limit=None)
+        data = events.job_data(rec)
+        if previous is None:
+            events.emit(STATE, "job.created", data)
+        elif events.display_data("job.state_changed", events.job_data(previous)) != events.display_data("job.state_changed", data):
+            events.emit(STATE, "job.state_changed", data)
 
 
 def load_job(job):
@@ -743,11 +755,24 @@ def queries(cfg):
 
 def collect_result(cfg, rec, snapshot):
     """Explicit write path used by inbox, resume and cleanup, never by queries."""
+    events.EventLog(STATE).observe_job(rec, snapshot)
     number = int(snapshot.get("round") or 0) or rec["rounds"]
     receipt = queries(cfg).result(rec, number, snapshot)
     if receipt is not None and messages.read_json(result_path(rec, number)) is None:
-        messages.atomic_json(result_path(rec, number), receipt, limit=messages.RECEIPT_BYTES)
+        persist_receipt(rec, receipt)
     return receipt
+
+
+def persist_receipt(rec, receipt):
+    path = result_path(rec, receipt["round"])
+    previous = messages.read_json(path)
+    if previous == receipt:
+        return
+    with events.write_transaction([path]):
+        messages.atomic_json(path, receipt, limit=messages.RECEIPT_BYTES)
+        report = receipt.get("report") or {}
+        events.emit(STATE, "receipt.ready", events.job_data(rec, **receipt,
+                    outcome=report.get("outcome"), checks=report.get("checks")))
 
 
 def delivery(rec, receipt):
@@ -819,10 +844,13 @@ def cmd_ack(a, cfg):
 
 def acknowledge_receipt(rec, receipt, signer, via):
     path = result_path(rec, receipt["round"])
-    if messages.read_json(path) is None:
-        messages.atomic_json(path, receipt, limit=messages.RECEIPT_BYTES)
-    messages.atomic_json(path.with_suffix(".ack.json"), dict(receipt_id=receipt["receipt_id"], received_at=messages.utc_now(),
-                                                           acked_by=signer, via=via))
+    with events.write_transaction([path, path.with_suffix(".ack.json")]):
+        if messages.read_json(path) is None:
+            persist_receipt(rec, receipt)
+        acknowledgement = dict(receipt_id=receipt["receipt_id"], received_at=messages.utc_now(), acked_by=signer, via=via)
+        messages.atomic_json(path.with_suffix(".ack.json"), acknowledgement)
+        events.emit(STATE, "receipt.acked", events.job_data(rec, round=receipt["round"],
+                    suppress_push=receipt.get("suppress_push", False), **acknowledgement))
 
 
 @locked_job
@@ -842,16 +870,17 @@ def cmd_review(a, cfg):
         die("round_in_progress: 只能打回当前轮次。", 4)
     path = result_path(rec, a.round)
     with reviews.rollback_files([job_path(rec["job"]), path, path.with_suffix(".ack.json"),
-                                 reviews.review_path(STATE, rec, a.round)]):
+                                 reviews.review_path(STATE, rec, a.round)]), contextlib.ExitStack() as undo, events.transaction():
         def write_review():
             try:
                 if not queries(cfg).acknowledgement(rec, receipt):
                     acknowledge_receipt(rec, receipt, reviewer, a.via)
                 messages.atomic_json(reviews.review_path(STATE, rec, a.round), record)
+                events.emit(STATE, "review.updated", events.job_data(rec, round=a.round, **record))
             except OSError as error:
                 raise ValueError("review_write_failed: 无法保存签收或验收记录；本次操作已撤销。") from error
         if action == "rejected":
-            resume_job(a, cfg, rec, prompt=note, before_launch=write_review)
+            resume_job(a, cfg, rec, prompt=note, before_launch=write_review, rollback_stack=undo)
         else:
             write_review()
     print(json.dumps(record, ensure_ascii=False, indent=2))
@@ -1528,7 +1557,7 @@ def cmd_resume(a, cfg):
     resume_job(a, cfg, rec)
 
 
-def resume_job(a, cfg, rec, *, prompt=None, before_launch=None):
+def resume_job(a, cfg, rec, *, prompt=None, before_launch=None, rollback_stack=None):
     if getattr(a, "agent", None) and a.agent != rec.get("agent"):
         die("harness_change_not_allowed: 续跑不能换 harness；请另派一单。", 4)
     require_user()
@@ -1593,22 +1622,36 @@ def resume_job(a, cfg, rec, *, prompt=None, before_launch=None):
     rec["model"] = a.model or rec.get("model")
     rec["effort"] = a.effort or rec.get("effort")
     check_controller(host, rec["user_id"])
-    with migrate_job(rec, source_host, host) if moving else contextlib.nullcontext():
-        checkpoint = native.request(host, "resume-checkpoint", dict(job=rec["job"])) if before_launch else None
+    with contextlib.ExitStack() as operation:
+        if moving:
+            (rollback_stack if rollback_stack is not None else operation).enter_context(migrate_job(rec, source_host, host))
+        checkpoint = native.request(host, "resume-checkpoint", dict(job=rec["job"]))
         if before_launch:
             before_launch()
-        with reviews.rollback_files([job_path(rec["job"])]):
+        guard = rollback_launch(host, rec, checkpoint)
+        if rollback_stack is not None:
+            rollback_stack.enter_context(guard)
+            guard = contextlib.nullcontext()
+        with reviews.rollback_files([job_path(rec["job"])]), guard, events.transaction():
             save_job(rec)
-            try:
-                launch(host, rec, rec["rounds"], command, prompt, a.timeout or host["timeout"])
-            except (Exception, SystemExit) as error:
-                if checkpoint is not None:
-                    try:
-                        native.request(host, "resume-rollback", dict(job=rec["job"], round=rec["rounds"], checkpoint=checkpoint))
-                    except (Exception, SystemExit) as rollback_error:
-                        raise ValueError("resume_launch_failed: 启动失败且目标机回滚未确认；请核对目标机状态。") from rollback_error
-                raise ValueError("resume_launch_failed: 目标机启动失败；请核对目标机状态后重试。") from error
+            launch(host, rec, rec["rounds"], command, prompt, a.timeout or host["timeout"])
     print(f"resumed {rec['job']} (round {rec['rounds']}, session {session or 'pending new context'})")
+
+
+@contextlib.contextmanager
+def rollback_launch(host, rec, checkpoint):
+    """Keep the target checkpoint alive until the caller publishes its events."""
+    try:
+        yield
+    except (Exception, SystemExit) as error:
+        if checkpoint is not None:
+            try:
+                native.request(host, "resume-rollback", dict(job=rec["job"], round=rec["rounds"], checkpoint=checkpoint))
+            except (Exception, SystemExit) as rollback_error:
+                raise ValueError("resume_launch_failed: 启动失败且目标机回滚未确认；请核对目标机状态。") from rollback_error
+        if isinstance(error, ValueError) and str(error).startswith("event_write_failed:"):
+            raise
+        raise ValueError("resume_launch_failed: 目标机启动失败；请核对目标机状态后重试。") from error
 
 
 @contextlib.contextmanager
@@ -1699,6 +1742,8 @@ def cmd_stop(a, cfg):
     if receipt.get("stopped_by") and queries(cfg).acknowledgement(rec, receipt):
         return
     stopper, stopped_at = request["stopped_by"], request["requested_at"]
+    events.emit(STATE, "job.state_changed", events.job_data(rec, execution_state="done", executor_exit=143,
+                stopped_by=stopper, stopped_at=stopped_at, suppress_push=True))
     receipt.update(executor_exit=143, stopped_by=stopper, stopped_at=stopped_at,
                    suppress_push=True, review_state="pending", needs_initiator_review=True)
     report = dict(receipt.get("report") or dict(schema=1, kind="result", job=rec["job"], round=rec["rounds"],
@@ -1706,10 +1751,8 @@ def cmd_stop(a, cfg):
     report.update(outcome="failed", updated_at=stopped_at)
     receipt["report"] = report
     receipt["receipt_id"] = query.receipt_id(receipt)
-    path = result_path(rec, rec["rounds"])
-    messages.atomic_json(path, receipt, limit=messages.RECEIPT_BYTES)
-    messages.atomic_json(path.with_suffix(".ack.json"), dict(receipt_id=receipt["receipt_id"], received_at=messages.utc_now(),
-                                                           acked_by=stopper, via=request["via"]))
+    persist_receipt(rec, receipt)
+    acknowledge_receipt(rec, receipt, stopper, request["via"])
 
 
 def backup_reports(host, rec):

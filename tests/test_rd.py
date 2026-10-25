@@ -574,6 +574,14 @@ print(json.dumps({"session_id":"fixture-session"}))
         self.ssh_patch = patch.object(rd, "ssh", self.local_shell)
         self.ssh_patch.start()
         self.addCleanup(self.ssh_patch.stop)
+        self.native_patch = patch.object(native, "request", side_effect=self.local_rpc)
+        self.native_patch.start()
+        self.addCleanup(self.native_patch.stop)
+
+    def local_rpc(self, host, operation, data=None, **kwargs):
+        return native.handle(dict(data or {}, operation=operation, workdir=host["workdir"],
+                                  shared_workdir=host.get("shared_workdir", host["workdir"]), path=host["path"]),
+                             io.BytesIO())
 
     def local_shell(self, host, script, check=True, stdin_data=None, stdin=None, timeout=None):
         shared = dict(host, workdir=host.get("shared_workdir", host["workdir"]))

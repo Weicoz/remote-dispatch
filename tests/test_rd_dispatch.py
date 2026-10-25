@@ -14,6 +14,7 @@ import unittest
 from unittest.mock import patch
 
 from test_rd import rd, native
+from remote_dispatch import rd_events as events
 
 
 class DispatchTests(unittest.TestCase):
@@ -145,6 +146,29 @@ class DispatchTests(unittest.TestCase):
         self.assertEqual(projects[0]["dispatch_count"], 2)
         self.assertEqual(projects[0]["first_dispatch_at"], "2026-10-24 10:00:00")
         self.assertEqual(projects[0]["last_dispatch_at"], "2026-10-25 11:00:00")
+        rows = events.read_after(rd.STATE, 0)
+        self.assertEqual([row["data"]["job"] for row in rows if row["type"] == "job.created"],
+                         [first["job"], second["job"]])
+        self.assertEqual([row["data"]["dispatch_state"] for row in rows
+                          if row["type"] == "job.state_changed" and row["data"]["job"] == first["job"]],
+                         ["launching", "started"])
+        changes = [row for row in rows if row["type"] == "project.changed"]
+        self.assertEqual([row["data"]["dispatch_count"] for row in changes], [1, 2])
+
+    def test_registration_event_failure_does_not_leave_a_manifest_that_blocks_retry(self):
+        replace = os.replace
+        def fail_events(source, destination):
+            if Path(destination) == Path(rd.STATE) / "events.jsonl":
+                raise OSError("fixture event disk full")
+            return replace(source, destination)
+        with patch.object(os, "replace", side_effect=fail_events), self.assertRaisesRegex(ValueError, "event_write_failed"):
+            self.dispatch(project="app")
+        self.assertEqual(rd.all_jobs(), [])
+        self.assertEqual(list((Path(rd.STATE) / "results").glob("*/dispatch.json")), [])
+        self.assertEqual(rd.queries(self.cfg).projects("employee_a"), [])
+        self.assertEqual(events.read_after(rd.STATE, 0), [])
+        self.dispatch(project="app")
+        self.assertEqual(rd.queries(self.cfg).projects("employee_a")[0]["dispatch_count"], 1)
 
     def test_same_origin_worktrees_share_project_but_other_origins_are_distinct(self):
         self.git("remote", "add", "origin", "https://example.invalid/one/app.git")
