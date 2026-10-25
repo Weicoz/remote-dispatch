@@ -48,3 +48,11 @@ JSON 类型，另用行为断言覆盖实际值、用户隔离、纯查询、锁
 项目过滤和历史分页由票 22 追加；本票的 `/v1/jobs` 返回当前登记的完整列表。
 所有公共只读接口按显示字段白名单投影，并剔除敏感字段、配置敏感值和私钥文本；
 自由正文继续遵循 reporter 的脱敏约定，不能把原始凭据作为提示词、报告或日志提交。
+
+- `network-addresses.json`：本机读取实际候选与证书指纹；可选字段
+  `listen_addresses` 返回完整配置（含禁用项，缺省 enabled=true、port=8443）。
+- `network-addresses-write.json`：Unix socket 的 `POST /v1/network`，带幂等键，
+  完整替换并保存勾选列表，立即重新绑定；样例展示取消监听后的空候选事件。
+  成功 body 与 GET 相同。同键返回首次结果，失败保留原选择。
+- `network-addresses-write-invalid.json`：禁用项也不能含通配地址，返回
+  400 `invalid_listen_address`；其他失败与本机边界见 `docs/serve.md`。

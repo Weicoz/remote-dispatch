@@ -50,34 +50,44 @@ class Network:
         self.connections = {}
         self.fingerprint = None
         self.candidates = []
-        self.listeners = self.configured_listeners()
+        self.listen_addresses = self.configured_listeners()
         self.push = PushDispatcher(service.state, service.user_id, push_sender,
                                    stop=service.stop, is_active=self.push_active) if push_sender is not None else None
         self.push_thread = None
 
     def configured_listeners(self):
+        data = self.read()
+        rows = data.get("listen_addresses")
+        if rows is None:
+            try:
+                rows = json.loads(self.service.config.cp.get("serve", "listen_addresses", fallback="[]"))
+            except ValueError:
+                raise ValueError("invalid_listen_address: select explicit LAN or VPN IP addresses and valid ports") from None
+        return self.validate_listeners(rows)
+
+    @staticmethod
+    def validate_listeners(rows):
         try:
-            rows = json.loads(self.service.config.cp.get("serve", "listen_addresses", fallback="[]"))
             if not isinstance(rows, list):
                 raise ValueError()
-            result = []
+            result, seen = [], set()
             allowed = [ipaddress.ip_network(value) for value in (
                 "127.0.0.0/8", "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16",
                 "100.64.0.0/10", "169.254.0.0/16", "::1/128", "fc00::/7", "fe80::/10")]
             for row in rows:
-                if not isinstance(row, dict) or type(row.get("enabled", True)) is not bool:
+                if (not isinstance(row, dict) or not isinstance(row.get("address"), str)
+                        or type(row.get("enabled", True)) is not bool):
                     raise ValueError()
-                if not row.get("enabled", True):
-                    continue
                 address = ipaddress.ip_address(row["address"])
                 port = row.get("port", 8443)
                 if (not any(address in net for net in allowed) or address.is_unspecified
                         or type(port) is not int or not 0 <= port <= 65535):
                     raise ValueError()
                 item = str(address), port
-                if item in result:
+                if item in seen:
                     raise ValueError()
-                result.append(item)
+                seen.add(item)
+                result.append(dict(address=str(address), port=port, enabled=row.get("enabled", True)))
             return result
         except (ValueError, TypeError, KeyError):
             raise ValueError("invalid_listen_address: select explicit LAN or VPN IP addresses and valid ports") from None
@@ -113,30 +123,88 @@ class Network:
         except (OSError, subprocess.SubprocessError) as exc:
             raise ValueError("certificate_unavailable: openssl and a valid certificate/key are required") from exc
 
+    def bind_listeners(self, rows, handler):
+        selected, created, candidates = [], [], []
+        try:
+            enabled = [row for row in rows if row["enabled"]]
+            context = self.certificate() if enabled else None
+            existing = {server.listen_address: (server, thread) for server, thread in self.servers}
+            for row in enabled:
+                address, port = row["address"], row["port"]
+                current = existing.get((address, port))
+                if current is None:
+                    server_type = type("SelectedAddressServer", (TLSServer,),
+                                       {"address_family": socket.AF_INET6 if ":" in address else socket.AF_INET})
+                    server = server_type((address, port), handler, bind_and_activate=False)
+                    created.append((server, None))
+                    server.service, server.network, server.context = self.service, self, context
+                    server.listen_address = address, port
+                    server.server_bind()
+                    server.server_activate()
+                    thread = threading.Thread(target=server.serve_forever, daemon=True)
+                    thread.start()
+                    created[-1] = current = server, thread
+                selected.append(current)
+                candidates.append(dict(address=address, port=current[0].server_address[1]))
+            return selected, created, candidates
+        except BaseException:
+            self.close_listeners(created)
+            raise
+
+    @staticmethod
+    def close_listeners(servers):
+        for server, thread in servers:
+            if thread is not None:
+                server.shutdown()
+                thread.join()
+            server.server_close()
+
     def start(self, handler):
         # Unix-only installations remain usable without openssl. HTTPS and pairing
         # always require the persistent certificate; no ephemeral pin is issued.
-        context = self.certificate() if self.listeners or shutil.which("openssl") else None
-        for address, port in self.listeners:
-            server_type = type("SelectedAddressServer", (TLSServer,),
-                               {"address_family": socket.AF_INET6 if ":" in address else socket.AF_INET})
-            server = server_type((address, port), handler, bind_and_activate=False)
-            self.servers.append((server, None))
-            server.service, server.network, server.context = self.service, self, context
-            server.server_bind()
-            server.server_activate()
-            thread = threading.Thread(target=server.serve_forever, daemon=True)
-            self.servers[-1] = server, thread
-            thread.start()
-            self.candidates.append(dict(address=address, port=server.server_address[1]))
-
+        if shutil.which("openssl"):
+            self.certificate()
+        self.handler = handler
+        self.servers, _, self.candidates = self.bind_listeners(self.listen_addresses, handler)
         log = events.EventLog(self.service.state)
-        data = dict(user_id=self.service.user_id, **self.info())
+        data = dict(user_id=self.service.user_id, spki_sha256=self.fingerprint, candidates=self.candidates)
         if self.candidates or log.latest("network.addresses_changed", data) is not None:
             log.publish("network.addresses_changed", data, only_if_changed=True)
         if self.push is not None:
             self.push_thread = threading.Thread(target=self.push_loop, daemon=True)
             self.push_thread.start()
+
+    def write_listeners(self, data, identity, body):
+        try:
+            rows = self.validate_listeners(body.get("listen_addresses"))
+        except ValueError:
+            reply = error(400, "invalid_listen_address")
+            data["requests"][identity] = reply
+            messages.atomic_json(self.path, data, limit=None)
+            return reply
+        try:
+            selected, created, candidates = self.bind_listeners(rows, self.handler)
+        except OSError:
+            reply = error(409, "listen_address_unavailable")
+            data["requests"][identity] = reply
+            messages.atomic_json(self.path, data, limit=None)
+            return reply
+        reply = 200, dict(spki_sha256=self.fingerprint, candidates=candidates, listen_addresses=rows)
+        data["listen_addresses"] = rows
+        data["requests"][identity] = reply
+        try:
+            with events.write_transaction([self.path]):
+                messages.atomic_json(self.path, data, limit=None)
+                if candidates != self.candidates:
+                    events.emit(self.service.state, "network.addresses_changed", dict(
+                        user_id=self.service.user_id, spki_sha256=self.fingerprint, candidates=candidates))
+        except BaseException:
+            self.close_listeners(created)
+            raise
+        retired = [item for item in self.servers if item not in selected]
+        self.servers, self.candidates, self.listen_addresses = selected, candidates, rows
+        self.close_listeners(retired)
+        return reply
 
     def push_loop(self):
         cursor = 0
@@ -162,7 +230,9 @@ class Network:
             return bool(current and not current["revoked"] and current.get("push_token") == device.get("push_token"))
 
     def info(self):
-        return dict(spki_sha256=self.fingerprint, candidates=list(self.candidates))
+        with self.lock:
+            return dict(spki_sha256=self.fingerprint, candidates=list(self.candidates),
+                        listen_addresses=list(self.listen_addresses))
 
     def track(self, connection, device_id=None):
         with self.lock:
@@ -219,6 +289,8 @@ class Network:
             if identity in data["requests"]:
                 status, result = data["requests"][identity]
                 return status, result
+            if path == "/v1/network":
+                return self.write_listeners(data, identity, body)
             changed = None
             next_window = self.window
             if path == "/v1/pairing-window":
@@ -286,13 +358,9 @@ class Network:
         if self.push_thread is not None:
             self.push_thread.join()
             self.push_thread = None
-        for server, thread in self.servers:
-            if thread is not None:
-                server.shutdown()
-                thread.join()
-            server.server_close()
-        self.servers.clear()
         with self.lock:
+            self.close_listeners(self.servers)
+            self.servers.clear()
             for connection in list(self.connections):
                 disconnect(connection)
             self.connections.clear()
@@ -384,7 +452,7 @@ def handler_class(base):
             if not self.authorized():
                 return
             path = urlsplit(self.path).path
-            if (path not in ("/v1/pair", "/v1/pairing-window", "/v1/push-tokens")
+            if (path not in ("/v1/pair", "/v1/pairing-window", "/v1/push-tokens", "/v1/network")
                     and not (path.startswith("/v1/devices/") and path.endswith("/session-access"))):
                 return super().do_POST()
             try:

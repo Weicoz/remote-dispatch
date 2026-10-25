@@ -1,0 +1,28 @@
+{
+  "request": {
+    "method": "POST",
+    "path": "/v1/network",
+    "headers": {
+      "Content-Type": "application/json",
+      "Idempotency-Key": "listen-selection-invalid"
+    },
+    "body": {
+      "listen_addresses": [
+        {
+          "address": "0.0.0.0",
+          "port": 8443,
+          "enabled": false
+        }
+      ]
+    }
+  },
+  "response": {
+    "status": 400,
+    "body": {
+      "error": {
+        "reason": "invalid_listen_address"
+      }
+    }
+  },
+  "events": []
+}
