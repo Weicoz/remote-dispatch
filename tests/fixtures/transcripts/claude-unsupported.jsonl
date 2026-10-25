@@ -1,0 +1,2 @@
+{"type":"user","uuid":"before-drift","timestamp":"2026-01-01T00:00:00Z","message":{"role":"user","content":"不能作为部分结果返回。"}}
+{"type":"assistant","uuid":"changed-block","timestamp":"2026-01-01T00:00:01Z","message":{"role":"assistant","content":[{"type":"future_text","value":"不能猜测的内容"}]}}
