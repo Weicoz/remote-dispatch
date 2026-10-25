@@ -1,0 +1,25 @@
+{
+  "request": {
+    "method": "POST",
+    "path": "/v1/pairing-window",
+    "body": {},
+    "headers": {
+      "Idempotency-Key": "window-1"
+    }
+  },
+  "response": {
+    "status": 200,
+    "body": {
+      "code": "PAIR_CODE",
+      "expires_in": 300,
+      "spki_sha256": "SPKI",
+      "candidates": [
+        {
+          "address": "127.0.0.1",
+          "port": 8443
+        }
+      ]
+    }
+  },
+  "events": []
+}

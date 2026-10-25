@@ -69,3 +69,113 @@ PYTHONPATH=src python3 -m unittest discover -s tests -p 'test_*.py'
 运行签收／停止／验收并断开重连 SSE，再终止服务核对 socket 删除。
 真实 SSH 目标机的探测、报告收取与日志读取，以及 App 消费样例的集成由编排方端到端复测；
 实现会话不部署测试栈或重启现有服务。
+
+## 票 21：HTTPS、配对、设备与推送
+
+网络接线在 `rd_serve_network.py`，推送决策与发送接口在 `rd_push.py`。
+上文的 Unix socket、CLI 转交和只读接口继续适用；配置了下列地址时，serve 同时提供 HTTPS：
+
+```ini
+[serve]
+listen_addresses = [{"address":"192.168.1.20","port":8443,"enabled":true},{"address":"100.90.1.20","port":8443,"enabled":false}]
+```
+
+列表由 Mac 设置页提供。`enabled` 缺省为 true，表示列出的候选默认勾选；
+没有列表或列表为空时只启动 Unix socket。只绑定启用项的具体 IP，禁用项不绑定。
+允许 LAN 私网、链路本地、Tailscale CGNAT、IPv6 ULA 和回环地址；
+拒绝公网、主机名、通配地址（包括 `0.0.0.0`、`::`）、重复项和无效端口。
+地址须已属于控制端接口，否则启动失败并回收本次已打开的监听器与 socket。
+修改地址配置后由编排方重启；运行中的服务不重读配置。
+`GET /v1/network`（仅 Unix socket）返回实际已绑定的 `candidates: [{address, port}]`
+和 `spki_sha256`。启动时与已记录列表不同才发布 `network.addresses_changed`，
+事件携带相同的候选列表和指纹；清空配置也发布空列表。所有候选共用证书。
+
+首次启动使用系统 `openssl` 生成 EC P-256 自签证书，之后用标准库 `ssl` 加载，
+最低 TLS 1.2。证书和私钥保存在 `RD_STATE/network/server.pem`、`server.key`，
+新目录 0700、文件 0600。依赖 `openssl req/x509/pkey`；没有 openssl 时仍可用
+Unix-only 服务，HTTPS 和配对不可用，相应测试跳过。私钥或证书仅剩一个时拒绝
+自动换证，避免无声改变已固定身份；由编排方恢复原证书对或安排重新配对。
+
+### 本机开启窗口与扫码
+
+Mac 用户通过 Unix socket 手动调用 `POST /v1/pairing-window`，JSON body `{}`，
+带 `Idempotency-Key`。返回 `code / expires_in: 300 / candidates / spki_sha256`，
+供 App 生成二维码。窗口不因服务启动或重启自动开启；300 秒边界起即拒绝新配对。
+再次手动开启使旧码失效；成功一次即关闭窗口。二维码和返回的令牌均不应记入日志。
+
+iPhone 先校验 TLS 证书的 **SPKI DER SHA-256**（64 位小写十六进制，非整张证书哈希），
+再调用 `POST /v1/pair`，body `{"code":"扫码所得的一次性码","name":"Phone"}`。
+带 `X-Rdispatch-SPKI: <固定指纹>` 与 `Idempotency-Key`；此端点不要求已有设备令牌。
+成功返回 `device_id / device_token / session_access_enabled: false`。
+令牌不过期，客户端须存 Keychain；服务端保存令牌摘要供鉴权。
+
+之后每个 HTTPS 请求必须同时带 `X-Rdispatch-SPKI` 与
+`Authorization: Bearer <device_token>`，包括 SSE 重连。
+**头中的指纹不能代替客户端在 TLS 握手时对服务器公钥的固定校验。**
+指纹不符为 403 `fingerprint_mismatch`，无令牌、令牌无效或已吊销为 401
+`device_unauthorized`；配对窗口关闭、过期或码无效为 403 `pairing_closed`。
+
+### 设备管理与幂等
+
+| 接口 | 通道与行为 |
+| --- | --- |
+| `GET /v1/devices` | 仅 Unix socket；设备 ID、名称、吊销状态、会话访问权限，不含任何令牌 |
+| `POST /v1/devices/{id}/session-access` | 仅 Unix socket；body `{"enabled":true}`，允许／禁止该设备访问会话 |
+| `DELETE /v1/devices/{id}` | 仅 Unix socket；立即吊销，关闭该设备已连接的 SSE 和其他 HTTPS 连接 |
+| `POST /v1/push-tokens` | 已认证设备登记自身 APNs token：`{"token":"…"}`；不能通过 body 冒认别的设备 |
+| 同一 push-tokens 接口 | Unix socket 可显式给 `device_id` 登记；不得给已吊销设备登记 |
+
+网络调用本机管理接口或 `/_cli/v1` 返回 403 `local_only`。
+已配对设备会话权限默认关闭，`/v1/sessions` 及其子路径返回 403
+`session_access_disabled`；权限打开后继续交由会话接口处理（票 25）。
+
+以上所有写接口要求 `Idempotency-Key`，缺失或空值返回 400
+`idempotency_key_required`。认证后的同一调用方同键返回首次状态码和 body，
+即使重启、请求正文改变也不重新执行。配对重试按一次性码划分调用方。
+鉴权失败不持久缓存。过期窗口的开启请求重试仍返回首次结果，需用新键手动开新窗口。
+设备状态和幂等结果保存在私有 `network/devices.json`（0600）；为能重放首次
+配对响应，幂等结果包含发放的令牌，不能把此文件作为展示、日志或产物导出。
+吊销状态持续落盘，重放旧配对结果不能恢复已吊销令牌。
+写入复用 `JobLock` 文件锁和现有状态／事件回滚边界；配对、登记、权限和吊销发
+`device.changed`（仅 ID、用户、权限与吊销状态）。事件不含配对码、设备令牌或 APNs token。
+业务写仍复用 CLI 的 job 锁与实现。本票没有改动现有私有 CLI 转交通道的协议。
+
+### APNs 发送接缝
+
+`Service(..., push_sender=sender)` 可注入实现 `PushSender` 的发送器：
+`send(token, payload, *, stop)`。发送器必须在 `stop` 置位后及时返回，且自行处理
+凭据和传输；真实网络超时等参数须先在目标环境测量。本票不带真实 APNs 传输，
+CLI 默认未注入发送器，不连接 Apple，也不读取用户推送密钥。
+
+后台消费当前用户可见事件，只交给发送器以下计数通知：
+
+- `receipt.ready`：`receipt_ready: 1`；`outcome=blocked` 时为 `blocked: 1`，不重复推两次。
+- 派单 `dead/unreachable` 或目标机不可达持续 **超过** 300 秒：`dead: 1` 或 `unreachable: 1`。
+  计时从事件时间开始，恢复清零，轮次变化重新计时，持续同一异常只推一次。
+- `suppress_push=true` 的事件不推，并清除该派单的异常计时。
+  主动停止、进度、开始、签收、验收和会话事件均不触发通知。
+
+payload 为 `{"aps":{"content-available":1},"counts":{"receipt_ready":1}}` 等，
+不包含派单名、摘要、正文或密钥。发送在设备锁外进行，发送前重查设备有效性；
+吊销不等待已在途的发送。游标与异常计时在 `network/push.json` 持久化，正常重启
+和补读不重发；发送成功后、检查点落盘前崩溃属于至少一次投递，可能重复。
+没有活动设备时事件仍被消费，不向以后新配对设备补推旧通知。
+
+### 检查与编排方／端到端复测
+
+```sh
+PYTHONPATH=src python3 -m unittest tests.test_rd_serve_network tests.test_rd_push tests.test_rd_serve tests.test_rd_events -v
+```
+
+测试仅绑定 127.0.0.1 随机端口，使用短 Unix socket 路径；结束后关闭服务并删除 socket。
+覆盖五分钟窗口、单次码、幂等重试、鉴权与重启、吊销空闲 SSE、阻塞发送器、
+未完成 TLS 握手、设备权限、地址事件、状态／事件失败回滚和假 APNs 计数规则。
+新增契约样例为 `contracts/v1/network-*.json`，可与 App 假 serve 共用。
+
+由编排方按现有安装流程更新 Python 包，在隔离 RD_STATE 配置控制端实际 LAN／VPN
+地址后启动 serve（勿在实现会话部署或重启测试栈）。用 Unix socket 手动开窗口，
+扫码后从 iPhone 校验 SPKI、保存 Keychain 令牌、读取接口并连 SSE；从 Mac 吊销，
+核对立即断流和重连被拒。修改候选地址并由编排方重启，核对事件补读、同一指纹、
+LAN／Tailscale／EasyTier 路由与只绑定勾选地址；退出后核对监听端口与 socket 已释放。
+真实 APNs 需要用户密钥及可取消发送器，由编排方／端到端执行；本票测试从不连 Apple。
+App 二维码、Keychain、实际握手固定校验、VPN 切换和真机推送不属于 Python 夹具验证。

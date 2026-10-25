@@ -1,0 +1,23 @@
+{
+  "request": {
+    "method": "POST",
+    "path": "/v1/pair",
+    "body": {
+      "code": "PAIR_CODE",
+      "name": "Phone"
+    },
+    "headers": {
+      "X-Rdispatch-SPKI": "SPKI",
+      "Idempotency-Key": "pair-1"
+    }
+  },
+  "response": {
+    "status": 200,
+    "body": {
+      "device_id": "DEVICE_ID",
+      "device_token": "DEVICE_TOKEN",
+      "session_access_enabled": false
+    }
+  },
+  "events": []
+}

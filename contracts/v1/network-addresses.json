@@ -1,0 +1,35 @@
+{
+  "request": {
+    "method": "GET",
+    "path": "/v1/network"
+  },
+  "response": {
+    "status": 200,
+    "body": {
+      "spki_sha256": "SPKI",
+      "candidates": [
+        {
+          "address": "127.0.0.1",
+          "port": 8443
+        }
+      ]
+    }
+  },
+  "events": [
+    {
+      "seq": 1,
+      "time": "2026-10-25T00:00:00+00:00",
+      "type": "network.addresses_changed",
+      "data": {
+        "user_id": "fixture",
+        "spki_sha256": "SPKI",
+        "candidates": [
+          {
+            "address": "127.0.0.1",
+            "port": 8443
+          }
+        ]
+      }
+    }
+  ]
+}

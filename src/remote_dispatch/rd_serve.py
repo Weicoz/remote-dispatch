@@ -20,6 +20,7 @@ from . import cli
 from .rd_lock import JobBusy, JobLock
 from . import rd_events as events
 from . import rd_messages as messages
+from . import rd_serve_network as network
 from .rd_query import Query, result_path
 
 
@@ -165,7 +166,7 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.flush()
         heartbeat = time.monotonic()
         try:
-            while not service.stop.is_set():
+            while not service.stop.is_set() and network.stream_allowed(self):
                 for row in events.read_after(service.state, cursor):
                     cursor = row["seq"]
                     if not service.visible(row):
@@ -186,7 +187,7 @@ class Handler(BaseHTTPRequestHandler):
 
 
 class Service:
-    def __init__(self, config, socket_path=None, *, poll_interval=15):
+    def __init__(self, config, socket_path=None, *, poll_interval=15, push_sender=None):
         self.config = config
         self.state = Path(cli.STATE).resolve()
         self.user_id = cli.require_user()
@@ -204,6 +205,7 @@ class Service:
         self.generations = {}
         self.progress = {}
         self.hosts = []
+        self.network = network.Network(self, push_sender=push_sender)
         self.server = None
         self.thread = None
         self.poller = None
@@ -235,7 +237,7 @@ class Service:
                     else:
                         raise ValueError("socket_path_in_use: socket path already exists")
             self.path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-            self.server = UnixServer(str(self.path), Handler, bind_and_activate=False)
+            self.server = UnixServer(str(self.path), network.handler_class(Handler), bind_and_activate=False)
             self.server.service = self
             self.server.server_bind()
             self.inode = self.path.stat().st_ino
@@ -243,6 +245,7 @@ class Service:
             self.server.server_activate()
             self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
             self.thread.start()
+            self.network.start(network.handler_class(Handler))
             self.poller = threading.Thread(target=self.poll, daemon=True)
             self.poller.start()
             return self
@@ -253,6 +256,7 @@ class Service:
     def close(self):
         self.stop.set()
         self.wake.set()
+        self.network.close()
         if self.thread is not None:
             self.server.shutdown()
             self.thread.join()
