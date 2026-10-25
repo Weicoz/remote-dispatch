@@ -21,6 +21,7 @@ from . import rd_events as events
 from . import rd_messages as messages
 from .rd_lock import JobLock
 from .rd_push import PushDispatcher
+from .rd_idempotency import fingerprint
 
 
 class NetworkLock(JobLock):
@@ -138,6 +139,10 @@ class Network:
                     server = server_type((address, port), handler, bind_and_activate=False)
                     created.append((server, None))
                     server.service, server.network, server.context = self.service, self, context
+                    cp = self.service.config.cp
+                    server.handshake_timeout = positive_setting(cp, "tls_handshake_timeout", 5)
+                    server.request_timeout = positive_setting(cp, "request_timeout", 15)
+                    server.slots = threading.BoundedSemaphore(int(positive_setting(cp, "max_connections", 32)))
                     server.listen_address = address, port
                     server.server_bind()
                     server.server_activate()
@@ -164,6 +169,10 @@ class Network:
         # always require the persistent certificate; no ephemeral pin is issued.
         if shutil.which("openssl"):
             self.certificate()
+        # Scrub caches written by older versions before serving any request.
+        with self.lock, NetworkLock(self.service.state):
+            if self.path.exists():
+                messages.atomic_json(self.path, self.read(), limit=None)
         self.handler = handler
         self.servers, _, self.candidates = self.bind_listeners(self.listen_addresses, handler)
         log = events.EventLog(self.service.state)
@@ -179,19 +188,19 @@ class Network:
             rows = self.validate_listeners(body.get("listen_addresses"))
         except ValueError:
             reply = error(400, "invalid_listen_address")
-            data["requests"][identity] = reply
+            data["requests"][identity]["reply"] = reply
             messages.atomic_json(self.path, data, limit=None)
             return reply
         try:
             selected, created, candidates = self.bind_listeners(rows, self.handler)
         except OSError:
             reply = error(409, "listen_address_unavailable")
-            data["requests"][identity] = reply
+            data["requests"][identity]["reply"] = reply
             messages.atomic_json(self.path, data, limit=None)
             return reply
         reply = 200, dict(spki_sha256=self.fingerprint, candidates=candidates, listen_addresses=rows)
         data["listen_addresses"] = rows
-        data["requests"][identity] = reply
+        data["requests"][identity]["reply"] = reply
         try:
             with events.write_transaction([self.path]):
                 messages.atomic_json(self.path, data, limit=None)
@@ -207,20 +216,24 @@ class Network:
         return reply
 
     def push_loop(self):
-        cursor = 0
+        reader = events.EventCursor(self.service.state)
+        pending = None
+        delay = 0.1
         while not self.service.stop.is_set():
             try:
-                rows = events.read_after(self.service.state, cursor)
+                if pending is None:
+                    pending = reader.read()
                 with self.lock:
                     devices = list(self.read()["devices"].values())
-                self.push.dispatch([row for row in rows if self.service.visible(row)], devices, now=time.time())
-                if rows:
-                    cursor = rows[-1]["seq"]
+                self.push.dispatch([row for row in pending if self.service.visible(row)], devices, now=time.time())
+                pending = None
+                delay = 0.1
             except Exception:
-                # A transport may include credentials in its error text.
+                # Keep the pending batch in memory; never reread history on retries.
                 if not self.service.stop.is_set():
                     print("rdispatch: push_unavailable: cannot deliver notifications", file=sys.stderr)
-            self.service.stop.wait(0.1)
+                delay = min(delay * 2, 30.0)
+            self.service.stop.wait(delay)
 
     def push_active(self, device):
         # Recheck immediately before a send without holding the lock during I/O.
@@ -264,7 +277,12 @@ class Network:
 
     def read(self):
         try:
-            return json.loads(events.physical(self.path).read_text(encoding="utf-8"))
+            data = json.loads(events.physical(self.path).read_text(encoding="utf-8"))
+            for identity, entry in data["requests"].items():
+                if not isinstance(entry, dict):
+                    # Legacy caches have no request binding and may contain secrets.
+                    data["requests"][identity] = dict(fingerprint=None, reply=error(403, "pairing_closed"))
+            return data
         except FileNotFoundError:
             return {"devices": {}, "requests": {}}
 
@@ -284,11 +302,15 @@ class Network:
             if self.service.stop.is_set():
                 return error(503, "serve_stopping")
             data = self.read()
-            principal = "pair:" + digest(str(body.get("code", ""))) if path == "/v1/pair" else device_id or "local"
+            principal = "pair" if path == "/v1/pair" else device_id or "local"
             identity = digest(principal + ":" + key)
             if identity in data["requests"]:
-                status, result = data["requests"][identity]
+                entry = data["requests"][identity]
+                if entry["fingerprint"] != fingerprint(method, path, body):
+                    return error(422, "idempotency_key_reused")
+                status, result = entry["reply"]
                 return status, result
+            data["requests"][identity] = dict(fingerprint=fingerprint(method, path, body))
             if path == "/v1/network":
                 return self.write_listeners(data, identity, body)
             changed = None
@@ -340,7 +362,9 @@ class Network:
                     reply = 200, dict(device_id=target, revoked=True)
             else:
                 return error(404, "not_found")
-            data["requests"][identity] = reply
+            # Pairing secrets are returned once, and only live in process memory.
+            data["requests"][identity]["reply"] = (error(403, "pairing_closed")
+                if path in ("/v1/pair", "/v1/pairing-window") else reply)
             with events.write_transaction([self.path]):
                 messages.atomic_json(self.path, data, limit=None)
                 if changed is not None:
@@ -366,24 +390,45 @@ class Network:
             self.connections.clear()
 
 
+def positive_setting(cp, name, default):
+    value = float(cp.getfloat("serve", name, fallback=default))
+    if not 0 < value < float("inf") or (name == "max_connections" and not value.is_integer()):
+        raise ValueError("invalid_" + name)
+    return value
+
+
 class TLSServer(socketserver.ThreadingMixIn, socketserver.TCPServer):
     daemon_threads = True
+
+    def process_request(self, request, client_address):
+        if not self.slots.acquire(blocking=False):
+            self.shutdown_request(request)
+            return
+        try:
+            super().process_request(request, client_address)
+        except BaseException:
+            self.slots.release()
+            raise
 
     def process_request_thread(self, request, client_address):
         # Handshakes run in request threads, so an idle peer cannot stall accept
         # or shutdown. Track sockets before handshaking so shutdown can cancel.
         try:
+            request.settimeout(self.handshake_timeout)
             connection = self.context.wrap_socket(request, server_side=True, do_handshake_on_connect=False)
             with connection:
                 if not self.network.track(connection):
                     return
                 try:
                     connection.do_handshake()
+                    connection.settimeout(self.request_timeout)
                     super().process_request_thread(connection, client_address)
                 finally:
                     self.network.untrack(connection)
         except OSError:
             request.close()
+        finally:
+            self.slots.release()
 
 
 def disconnect(connection):

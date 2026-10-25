@@ -1,4 +1,5 @@
 """Public HTTP writes reuse CLI commands, locks and events in isolated children."""
+from contextlib import nullcontext
 import hashlib
 import json
 from pathlib import Path
@@ -10,6 +11,7 @@ from urllib.parse import unquote, urlsplit
 
 from . import cli
 from . import rd_messages as messages
+from .rd_idempotency import fingerprint
 
 
 ROUTE = re.compile(r"/v1/jobs/([A-Za-z0-9._-]+)/(?:rounds/([1-9][0-9]*)/(ack|review)|(stop|resume))")
@@ -55,7 +57,8 @@ class Writes:
                 raise ValueError("invalid_request")
             if not key.strip():
                 return handler.json(*error(400, "idempotency_key_required"))
-            status, reply = self.write(key, route, body)
+            status, reply = self.write(key, route, body, device_id=getattr(handler, "device_id", None),
+                                       method=handler.command)
             handler.json(status, reply)
         except (ValueError, TypeError, KeyError, UnicodeError):
             handler.json(*error(400, "invalid_request"))
@@ -64,13 +67,19 @@ class Writes:
         except (OSError, subprocess.SubprocessError):
             handler.json(*error(503, "write_unavailable"))
 
-    def write(self, key, route, body):
+    def write(self, key, route, body, *, device_id=None, method="POST"):
         service = self.service
-        digest = hashlib.sha256(json.dumps([service.user_id, key]).encode()).hexdigest()
+        scope = [service.user_id, device_id, key] if device_id else [service.user_id, key]
+        digest = hashlib.sha256(json.dumps(scope).encode()).hexdigest()
         path = service.state / "serve-writes" / (digest + ".json")
-        with self.lock:
+        request_hash = fingerprint(method, route.group(0) if route else "/v1/runs", body)
+        # A slow collector for one job must not occupy the shared write queue.
+        guard = service.job_guard(route.group(1)) if route else nullcontext()
+        with guard, self.lock:
             saved = messages.read_json(path)
             if saved is not None:
+                if saved.get("fingerprint") != request_hash:
+                    return error(422, "idempotency_key_reused")
                 return saved["status"], saved["body"]
             if service.stop.is_set():
                 return error(503, "write_unavailable")
@@ -78,7 +87,7 @@ class Writes:
             # process dies between side effects and response publication, never
             # start the command again merely because a client retried its key.
             pending = error(503, "write_outcome_unknown")
-            messages.atomic_json(path, dict(status=pending[0], body=pending[1]), limit=None)
+            messages.atomic_json(path, dict(status=pending[0], body=pending[1], fingerprint=request_hash), limit=None)
             try:
                 result = self.command(route, body)
             except (ValueError, TypeError, KeyError):
@@ -88,7 +97,7 @@ class Writes:
             status, reply = result
             reply = service.redact(reply)
             try:
-                messages.atomic_json(path, dict(status=status, body=reply), limit=None)
+                messages.atomic_json(path, dict(status=status, body=reply, fingerprint=request_hash), limit=None)
             except OSError:
                 return pending
             return status, reply

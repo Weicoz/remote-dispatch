@@ -1,0 +1,32 @@
+{
+  "previous_request": {
+    "method": "POST",
+    "path": "/v1/network",
+    "headers": {
+      "Idempotency-Key": "used-key"
+    },
+    "body": {
+      "listen_addresses": [],
+      "extra": true
+    }
+  },
+  "request": {
+    "method": "POST",
+    "path": "/v1/network",
+    "headers": {
+      "Idempotency-Key": "used-key"
+    },
+    "body": {
+      "listen_addresses": []
+    }
+  },
+  "response": {
+    "status": 422,
+    "body": {
+      "error": {
+        "reason": "idempotency_key_reused"
+      }
+    }
+  },
+  "events": []
+}

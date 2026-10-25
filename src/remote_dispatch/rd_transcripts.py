@@ -73,9 +73,9 @@ def _output_text(content: object, text_types: tuple, attachments: tuple = ()) ->
     return content if isinstance(content, str) else _text_blocks(content, text_types, attachments)
 
 
-def _claude(lines: Iterable[str]) -> list:
+def _claude(lines: Iterable[str], tools=None) -> list:
     messages = []
-    tools = {}
+    tools = {} if tools is None else tools
     for _, record in _records(lines):
         record_type = record["type"]
         if (record_type in _CLAUDE_IGNORED or record_type.startswith("file-history-")
@@ -123,10 +123,11 @@ def _claude(lines: Iterable[str]) -> list:
     return messages
 
 
-def _codex(lines: Iterable[str]) -> list:
+def _codex(lines: Iterable[str], tools=None, line_offset=0) -> list:
     messages = []
-    tools = {}
+    tools = {} if tools is None else tools
     for line_number, record in _records(lines):
+        line_number += line_offset
         if record["type"] in _CODEX_IGNORED or record["type"].startswith("token_"):
             continue
         if record["type"] != "response_item":
@@ -174,7 +175,7 @@ def _codex(lines: Iterable[str]) -> list:
     return messages
 
 
-def convert_transcript(harness: str, lines: Iterable[str]) -> dict:
+def convert_transcript(harness: str, lines: Iterable[str], *, tools=None, line_offset=0) -> dict:
     """将 claude/codex JSONL 转为统一消息；未知格式整体返回“不支持”。
 
     不读取路径、环境、全局会话或服务。忽略空行；id 在向末尾追加记录时稳定。
@@ -183,9 +184,9 @@ def convert_transcript(harness: str, lines: Iterable[str]) -> dict:
     """
     try:
         if harness == "claude":
-            messages = _claude(lines)
+            messages = _claude(lines, tools)
         elif harness == "codex":
-            messages = _codex(lines)
+            messages = _codex(lines, tools, line_offset)
         else:
             raise ValueError("harness")
         for message in messages:

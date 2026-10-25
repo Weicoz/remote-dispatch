@@ -1,0 +1,33 @@
+{
+  "previous_request": {
+    "method": "POST",
+    "path": "/v1/pair",
+    "headers": {
+      "Idempotency-Key": "used-key"
+    },
+    "body": {
+      "code": "PAIR_CODE",
+      "name": "Phone"
+    }
+  },
+  "request": {
+    "method": "POST",
+    "path": "/v1/pair",
+    "headers": {
+      "Idempotency-Key": "used-key"
+    },
+    "body": {
+      "code": "PAIR_CODE",
+      "name": "Phone"
+    }
+  },
+  "response": {
+    "status": 403,
+    "body": {
+      "error": {
+        "reason": "pairing_closed"
+      }
+    }
+  },
+  "events": []
+}

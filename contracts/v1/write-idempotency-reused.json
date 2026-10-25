@@ -1,0 +1,31 @@
+{
+  "previous_request": {
+    "method": "POST",
+    "path": "/v1/jobs/fixture-job/resume",
+    "headers": {
+      "Idempotency-Key": "used-key"
+    },
+    "body": {
+      "prompt": "继续"
+    }
+  },
+  "request": {
+    "method": "POST",
+    "path": "/v1/jobs/fixture-job/stop",
+    "headers": {
+      "Idempotency-Key": "used-key"
+    },
+    "body": {
+      "stopped_by": "App"
+    }
+  },
+  "response": {
+    "status": 422,
+    "body": {
+      "error": {
+        "reason": "idempotency_key_reused"
+      }
+    }
+  },
+  "events": []
+}

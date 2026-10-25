@@ -11,6 +11,7 @@ import shlex
 import subprocess
 import sys
 import tarfile
+import fnmatch
 import tempfile
 import time
 
@@ -196,7 +197,7 @@ def extract(stream, destination):
 
 
 def export_resume(root, job, destination):
-    """Transfer the current commit, index and complete worktree, without credentials."""
+    """Transfer Git history/index and worktree, excluding common credential paths."""
     wt = checked_path(root, "wt/" + messages.job_id(job))
     with tempfile.TemporaryDirectory() as temporary:
         bundle = Path(temporary) / "source.bundle"
@@ -216,11 +217,20 @@ def export_resume(root, job, destination):
             archive.add(index, arcname="index")
             for child in wt.iterdir():
                 if child.name != ".git":
-                    archive.add(child, arcname="workspace/" + child.name)
+                    archive.add(child, arcname="workspace/" + child.name, filter=resume_member)
             directory = checked_path(root, "jobs/" + job)
             for name in ("setup.sh", "setup.ps1"):
                 if (directory / name).is_file():
                     archive.add(directory / name, arcname=name)
+
+
+def resume_member(member):
+    """Apply exclusions recursively, including directories and symlink names."""
+    patterns = (".env*", "*.pem", "*.key", "id_*", ".ssh", ".aws", ".gnupg")
+    if any(fnmatch.fnmatchcase(part.lower(), pattern)
+           for part in Path(member.name).parts[1:] for pattern in patterns):
+        return None
+    return member
 
 
 def import_resume(root, q, incoming):

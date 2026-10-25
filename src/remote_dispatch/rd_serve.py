@@ -1,4 +1,5 @@
 """Local Unix socket HTTP adapter. Public responses contain display fields only."""
+from contextlib import nullcontext
 import http.client
 import json
 import math
@@ -223,10 +224,12 @@ class Service:
         if not math.isfinite(poll_interval) or poll_interval <= 0:
             raise ValueError("invalid_poll_interval: poll interval must be positive seconds")
         self.poll_interval = poll_interval
+        self.execute_timeout = network.positive_setting(config.cp, "execute_timeout", 120)
         self.stop = threading.Event()
         self.wake = threading.Event()
         self.cache_lock = threading.Lock()
         self.writer = threading.Lock()
+        self.job_guards = {}
         self.writes = Writes(self)
         self.snapshots = {}
         self.generations = {}
@@ -309,6 +312,10 @@ class Service:
         with self.writes.lock, self.writer:
             self.lock.release()
 
+    def job_guard(self, job):
+        with self.cache_lock:
+            return self.job_guards.setdefault(job, threading.RLock())
+
     def execute(self, request):
         if not isinstance(request, dict) or request.get("user_id") != self.user_id:
             raise ValueError("invalid_cli_user")
@@ -321,7 +328,12 @@ class Service:
             raise ValueError("invalid_cli_directory")
         if not isinstance(request.get("stdin", ""), str) or not isinstance(request.get("origin"), dict):
             raise ValueError("invalid_cli_context")
-        with self.writer:
+        argv = request["argv"]
+        job = next((argv[index + 1] for index, action in enumerate(argv[:-1])
+                    if action in ("ack", "review", "stop", "resume", "keep")
+                    and re.fullmatch(r"[A-Za-z0-9._-]+", argv[index + 1])), None)
+        # Wait for this job's collector before occupying the global CLI writer.
+        with self.job_guard(job) if job else nullcontext(), self.writer:
             if self.stop.is_set():
                 raise ValueError("serve_stopping")
             env = dict(os.environ, RD_STATE=str(self.state), RD_CONFIG=str(Path(cli.CONFIG).resolve()),
@@ -332,7 +344,7 @@ class Service:
                 env.pop(name, None)
             process = subprocess.run([sys.executable, "-c", "from remote_dispatch.rd_serve import execute_cli; execute_cli()"],
                                      input=json.dumps(request), cwd=request["cwd"], env=env,
-                                     capture_output=True, text=True)
+                                     capture_output=True, text=True, timeout=self.execute_timeout)
             self.wake.set()
             return dict(exit_code=process.returncode, stdout=process.stdout, stderr=process.stderr)
 
@@ -348,7 +360,7 @@ class Service:
                 value = value.replace(secret, "[redacted]")
             value = re.sub(r"-----BEGIN [^-]*PRIVATE KEY-----.*?-----END [^-]*PRIVATE KEY-----",
                            "[redacted]", value, flags=re.S)
-            value = re.sub(r"(?i)(?:[\w-]*auth_file|env_file|ssh(?:_opts)?|password|secret|token|api_key|private_?key)"
+            value = re.sub(r"(?i)(?<![\w-])[\w-]*(?:auth_file|env_file|ssh(?:_opts)?|password|secret|token|api_key|private_?key)"
                            r"\s*[:=]\s*(?:\"[^\"]*\"|'[^']*'|[^\s,}]+)", "[redacted]", value)
         return value
 
@@ -397,7 +409,7 @@ class Service:
                     break
                 try:
                     # Lock before reloading: a resume must not mix old and new round data.
-                    with self.writer, JobLock(self.state, saved["job"]):
+                    with self.job_guard(saved["job"]), JobLock(self.state, saved["job"]):
                         rec = cli.load_job(saved["job"])
                         snapshot = cli.job_states(self.config, [rec]).get(rec["job"], {"state": "unreachable"})
                         number = int(snapshot.get("round") or 0) or rec["rounds"]

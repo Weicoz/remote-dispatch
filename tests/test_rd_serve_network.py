@@ -69,7 +69,8 @@ class NetworkTests(unittest.TestCase):
         status, device = self.request("/v1/pair", "POST", {"code": window["code"], "name": "Phone"}, key="pair")
         self.assertEqual(status, 200)
         self.assertTrue(device["device_token"])
-        self.assertEqual(self.request("/v1/pair", "POST", {"code": window["code"]}, key="pair"), (status, device))
+        self.assertEqual(self.request("/v1/pair", "POST", {"code": window["code"], "name": "Phone"}, key="pair"),
+                         (403, {"error": {"reason": "pairing_closed"}}))
         self.assertEqual(self.request("/v1/pair", "POST", {"code": window["code"]}, key="reuse")[0], 403)
         status, devices = self.request("/v1/devices")
         self.assertEqual(devices["devices"][0]["device_id"], device["device_id"])
@@ -141,7 +142,9 @@ class NetworkTests(unittest.TestCase):
         self.assertEqual(info["spki_sha256"], pin)
         self.assertEqual(info, first[1])
         self.assertEqual(self.request("/v1/jobs", connection=self.tls(info))[0], 403)
-        self.assertEqual(self.request("/v1/network", "POST", {"listen_addresses": []}, key="select"), first)
+        self.assertEqual(self.request("/v1/network", "POST", body, key="select"), first)
+        self.assertEqual(self.request("/v1/network", "POST", {"listen_addresses": []}, key="select"),
+                         (422, {"error": {"reason": "idempotency_key_reused"}}))
         self.assertEqual(self.network_info(), info)
         service.close()
         self.assertFalse(self.path.exists())
@@ -150,7 +153,9 @@ class NetworkTests(unittest.TestCase):
         self.assertEqual(restored["listen_addresses"], info["listen_addresses"])
         self.assertEqual(restored["spki_sha256"], pin)
         self.assertEqual(len(restored["candidates"]), 1)
-        self.assertEqual(self.request("/v1/network", "POST", {}, key="select"), first)
+        self.assertEqual(self.request("/v1/network", "POST", body, key="select"), first)
+        self.assertEqual(self.request("/v1/network", "POST", {"listen_addresses": []}, key="select"),
+                         (422, {"error": {"reason": "idempotency_key_reused"}}))
 
     @unittest.skipUnless(shutil.which("openssl"), "openssl is required for TLS certificates")
     def test_listener_selection_rebinds_emits_events_and_keeps_disabled_choices_after_restart(self):
@@ -221,8 +226,10 @@ class NetworkTests(unittest.TestCase):
                 self.assertEqual(result, (400, {"error": {"reason": "invalid_listen_address"}}))
                 self.assertEqual(self.network_info(), before)
         # Failed results also use the first response for that key.
-        self.assertEqual(self.request("/v1/network", "POST", {"listen_addresses": []}, key="invalid-0"),
+        self.assertEqual(self.request("/v1/network", "POST", invalid[0], key="invalid-0"),
                          (400, {"error": {"reason": "invalid_listen_address"}}))
+        self.assertEqual(self.request("/v1/network", "POST", {"listen_addresses": []}, key="invalid-0"),
+                         (422, {"error": {"reason": "idempotency_key_reused"}}))
 
     @unittest.skipUnless(shutil.which("openssl"), "openssl is required for TLS certificates")
     def test_listener_bind_failure_keeps_previous_live_listener_and_caches_failure(self):
@@ -239,7 +246,9 @@ class NetworkTests(unittest.TestCase):
         self.assertEqual(failed, (409, {"error": {"reason": "listen_address_unavailable"}}))
         self.assertEqual(self.network_info(), before)
         self.assertEqual(self.request("/v1/jobs", connection=self.tls(before), headers=headers)[0], 200)
-        self.assertEqual(self.request("/v1/network", "POST", {"listen_addresses": []}, key="busy"), failed)
+        self.assertEqual(self.request("/v1/network", "POST", body, key="busy"), failed)
+        self.assertEqual(self.request("/v1/network", "POST", {"listen_addresses": []}, key="busy"),
+                         (422, {"error": {"reason": "idempotency_key_reused"}}))
         self.assertEqual(self.network_info(), before)
 
     @unittest.skipUnless(shutil.which("openssl"), "openssl is required for TLS certificates")
@@ -311,8 +320,10 @@ class NetworkTests(unittest.TestCase):
         first = self.request(route, "POST", {"token": "private-apns"}, key="push",
             connection=self.tls(info), headers=headers)
         self.assertEqual(first, (200, {"device_id": device["device_id"], "registered": True}))
-        self.assertEqual(self.request(route, "POST", {"token": "different-apns"}, key="push",
+        self.assertEqual(self.request(route, "POST", {"token": "private-apns"}, key="push",
             connection=self.tls(info), headers=headers), first)
+        self.assertEqual(self.request(route, "POST", {"token": "different-apns"}, key="push",
+            connection=self.tls(info), headers=headers), (422, {"error": {"reason": "idempotency_key_reused"}}))
         self.assertNotIn("private-apns", json.dumps(self.request("/v1/devices")))
         self.assertNotIn("private-apns", json.dumps(events.read_after(self.state, 0)))
 

@@ -47,7 +47,9 @@ class ServeWriteTests(unittest.TestCase):
         self.assertEqual((ack["acked_by"], ack["via"]), ("App MacBook", "serve"))
         service.close()
         self.start(poll_interval=3600)
-        self.assertEqual(self.post(path, dict(body, acked_by="changed")), first)
+        self.assertEqual(self.post(path, body), first)
+        self.assertEqual(self.post(path, dict(body, extra="different")),
+                         (422, {"error": {"reason": "idempotency_key_reused"}}))
         self.assertEqual(self.ready()["acknowledgement"], ack)
         response = self.open_events()
         # The next explicit review acts as a barrier after the replayed ack.
@@ -96,7 +98,9 @@ class ServeWriteTests(unittest.TestCase):
         status, body = self.post(path, dict(review_state="accepted", reviewed_by="App MacBook"))
         self.assertEqual(status, 200, body)
         self.assert_contract("write-review", (status, body))
-        self.assertEqual(self.post(path, dict(review_state="voided", reviewed_by="changed")), (status, body))
+        self.assertEqual(self.post(path, dict(review_state="accepted", reviewed_by="App MacBook")), (status, body))
+        self.assertEqual(self.post(path, dict(review_state="voided", reviewed_by="changed")),
+                         (422, {"error": {"reason": "idempotency_key_reused"}}))
         receipt = self.ready()
         self.assertEqual(receipt["review_state"], "accepted")
         self.assertEqual((receipt["acknowledgement"]["acked_by"], receipt["acknowledgement"]["via"]),
@@ -166,7 +170,9 @@ class ServeWriteTests(unittest.TestCase):
         result = self.post("/v1/jobs/fixture-job/stop", dict(stopped_by="App stopper"))
         self.assertEqual(result[0], 200, result)
         self.assert_contract("write-stop", result)
-        self.assertEqual(self.post("/v1/jobs/fixture-job/stop", dict(stopped_by="changed")), result)
+        self.assertEqual(self.post("/v1/jobs/fixture-job/stop", dict(stopped_by="App stopper")), result)
+        self.assertEqual(self.post("/v1/jobs/fixture-job/stop", dict(stopped_by="changed")),
+                         (422, {"error": {"reason": "idempotency_key_reused"}}))
         receipt = self.ready()
         self.assertEqual(receipt["executor_exit"], 143)
         self.assertEqual(receipt["report"]["outcome"], "failed")
@@ -339,7 +345,9 @@ class ServeWriteTests(unittest.TestCase):
         body = dict(prompt="继续", harness="dsh")
         first = self.post("/v1/jobs/fixture-job/resume", body)
         self.assertEqual((first[0], first[1]["error"]["reason"]), (422, "harness_change_not_allowed"))
-        self.assertEqual(self.post("/v1/jobs/fixture-job/resume", dict(prompt="changed", harness="codex")), first)
+        self.assertEqual(self.post("/v1/jobs/fixture-job/resume", body), first)
+        self.assertEqual(self.post("/v1/jobs/fixture-job/resume", dict(prompt="changed", harness="codex")),
+                         (422, {"error": {"reason": "idempotency_key_reused"}}))
         self.assertEqual(len(self.request("/v1/jobs/fixture-job")[1]["rounds"]), 1)
 
     def test_result_publication_failure_is_queryable_and_never_reexecutes_the_same_key(self):
@@ -360,7 +368,9 @@ class ServeWriteTests(unittest.TestCase):
         self.assertEqual(first, (503, {"error": {"reason": "write_outcome_unknown"}}))
         ack = self.ready()["acknowledgement"]
         self.assertEqual(ack["acked_by"], "first")
-        self.assertEqual(self.post(path, dict(body, acked_by="second")), first)
+        self.assertEqual(self.post(path, body), first)
+        self.assertEqual(self.post(path, dict(body, extra="different")),
+                         (422, {"error": {"reason": "idempotency_key_reused"}}))
         self.assertEqual(self.ready()["acknowledgement"], ack)
 
     def test_runs_rejects_changed_repository_origin_instead_of_creating_a_project(self):
@@ -403,7 +413,9 @@ class ServeWriteTests(unittest.TestCase):
         self.assertEqual(first[0], 200, first)
         self.assertFalse(self.path.exists())
         self.start(poll_interval=3600)
-        self.assertEqual(self.post(path, dict(body, acked_by="changed")), first)
+        self.assertEqual(self.post(path, body), first)
+        self.assertEqual(self.post(path, dict(body, extra="different")),
+                         (422, {"error": {"reason": "idempotency_key_reused"}}))
         self.assertEqual(self.ready()["acknowledgement"]["acked_by"], "App")
 
     def test_large_cli_error_has_a_bounded_display_message_and_replays_first_result(self):

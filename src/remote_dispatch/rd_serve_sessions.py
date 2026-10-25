@@ -1,9 +1,13 @@
 """Session routes kept separate from the shared serve routing module."""
+import base64
+import copy
+import difflib
 import hashlib
 import json
 import os
 from pathlib import Path
 import re
+import threading
 from urllib.parse import parse_qs, unquote, urlsplit
 
 from . import cli
@@ -29,10 +33,15 @@ class Sessions:
         self.enabled = service.config.cp.getboolean("serve", "session_access", fallback=True)
         self.observed = {}
         self.seen_messages = {}
-        for event in events.read_after(service.state, 0):
+        self.cache_lock = threading.RLock()
+        self.event_reader = events.EventCursor(service.state)
+        self.latest = {}
+        self.transcript_cache = {}
+        for event in self.event_reader.read():
             data = event["data"]
             if data.get("user_id") != service.user_id:
                 continue
+            self.remember_event(event)
             if event["type"] == "session.changed":
                 if data.get("removed"):
                     self.observed.pop(data["pane_id"], None)
@@ -131,17 +140,21 @@ class Sessions:
         match = max(candidates, key=lambda p: (p["mtime"], str(p["path"])), default=None)
         return (match["id"], match, True) if match else (None, None, False)
 
+    def remember_event(self, event):
+        data = event["data"]
+        if data.get("user_id") != self.service.user_id or event["type"] not in ("session.changed", "session.message"):
+            return
+        if data.get("removed"):
+            self.latest.pop(data["pane_id"], None)
+        else:
+            self.latest[data["pane_id"]] = event
+
     def discover(self):
         rows = []
-        latest = {}
-        for event in events.read_after(self.service.state, 0):
-            data = event["data"]
-            if data.get("user_id") != self.service.user_id or event["type"] not in ("session.changed", "session.message"):
-                continue
-            if data.get("removed"):
-                latest.pop(data["pane_id"], None)
-            else:
-                latest[data["pane_id"]] = event
+        with self.cache_lock:
+            for event in self.event_reader.read():
+                self.remember_event(event)
+            latest = dict(self.latest)
         saved = self.herdr.snapshot()
         local_hosts = {host["name"]: host for host in self.service.config.hosts() if cli.is_local(host)}
         execution_roots = [Path(cli.local_path(host["workdir"], "")).resolve() for host in local_hosts.values()]
@@ -180,8 +193,40 @@ class Sessions:
         if path is None:
             return dict(supported=False, messages=[], reason="unsupported_format", text="不支持")
         try:
-            with path["path"].open(encoding="utf-8") as stream:
-                result = convert_transcript(item["row"]["harness"], stream)
+            with self.cache_lock, path["path"].open("rb") as stream:
+                stat = os.fstat(stream.fileno())
+                key = (str(path["path"]), item["row"]["harness"])
+                cache = self.transcript_cache.get(key)
+                identity = stat.st_dev, stat.st_ino
+                unchanged_prefix = True
+                if cache is not None and cache["offset"]:
+                    stream.seek(max(0, cache["offset"] - 128))
+                    unchanged_prefix = stream.read(min(128, cache["offset"])) == cache["anchor"]
+                if (cache is None or cache["identity"] != identity or stat.st_size < cache["offset"]
+                        or not unchanged_prefix
+                        or (stat.st_size == cache["offset"] and stat.st_mtime_ns != cache["mtime"])):
+                    cache = dict(identity=identity, offset=0, lines=0, tools={}, mtime=None,
+                                 result=dict(supported=True, messages=[]))
+                stream.seek(cache["offset"])
+                lines = []
+                while line := stream.readline():
+                    # An incomplete append is retried after the next newline.
+                    if not line.endswith(b"\n"):
+                        break
+                    lines.append(line.decode("utf-8"))
+                    cache["offset"] = stream.tell()
+                if lines and cache["result"]["supported"]:
+                    added = convert_transcript(key[1], lines, tools=cache["tools"], line_offset=cache["lines"])
+                    if added["supported"]:
+                        cache["result"]["messages"].extend(added["messages"])
+                    else:
+                        cache["result"] = added
+                cache["lines"] += len(lines)
+                cache["mtime"] = stat.st_mtime_ns
+                stream.seek(max(0, cache["offset"] - 128))
+                cache["anchor"] = stream.read(min(128, cache["offset"]))
+                self.transcript_cache[key] = cache
+                result = copy.deepcopy(cache["result"])
         except (OSError, UnicodeError):
             return dict(supported=False, messages=[], reason="unsupported_format", text="不支持")
         if after and result["supported"]:
@@ -246,12 +291,24 @@ class Sessions:
         frames = self.herdr.frames(match[1], self.service.stop, handler.connection)
         try:
             for line in frames:
-                kind = json.loads(line).get("type")
+                frame = json.loads(line)
+                kind = frame.get("type")
                 if kind not in ("terminal.frame", "terminal.closed"):
                     continue
+                original = dict(frame)
+                if kind == "terminal.frame":
+                    decoded = base64.b64decode(frame["data"], validate=True).decode("utf-8", "surrogateescape")
+                    frame["data"] = base64.b64encode(redact_terminal(self.service, decoded).encode(
+                        "utf-8", "surrogateescape")).decode("ascii")
+                encoded = frame.pop("data", None)
+                frame = self.service.redact(frame)
+                if encoded is not None:
+                    frame["data"] = encoded
+                if frame != original:
+                    line = json.dumps(frame, ensure_ascii=True).encode("utf-8")
                 handler.wfile.write(b"event: " + kind.encode() + b"\ndata: " + line + b"\n\n")
                 handler.wfile.flush()
-        except (OSError, ValueError, TypeError, AttributeError):
+        except (OSError, ValueError, TypeError, AttributeError, KeyError):
             # Headers were already sent: end the stream without a second response.
             return True
         finally:
@@ -335,3 +392,53 @@ class Sessions:
                     events.emit(self.service.state, "session.changed", dict(target, user_id=self.service.user_id, removed=False))
             self.service.wake.set()
             return result["status"], result["body"]
+
+
+# Preserve CSI/ESC bytes and OSC delimiters while scrubbing OSC text as well.
+# Match secrets in visible text even when style codes split them.
+ANSI = re.compile(r"\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07\x1b]*(?:\x07|\x1b\\)|[ -/]*[@-Z\\-_])")
+
+
+def redact_terminal(service, text):
+    escapes = {}
+    plain, offset, end = [], 0, 0
+    for match in ANSI.finditer(text):
+        chunk = text[end:match.start()]
+        plain.append(chunk)
+        offset += len(chunk)
+        code = match.group()
+        if code.startswith("\x1b]"):
+            ending = 1 if code.endswith("\x07") else 2
+            code = code[:2] + service.redact(code[2:-ending]) + code[-ending:]
+        escapes.setdefault(offset, []).append(code)
+        end = match.end()
+    plain.append(text[end:])
+    visible = "".join(plain)
+    cleaned = service.redact(visible)
+    if not escapes:
+        return cleaned
+    if cleaned == visible:
+        codes = iter(code for group in escapes.values() for code in group)
+        return ANSI.sub(lambda _: next(codes), text)
+    # Map escape positions through text edits. Codes inside a replacement move
+    # to its end, so a style change never splits the redaction marker itself.
+    edits = difflib.SequenceMatcher(None, visible, cleaned).get_opcodes()
+    markers = [match.span() for match in re.finditer(re.escape("[redacted]"), cleaned)]
+    mapped = {}
+    edit = 0
+    for position, codes in escapes.items():
+        while edit < len(edits) - 1 and edits[edit][2] <= position:
+            edit += 1
+        kind, start, finish, a, b = edits[edit]
+        target = a + position - start if kind == "equal" else a if position == start else b
+        for left, right in markers:
+            if left < target < right:
+                target = right
+                break
+        mapped.setdefault(target, []).extend(codes)
+    output = []
+    for position, char in enumerate(cleaned):
+        output.extend(mapped.get(position, []))
+        output.append(char)
+    output.extend(mapped.get(len(cleaned), []))
+    return "".join(output)

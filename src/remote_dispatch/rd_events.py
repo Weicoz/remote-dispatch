@@ -281,3 +281,52 @@ class EventLog:
 def read_after(state, seq):
     """Read all retained events with seq strictly greater than the cursor."""
     return EventLog(state).read_after(seq)
+
+
+class EventCursor:
+    """Incremental reader across atomic append replacements and log rotation.
+
+    A segment's first seq remains stable when the writer replaces its inode.
+    Byte offsets skip parsed prefixes; seq merges the captured active segment
+    with archives if a rotation happens during a read.
+    """
+    def __init__(self, state):
+        self.log = EventLog(state)
+        self.seq = 0
+        self.segment = None
+        self.offset = 0
+
+    def read(self):
+        rows = {}
+        try:
+            with physical(self.log.path).open("rb") as stream:
+                first = stream.readline()
+                segment = json.loads(first)["seq"] if first.endswith(b"\n") else None
+                size = os.fstat(stream.fileno()).st_size
+                offset = self.offset if segment == self.segment and size >= self.offset else 0
+                stream.seek(offset)
+                while line := stream.readline():
+                    if not line.endswith(b"\n"):
+                        break
+                    row = json.loads(line)
+                    if row["seq"] > self.seq:
+                        rows[row["seq"]] = row
+                    offset = stream.tell()
+        except FileNotFoundError:
+            segment, offset = None, 0
+        for path in self.log.archives():
+            if int(path.name.split(".")[1]) <= self.seq:
+                continue
+            with physical(path).open("rb") as stream:
+                # The previous active segment may now be this archive.
+                first = stream.readline()
+                start = json.loads(first)["seq"]
+                stream.seek(self.offset if start == self.segment else 0)
+                for line in stream:
+                    row = json.loads(line)
+                    if row["seq"] > self.seq:
+                        rows[row["seq"]] = row
+        self.segment, self.offset = segment, offset
+        if rows:
+            self.seq = max(rows)
+        return [rows[number] for number in sorted(rows)]

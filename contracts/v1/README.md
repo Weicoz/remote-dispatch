@@ -53,7 +53,7 @@ JSON 类型，另用行为断言覆盖实际值、用户隔离、纯查询、锁
   `listen_addresses` 返回完整配置（含禁用项，缺省 enabled=true、port=8443）。
 - `network-addresses-write.json`：Unix socket 的 `POST /v1/network`，带幂等键，
   完整替换并保存勾选列表，立即重新绑定；样例展示取消监听后的空候选事件。
-  成功 body 与 GET 相同。同键返回首次结果，失败保留原选择。
+  成功 body 与 GET 相同。同键且请求指纹相同返回首次结果，失败保留原选择。
 - `network-addresses-write-invalid.json`：禁用项也不能含通配地址，返回
   400 `invalid_listen_address`；其他失败与本机边界见 `docs/serve.md`。
 - `sessions-list.json` / `sessions-projects.json` / `sessions-resolve.json`：会话快照
@@ -69,3 +69,10 @@ JSON 类型，另用行为断言覆盖实际值、用户隔离、纯查询、锁
 - `projects-summary.json`（票 41）：`hosts[目标机].accepted_round_count` 是此项目×目标机
   明确验收通过的累计轮次数；`project.changed` 的统计变体另带 `host/accepted_round_count`。
   机器迁移前的轮次按回执目标机归属。App 同步契约时保留可选字段兼容。
+
+- `write-idempotency-reused.json` / `network-idempotency-reused.json`：同调用方的幂等键
+  先执行可选 `previous_request`，再执行同键的 `request`；幂等键
+  已绑定其他方法、路径或规范 JSON 请求体时返回 422 `idempotency_key_reused`，不执行动作。
+  `network-pair-replay.json`：配对码／设备令牌只在首次响应返回；相同配对或开启窗口
+  请求重放返回 403 `pairing_closed`，缓存不含两类秘密明文。
+- `sessions-terminal.json`：保留帧结构和 ANSI；含敏感正文时对 Base64 解码数据脱敏后重新编码。
