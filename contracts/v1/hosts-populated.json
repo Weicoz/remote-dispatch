@@ -1,0 +1,43 @@
+{
+  "request": {
+    "method": "GET",
+    "path": "/v1/hosts"
+  },
+  "response": {
+    "status": 200,
+    "body": {
+      "hosts": [
+        {
+          "name": "target",
+          "local": true,
+          "reachable": true,
+          "full": false,
+          "load1": "1",
+          "ncpu": "8",
+          "memfree": "80",
+          "disk": "100",
+          "running": "0",
+          "heavy": "0"
+        }
+      ]
+    }
+  },
+  "events": [
+    {
+      "seq": 2,
+      "time": "2026-10-25T00:00:00+00:00",
+      "type": "host.changed",
+      "data": {
+        "host": "target",
+        "reachable": true,
+        "full": false,
+        "load1": "1",
+        "ncpu": "8",
+        "memfree": "80",
+        "disk": "100",
+        "running": "0",
+        "heavy": "0"
+      }
+    }
+  ]
+}

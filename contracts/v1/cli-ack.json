@@ -1,0 +1,57 @@
+{
+  "request": {
+    "method": "POST",
+    "path": "/_cli/v1",
+    "body": {
+      "argv": [
+        "ack",
+        "fixture-job",
+        "--round",
+        "1",
+        "--receipt-id",
+        "example-receipt-id"
+      ],
+      "cwd": "/example/repo",
+      "config": "/example/config.ini",
+      "user_id": "fixture",
+      "initiator_session": "cli-session",
+      "origin": {
+        "initiator_harness": "codex",
+        "initiator_host": "controller",
+        "initiator_herdr": {
+          "session": null,
+          "workspace_id": null,
+          "pane_id": null,
+          "captured_at": ""
+        }
+      },
+      "stdin": ""
+    }
+  },
+  "response": {
+    "status": 200,
+    "body": {
+      "exit_code": 0,
+      "stdout": "结果已由 cli-session 签收；此确认不代表验收通过，不会自动续派。\n",
+      "stderr": ""
+    }
+  },
+  "events": [
+    {
+      "seq": 3,
+      "time": "2026-10-25T00:00:00+00:00",
+      "type": "receipt.acked",
+      "data": {
+        "job": "fixture-job",
+        "user_id": "fixture",
+        "host": "target",
+        "round": 1,
+        "receipt_id": "example-receipt-id",
+        "received_at": "2026-10-25T00:00:00+00:00",
+        "acked_by": "cli-session",
+        "via": "serve",
+        "suppress_push": false
+      }
+    }
+  ]
+}

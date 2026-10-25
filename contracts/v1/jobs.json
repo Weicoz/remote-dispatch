@@ -1,0 +1,53 @@
+{
+  "request": {
+    "method": "GET",
+    "path": "/v1/jobs"
+  },
+  "response": {
+    "status": 200,
+    "body": {
+      "jobs": [
+        {
+          "job": "fixture-job",
+          "host": "target",
+          "model": null,
+          "initiator_harness": "codex",
+          "initiator_host": "controller",
+          "initiator_session": "original-session",
+          "initiator_herdr": null,
+          "project": "demo",
+          "project_id": "3e15c8030cfe7c2cd22b",
+          "harness": null,
+          "round": 1,
+          "execution_state": "done",
+          "executor_exit": 0,
+          "outcome": "completed",
+          "checks": "passed",
+          "delivery_state": "pending",
+          "review_state": "pending",
+          "acknowledgement": null,
+          "stopped_by": null,
+          "updated_at": "2026-10-25T00:00:00+00:00"
+        }
+      ]
+    }
+  },
+  "events": [
+    {
+      "seq": 1,
+      "time": "2026-10-25T00:00:00+00:00",
+      "type": "receipt.ready",
+      "data": {
+        "job": "fixture-job",
+        "user_id": "fixture",
+        "host": "target",
+        "round": 1,
+        "receipt_id": "example-receipt-id",
+        "execution_state": "done",
+        "executor_exit": 0,
+        "outcome": "completed",
+        "checks": "passed"
+      }
+    }
+  ]
+}

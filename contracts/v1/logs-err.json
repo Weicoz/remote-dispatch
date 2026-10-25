@@ -1,0 +1,16 @@
+{
+  "request": {
+    "method": "GET",
+    "path": "/v1/jobs/fixture-job/rounds/1/logs?stream=err&tail=1"
+  },
+  "response": {
+    "status": 200,
+    "body": {
+      "job": "fixture-job",
+      "round": 1,
+      "stream": "err",
+      "text": "error line\n"
+    }
+  },
+  "events": []
+}
