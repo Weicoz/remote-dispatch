@@ -149,6 +149,9 @@ class ServeWriteTests(unittest.TestCase):
         self.assertEqual(len(detail["rounds"]), 2)
         self.assertEqual(detail["rounds"][1]["review"]["review_state"], "pending")
         self.assertEqual(detail["job"]["model"], "new-model")
+        self.assertIsNone(detail["prompt"])
+        self.assertIsNone(detail["rounds"][0]["prompt"])
+        self.assertEqual(detail["rounds"][1]["prompt"], "继续")
         response = self.open_events()
         while True:
             _, kind, row = self.next_event(response)
@@ -214,6 +217,8 @@ class ServeWriteTests(unittest.TestCase):
         self.assertEqual(detail["job"]["initiator_session"], "app:device")
         self.assertEqual(detail["job"]["model"], "test-model")
         self.assertEqual(detail["job"]["project"], "demo")
+        self.assertEqual(detail["prompt"], "请实现此功能")
+        self.assertEqual(detail["rounds"][0]["prompt"], "请实现此功能")
         response = self.open_events()
         while True:
             _, kind, event = self.next_event(response)
@@ -288,6 +293,7 @@ class ServeWriteTests(unittest.TestCase):
         self.assertEqual((receipt["review_state"], receipt["review_note"]), ("rejected", "继续"))
         detail = self.request("/v1/jobs/fixture-job")[1]
         self.assertEqual(len(detail["rounds"]), 2)
+        self.assertEqual(detail["rounds"][1]["prompt"], "继续")
         self.assertEqual(detail["rounds"][1]["review"]["review_state"], "pending")
         response = self.open_events()
         seen = []

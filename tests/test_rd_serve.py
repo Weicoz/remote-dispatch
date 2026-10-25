@@ -90,6 +90,7 @@ class ServeTests(unittest.TestCase):
         self.worker = self.root / "worker" / "users" / "fixture" / "jobs" / "fixture-job"
         self.worker.mkdir(parents=True)
         (self.worker / "run.r1.sh").write_text("")
+        (self.worker / "started.r1").write_text("2026-10-25T00:00:01Z")
         if running:
             (self.worker / "pid").write_text(str(os.getpid()))
         else:
@@ -154,6 +155,89 @@ class ServeTests(unittest.TestCase):
         self.assertEqual(response.status, 200)
         self.assertEqual(response.getheader("Content-Type"), "text/event-stream; charset=utf-8")
         return response
+
+    def test_detail_replays_sorted_progress_from_rotated_log_for_each_round(self):
+        service = self.seed(poll_interval=3600)
+        self.eventually(lambda: self.request("/v1/jobs/fixture-job/rounds/1/receipt"),
+                        lambda result: result[0] == 200)
+        service.close()
+        receipt_path = cli.result_path(self.rec, 1)
+        receipt = cli.messages.read_json(receipt_path)
+        receipt["report"]["started_at"] = "2026-10-25T00:00:01Z"
+        cli.messages.atomic_json(receipt_path, receipt)
+        cli.save_job(dict(self.rec, rounds=2))
+        cli.messages.atomic_json(receipt_path.with_suffix(".review.json"), dict(
+            review_state="rejected", reviewed_by="App", reviewed_at="2026-10-25T00:01:00Z",
+            review_note="请补充测试"))
+        log = events.EventLog(self.state, max_bytes=1)
+        for job, user, number, phase, stamp in (
+                ("fixture-job", "fixture", 1, "later", "2026-10-25T00:00:20Z"),
+                ("other-job", "other", 1, "private", "2026-10-25T00:00:05Z"),
+                ("fixture-job", "other", 1, "wrong-user", "2026-10-25T00:00:06Z"),
+                ("fixture-job", "fixture", 1, "earlier", "2026-10-25T00:00:10Z"),
+                ("fixture-job", "fixture", 2, "resuming", "2026-10-25T00:01:10Z")):
+            with patch.object(events.messages, "utc_now", return_value=stamp):
+                log.append("progress.updated", dict(job=job, user_id=user, round=number,
+                                                   phase=phase, summary=phase, updated_at=stamp))
+        self.start(poll_interval=3600)
+        detail = self.request("/v1/jobs/fixture-job")[1]
+        first, second = detail["rounds"]
+        self.assertEqual(first["started_at"], "2026-10-25T00:00:01Z")
+        self.assertEqual(second["prompt"], "请补充测试")
+        self.assertEqual([row["data"]["phase"] for row in first["progress_events"]], ["earlier", "later"])
+        self.assertEqual([row["data"]["phase"] for row in second["progress_events"]], ["resuming"])
+        response = self.open_events()
+        replay = {}
+        while len(replay) < 3:
+            seq, kind, row = self.next_event(response)
+            if kind == "progress.updated":
+                replay[seq] = row
+        for row in first["progress_events"] + second["progress_events"]:
+            self.assertEqual(row, replay[row["seq"]])
+
+    def test_receipt_and_detail_return_file_changes_or_explicitly_mark_missing_data(self):
+        service = self.seed(poll_interval=3600)
+        self.eventually(lambda: self.request("/v1/jobs/fixture-job/rounds/1/receipt"),
+                        lambda result: result[0] == 200)
+        path = cli.result_path(self.rec, 1)
+        for value, expected, available in (
+                (None, [], False),
+                ([], [], True),
+                ([dict(path="src/demo.py", additions=12, deletions=3, token="hidden"),
+                  dict(path="image.png", additions=None, deletions=None)],
+                 [dict(path="src/demo.py", additions=12, deletions=3),
+                  dict(path="image.png", additions=None, deletions=None)], True)):
+            receipt = cli.messages.read_json(path)
+            if value is not None:
+                receipt["report"]["changed_files"] = value
+            cli.messages.atomic_json(path, receipt)
+            with self.subTest(value=value):
+                for row in (self.request("/v1/jobs/fixture-job/rounds/1/receipt")[1]["receipt"],
+                            self.request("/v1/jobs/fixture-job")[1]["rounds"][0]["receipt"]):
+                    self.assertEqual(row["changed_files"], expected)
+                    self.assertEqual(row["changed_files_available"], available)
+                if available and expected:
+                    example = json.loads((CONTRACTS / "receipt-changes.json").read_text())
+                    status, body = self.request(example["request"]["path"])
+                    self.assertEqual(status, example["response"]["status"])
+                    self.assert_structure(body, example["response"]["body"])
+        service.close()
+        self.start(poll_interval=3600)
+        self.assertEqual(self.request("/v1/jobs/fixture-job/rounds/1/receipt")[1]["receipt"]["changed_files"], expected)
+
+    def test_running_detail_preserves_full_prompt_and_start_time_without_a_receipt(self):
+        self.seed(poll_interval=3600, running=True)
+        prompt = "请实现功能\n" * 200
+        cli.save_job(dict(self.rec, round_prompts={"1": prompt}))
+        detail = self.eventually(lambda: self.request("/v1/jobs/fixture-job")[1],
+                                 lambda row: row["rounds"][0]["started_at"] is not None)
+        self.assertEqual(detail["prompt"], prompt)
+        self.assertEqual(detail["rounds"][0]["prompt"], prompt)
+        self.assertEqual(detail["rounds"][0]["started_at"], "2026-10-25T00:00:01Z")
+        self.assertIsNone(detail["rounds"][0]["receipt"])
+        self.assertEqual(detail["rounds"][0]["progress_events"][0]["data"]["summary"], "实现中")
+        example = json.loads((CONTRACTS / "job-details-timeline.json").read_text())
+        self.assert_structure(detail, example["response"]["body"])
 
     def next_event(self, response):
         fields = {}
@@ -254,7 +338,8 @@ class ServeTests(unittest.TestCase):
             self.assertTrue(set(example) <= set(actual), (set(example), set(actual)))
             for key, value in example.items():
                 self.assert_structure(actual[key], value, nullable=key in {
-                    "report", "progress", "execution_state", "load1", "ncpu", "memfree", "disk", "running", "heavy"})
+                    "report", "progress", "execution_state", "load1", "ncpu", "memfree", "disk", "running", "heavy",
+                    "additions", "deletions"})
         elif isinstance(example, list) and example:
             self.assertTrue(actual)
             for row in actual:
@@ -290,6 +375,19 @@ class ServeTests(unittest.TestCase):
         receipt["report"].update(token="private-marker", evidence={"checks": [], "artifacts": [],
                                 "apiKey": "private-marker", "agent_auth_file": "private-marker"})
         cli.messages.atomic_json(path, receipt)
+        private_text = ("env_file=/private/fixture-env agent_auth_file=/private/fixture-auth "
+                        "ssh_opts='-o SecretOption=fixture-ssh' token=private-marker private_key=private-marker\n"
+                        "-----BEGIN OPENSSH PRIVATE KEY-----\nprivate-marker\n-----END OPENSSH PRIVATE KEY-----")
+        cli.save_job(dict(self.rec, rounds=2, round_prompts={"1": private_text, "2": private_text}))
+        cli.messages.atomic_json(path.with_suffix(".review.json"), dict(
+            review_state="rejected", reviewed_by="App", reviewed_at="2026-10-25T00:01:00Z",
+            review_note=private_text))
+        receipt["report"]["changed_files"] = [dict(path="/private/fixture-env", additions=1, deletions=0,
+                                                 agent_auth_file="private-marker")]
+        cli.messages.atomic_json(path, receipt)
+        events.EventLog(self.state).append("progress.updated", dict(
+            job="fixture-job", user_id="fixture", round=1, phase=private_text, summary=private_text,
+            updated_at="2026-10-25T00:00:10Z", agent_auth_file="private-marker"))
         (self.worker / "stdout.r1.log").write_text(
             "env_file=/private/fixture-env agent_auth_file=/private/fixture-auth "
             "ssh_opts=-o SecretOption=fixture-ssh\n"

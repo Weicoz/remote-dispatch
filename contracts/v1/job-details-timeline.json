@@ -1,0 +1,89 @@
+{
+  "request": {
+    "method": "GET",
+    "path": "/v1/jobs/fixture-job"
+  },
+  "response": {
+    "status": 200,
+    "body": {
+      "job": {
+        "job": "fixture-job",
+        "host": "target",
+        "model": null,
+        "initiator_harness": "codex",
+        "initiator_host": "controller",
+        "initiator_session": "original-session",
+        "initiator_herdr": null,
+        "project": "demo",
+        "project_id": "3e15c8030cfe7c2cd22b",
+        "harness": null,
+        "round": 1,
+        "execution_state": "running",
+        "executor_exit": null,
+        "outcome": null,
+        "checks": null,
+        "delivery_state": "not_available",
+        "review_state": "pending",
+        "acknowledgement": null,
+        "stopped_by": null,
+        "updated_at": "2026-10-25T00:00:00+00:00"
+      },
+      "parameters": {
+        "branch": "ticket/demo",
+        "base": "base",
+        "source_branch": null,
+        "model": null,
+        "effort": null,
+        "permission_mode": null,
+        "heavy": null,
+        "sync": "direct"
+      },
+      "rounds": [
+        {
+          "round": 1,
+          "receipt": null,
+          "review": {
+            "review_state": "pending"
+          },
+          "execution_state": "running",
+          "progress": null,
+          "prompt": "请实现功能",
+          "started_at": "2026-10-25T00:00:01Z",
+          "progress_events": [
+            {
+              "seq": 2,
+              "time": "2026-10-25T00:00:10Z",
+              "type": "progress.updated",
+              "data": {
+                "job": "fixture-job",
+                "user_id": "fixture",
+                "host": "target",
+                "round": 1,
+                "phase": "implementing",
+                "summary": "实现中",
+                "updated_at": "2026-10-25T00:00:10Z"
+              }
+            }
+          ]
+        }
+      ],
+      "prompt": "请实现功能"
+    }
+  },
+  "events": [
+    {
+      "seq": 2,
+      "time": "2026-10-25T00:00:10Z",
+      "type": "progress.updated",
+      "data": {
+        "job": "fixture-job",
+        "user_id": "fixture",
+        "host": "target",
+        "round": 1,
+        "phase": "implementing",
+        "summary": "实现中",
+        "updated_at": "2026-10-25T00:00:10Z"
+      }
+    }
+  ]
+}

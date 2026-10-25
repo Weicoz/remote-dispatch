@@ -40,7 +40,9 @@
           "checks": "passed",
           "artifacts": [],
           "updated_at": "2026-10-25T00:00:00+00:00"
-        }
+        },
+        "changed_files": [],
+        "changed_files_available": false
       }
     }
   },
