@@ -1153,6 +1153,7 @@ def cmd_run(a, cfg):
                "auth_file": host[spec["auth_key"]] if a.agent else host["codex_auth_file"],
                "worker_platform": host["platform"], "worker_python": host["python"], "heavy": a.heavy,
                "handoff_version": 1, "initiator_session": initiator_session(a, origin_harness)}
+        rec["round_prompts"] = {"1": prompt}
         source = dict(forwarded_origin) if forwarded_origin else initiators.origin(origin_harness, rec["created"])
         source["initiator_herdr"] = dict(source["initiator_herdr"], captured_at=rec["created"])
         rec.update(source)
@@ -1598,6 +1599,7 @@ def resume_job(a, cfg, rec, *, prompt=None, before_launch=None, rollback_stack=N
     check_recovery(rec, receipt, a, cfg)
     if prompt is None:
         prompt = sys.stdin.read() if a.prompt_file == "-" else Path(a.prompt_file).read_text(encoding="utf-8")
+    round_prompt = prompt
     if getattr(a, "new_context", False):
         rec.setdefault("context_history", []).append(dict(receiver_session=session, from_round=rec["rounds"],
                                                           receipt_id=receipt["receipt_id"], reason="context", at=messages.utc_now()))
@@ -1636,6 +1638,7 @@ def resume_job(a, cfg, rec, *, prompt=None, before_launch=None, rollback_stack=N
             rollback_stack.enter_context(guard)
             guard = contextlib.nullcontext()
         with reviews.rollback_files([job_path(rec["job"])]), guard, events.transaction():
+            rec["round_prompts"] = dict(rec.get("round_prompts", {}), **{str(rec["rounds"]): round_prompt})
             save_job(rec)
             launch(host, rec, rec["rounds"], command, prompt, a.timeout or host["timeout"])
     print(f"resumed {rec['job']} (round {rec['rounds']}, session {session or 'pending new context'})")

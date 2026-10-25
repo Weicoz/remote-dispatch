@@ -75,15 +75,21 @@
               "checks": "passed",
               "artifacts": [],
               "updated_at": "2026-10-25T00:00:00+00:00"
-            }
+            },
+            "changed_files": [],
+            "changed_files_available": false
           },
           "review": {
             "review_state": "pending"
           },
           "execution_state": "done",
-          "progress": null
+          "progress": null,
+          "prompt": null,
+          "started_at": null,
+          "progress_events": []
         }
-      ]
+      ],
+      "prompt": null
     }
   },
   "events": [

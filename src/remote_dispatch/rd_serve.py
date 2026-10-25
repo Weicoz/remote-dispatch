@@ -26,10 +26,27 @@ from .rd_serve_writes import Writes
 from .rd_serve_projects import ProjectRoutes
 from . import rd_harness_stats
 from .rd_serve_sessions import Sessions
+from .rd_serve_history import instant
 
 
 WRITE_COMMANDS = {"run", "resume", "ack", "review", "stop", "project", "inbox", "keep", "clean"}
 MAX_REQUEST_BYTES = 8 * 1024 * 1024
+
+
+def file_changes(receipt):
+    """Project saved report statistics; a missing list is distinct from no changes."""
+    report = receipt.get("report") or {}
+    changes = report.get("changed_files", receipt.get("changed_files"))
+    if not isinstance(changes, list):
+        return [], False
+    rows = []
+    for item in changes:
+        if (not isinstance(item, dict) or not isinstance(item.get("path"), str) or not item["path"]
+                or any(key not in item or (item[key] is not None and
+                       (type(item[key]) is not int or item[key] < 0)) for key in ("additions", "deletions"))):
+            return [], False
+        rows.append({key: item[key] for key in ("path", "additions", "deletions")})
+    return rows, True
 
 
 class UnixHTTPConnection(http.client.HTTPConnection):
@@ -331,7 +348,7 @@ class Service:
                 value = value.replace(secret, "[redacted]")
             value = re.sub(r"-----BEGIN [^-]*PRIVATE KEY-----.*?-----END [^-]*PRIVATE KEY-----",
                            "[redacted]", value, flags=re.S)
-            value = re.sub(r"(?i)(?:[\w-]*auth_file|env_file|ssh(?:_opts)?|password|secret|token|api_key)"
+            value = re.sub(r"(?i)(?:[\w-]*auth_file|env_file|ssh(?:_opts)?|password|secret|token|api_key|private_?key)"
                            r"\s*[:=]\s*(?:\"[^\"]*\"|'[^']*'|[^\s,}]+)", "[redacted]", value)
         return value
 
@@ -443,7 +460,8 @@ class Service:
         fields = "schema job round host initiator_session execution_state executor_exit receiver_session head dirty needs_initiator_review receipt_id captured_at stopped_by stopped_at suppress_push review_state reviewed_by reviewed_at review_note"
         row = {key: receipt.get(key) for key in fields.split()}
         report = receipt.get("report")
-        row["report"] = {key: report[key] for key in ("schema", "job", "round", "kind", "phase", "summary", "outcome", "checks", "artifacts", "evidence", "updated_at") if key in report} if report else None
+        row["changed_files"], row["changed_files_available"] = file_changes(receipt)
+        row["report"] = {key: report[key] for key in ("schema", "job", "round", "kind", "phase", "summary", "outcome", "checks", "artifacts", "evidence", "updated_at", "started_at") if key in report} if report else None
         row.update(acknowledgement=query.acknowledgement(rec, receipt), delivery_state=query.delivery(rec, receipt))
         return row
 
@@ -497,6 +515,15 @@ class Service:
                     raise ValueError("invalid_log_options")
                 return 200, dict(job=job, round=number, stream=stream, text=self.logs(rec, number, stream, tail))
             rounds = []
+            progress_events = {}
+            for event in events.read_after(self.state, 0):
+                if (event["type"] == "progress.updated" and event["data"].get("job") == job
+                        and self.visible(event)):
+                    row = dict(event, data=events.display_data(event["type"], event["data"]))
+                    progress_events.setdefault(row["data"].get("round"), []).append(row)
+            for history in progress_events.values():
+                history.sort(key=lambda row: (instant(row["time"]).timestamp() if instant(row["time"]) else 0,
+                                               row["seq"]))
             for number in range(1, rec["rounds"] + 1):
                 try:
                     receipt = self.receipt(rec, number, query)
@@ -504,10 +531,19 @@ class Service:
                     receipt = None
                 snapshot = query.states([rec]).get(job, {}) if number == rec["rounds"] else {}
                 progress = query.report(rec, number, "progress")
+                prompt = rec.get("round_prompts", {}).get(str(number))
+                if number > 1:
+                    previous_review = query.review(rec, number - 1)
+                    if previous_review["review_state"] == "rejected":
+                        prompt = previous_review.get("review_note")
                 rounds.append(dict(round=number, receipt=receipt, review=query.review(rec, number),
+                                   prompt=prompt,
+                                   started_at=((receipt or {}).get("report") or {}).get("started_at") or snapshot.get("started_at") or None,
+                                   progress_events=progress_events.get(number, []),
                                    execution_state=snapshot.get("state") or (receipt or {}).get("execution_state"),
                                    progress={key: progress[key] for key in ("schema", "job", "round", "kind", "phase", "summary", "artifacts", "updated_at")
                                              if key in progress} if progress else None))
             parameters = {key: rec.get(key) for key in ("branch", "base", "source_branch", "model", "effort", "permission_mode", "heavy", "sync")}
-            return 200, dict(job=self.card(rec, query), parameters=parameters, rounds=rounds)
+            return 200, dict(job=self.card(rec, query), parameters=parameters,
+                             prompt=rec.get("round_prompts", {}).get("1"), rounds=rounds)
         return 404, {"error": {"reason": "not_found"}}
