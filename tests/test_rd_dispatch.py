@@ -36,6 +36,7 @@ class DispatchTests(unittest.TestCase):
         self.worker = self.root / "worker" / "users" / "employee_a"
         config = self.root / "config.ini"
         config.write_text(f"[host:fixture]\nssh=fixture.invalid\nworkdir={self.root / 'worker'}\nsync=direct\npath={os.environ['PATH']}\n")
+        self.real_launch = rd.launch
         for mock in (
             patch.object(rd, "CONFIG", str(config)),
             patch.object(rd, "STATE", str(self.root / "state")),
@@ -797,6 +798,134 @@ class DispatchTests(unittest.TestCase):
                     if holder.poll() is None:
                         holder.kill()
                     holder.wait(timeout=5)
+
+    def test_reject_can_move_to_another_target_with_the_same_harness_and_new_model(self):
+        destination = self.root / "other-worker"
+        self.cfg.cp.add_section("agent:dsh")
+        self.cfg.cp.set("agent:dsh", "model", "--model {model}")
+        executable = self.root / "dsh"
+        executable.write_text("#!/bin/sh\nexit 0\n")
+        executable.chmod(0o755)
+        auth = self.root / "dsh-auth.json"
+        auth.write_text("{}")
+        self.cfg.cp.add_section("host:other")
+        for key, value in dict(ssh="local", workdir=str(destination), sync="direct",
+                               dsh_auth_file=str(auth), path=str(self.root) + ":" + os.environ["PATH"]).items():
+            self.cfg.cp.set("host:other", key, value)
+        record = self.agent_job(self.dispatch(name="move", initiator_session="sender"))
+        record.update(agent="dsh", isolated=True)
+        record["receiver_session"] = "receiver"
+        rd.save_job(record)
+        old_head = self.remote_head(record, commit=True)
+        source_wt = self.worker / "wt" / record["job"]
+        (source_wt / "staged.txt").write_text("未提交的暂存内容")
+        native.git(source_wt, "add", "staged.txt")
+        self.reports(record)
+        args = argparse.Namespace(job=record["job"], round=1, reject="请继续实现", review_action=None,
+                                  reviewed_by="device", via="serve", initiator_session="sender",
+                                  host="other", agent=None, model="new-model", effort=None, session=None,
+                                  timeout=None, force_host=False)
+        original_shell = self.local_shell
+        def shell(host, script, **kwargs):
+            if script == rd.PROBE:
+                return subprocess.CompletedProcess([], 0, "memfree=90 disk=100", "")
+            return original_shell(host, script, **kwargs)
+        def finish_with_git(host, rec, *args):
+            self.finish(host, rec, *args)
+            wt = Path(host["workdir"]) / "wt" / rec["job"]
+            directory = Path(host["workdir"]) / "jobs" / rec["job"]
+            # A worker must be able to inspect/commit the transferred index.
+            native.git(wt, "diff", "--cached", "--binary")
+            (directory / "head").write_text(native.git(wt, "rev-parse", "HEAD").stdout.strip())
+            (directory / "dirty").write_text(str(len(native.git(wt, "status", "--porcelain").stdout.splitlines())))
+        with patch.object(rd, "ssh", side_effect=shell), \
+             patch.object(rd, "launch", side_effect=finish_with_git), \
+             patch.dict(os.environ, {"PATH": str(self.root) + ":" + os.environ["PATH"]}):
+            output = self.capture(rd.cmd_review, args)
+        self.assertIn('"review_state": "rejected"', output)
+        status = self.queried_job(record["job"])
+        self.assertEqual((status["host"], status["rounds"], status["model"], status["agent"]),
+                         ("other", 2, "new-model", "dsh"))
+        self.assertEqual(status["head"], old_head)
+        self.assertEqual(status["review_state"], "pending")
+        self.assertEqual(status["dirty"], "1")
+        old = json.loads(self.capture(rd.cmd_result, argparse.Namespace(
+            job=record["job"], round=1, initiator_session="sender")))
+        self.assertEqual(old["review_state"], "rejected")
+        self.assertEqual(old["acknowledgement"]["acked_by"], "device")
+
+    def test_native_launch_failure_restores_original_round_and_pending_review(self):
+        self.cfg.cp.set("host:fixture", "platform", "windows")
+        record = self.agent_job(self.dispatch(name="launch-failure", initiator_session="sender"))
+        record.update(isolated=True, receiver_session="receiver")
+        rd.save_job(record)
+        self.remote_head(record)
+        self.reports(record)
+        with Path(rd.CONFIG).open("w") as config:
+            self.cfg.cp.write(config)
+        original_popen = subprocess.Popen
+        def popen(command, *args, **kwargs):
+            if len(command) > 1 and str(command[1]).endswith("rd_native.py"):
+                raise OSError("fixture cannot launch")
+            return original_popen(command, *args, **kwargs)
+        original_rpc = self.local_rpc
+        def rpc(host, operation, data=None, **kwargs):
+            if operation == "probe":
+                return dict(memfree="90", disk="100")
+            if operation == "launch":
+                data = dict(data, profile_code=Path(rd.HERE, "rd_profiles.py").read_text(),
+                            worker_code=Path(rd.HERE, "rd_native.py").read_text())
+            return original_rpc(host, operation, data, **kwargs)
+        # Only process creation fails; real worker preparation and queries run.
+        with patch.object(rd, "launch", side_effect=self.real_launch), \
+             patch.object(native, "request", side_effect=rpc), patch.object(subprocess, "Popen", side_effect=popen), \
+             patch.object(sys, "argv", ["rdispatch", "review", record["job"], "--round", "1", "--reject", "请继续",
+                                        "--initiator-session", "sender"]), contextlib.redirect_stderr(io.StringIO()) as error:
+            with self.assertRaises(SystemExit) as stopped:
+                rd.main()
+        self.assertEqual(stopped.exception.code, 4)
+        self.assertIn("resume_launch_failed", error.getvalue())
+        row = self.queried_job(record["job"])
+        self.assertEqual((row["rounds"], row["round"], row["review_state"]), (1, "1", "pending"))
+        receipt = json.loads(self.capture(rd.cmd_result, argparse.Namespace(
+            job=record["job"], round=1, initiator_session="sender")))
+        self.assertEqual(receipt["delivery_state"], "pending")
+
+    def test_codex_resume_bootstraps_profile_on_a_target_without_first_round_files(self):
+        self.cfg.cp.set("host:fixture", "ssh", "local")
+        self.cfg.cp.set("host:fixture", "path", str(self.root) + ":" + os.environ["PATH"])
+        executable = self.root / "codex"
+        executable.write_text('#!/bin/sh\nprintf \'{"type":"thread.started","thread_id":"receiver"}\\n\'\n')
+        executable.chmod(0o755)
+        source = self.root / "profile-source"
+        source.mkdir()
+        (source / "config.toml").write_text('approval_policy="never"\nsandbox_mode="workspace-write"\n')
+        (source / "AGENTS.md").write_text("仅执行测试")
+        (source / "git.json").write_text('{"name":"Fixture","email":"fixture@example.invalid"}')
+        profile, payload = rd.profiles.bundle(source, "employee_a", self.root / "profile-state")
+        version = self.worker / "profiles" / profile["fingerprint"]
+        version.mkdir(parents=True)
+        subprocess.run(["tar", "-xf", "-", "-C", str(version)], input=payload, check=True)
+        record = self.agent_job(self.dispatch(name="codex-resume", initiator_session="sender"))
+        record.update(profile=profile, receiver_session="receiver")
+        rd.save_job(record)
+        self.remote_head(record)
+        prompt = self.root / "continue.md"
+        prompt.write_text("继续")
+        args = argparse.Namespace(job=record["job"], initiator_session="sender", session=None,
+                                  prompt_file=str(prompt), model=None, effort=None, timeout=10, force_host=True)
+        with patch.object(rd, "launch", side_effect=self.real_launch):
+            self.capture(rd.cmd_resume, args)
+        deadline = time.monotonic() + 5
+        while True:
+            row = self.queried_job(record["job"])
+            if row["state"] == "done":
+                break
+            if time.monotonic() > deadline:
+                self.fail("fixture Codex did not finish")
+            time.sleep(0.02)
+        self.assertEqual(row["round"], "2")
+        self.assertEqual(row["exit"], "0")
 
     def test_delegated_and_original_acknowledgements_start_the_same_retention_period(self):
         for name, signer in (("ordinary", "sender"), ("delegated", "App MacBook")):
