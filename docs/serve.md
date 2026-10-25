@@ -377,6 +377,11 @@ Herdr 的环境和命名 session 沿用服务进程；可用 `HERDR_CONFIG_PATH`
   Herdr `done` 映射为 `idle` 与 `has_new_reply=true`。
   `session_id` 不可得时为 null，模糊匹配时 `probable=true` 与
   `identity_text="可能是这个会话"`。
+  可选 `updated_at` 是当前用户、同一 pane／会话 ID／harness／项目最近一次
+  `session.changed` 或 `session.message` 的控制端事件 `time`（带时区 ISO 8601），
+  包含轮转段，重启后仍可读取；不是消息正文时间、查询时间或 Herdr 快照文件修改时间。
+  尚无匹配事件时为 null；pane 换会话或移除后不沿用旧会话时间。
+  项目内嵌会话和派单反查使用相同字段，供 App 冷启动时与派单按更新时间混合排序。
 - `GET /v1/sessions/{id}/screen`：`{pane_id,text}`，当前可见 ANSI 屏幕。
 - `GET /v1/sessions/{id}/terminal`：SSE 的 `event` 为 `terminal.frame` 或
   `terminal.closed`，`data` 保留对应 Herdr NDJSON 行的原始字节，不解码或重编码帧。
@@ -418,6 +423,8 @@ Unix socket 请求默认是本机。设备鉴权层须将可信的设备记录�
 输入成功也发布 `session.changed`，与首次幂等结果在同一事务发布，重试不重复发布。
 查询本身不发布事件；Herdr 读取失败不当作会话关闭。新增 `contracts/v1/sessions-*.json`
 给出本票请求、响应和事件样例；终端样例另用 `frames` 保存原始 NDJSON。
+快照的 `updated_at` 从上述事件派生，不放入 `session.changed` 的变化比较，
+因此无变化的采集、普通查询及输入幂等重放不会推进更新时间。
 
 检查：`PYTHONPATH=src python3 -m unittest tests.test_rd_serve_sessions -v`。
 测试将假 `herdr` 放在临时 PATH，使用临时配置、会话记录与短 Unix socket 路径。
