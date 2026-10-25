@@ -34,6 +34,10 @@ def request(host, operation, data=None, **kwargs):
         return None
     if operation == "controller-register":
         return False
+    if operation == "resume-checkpoint":
+        return {}
+    if operation == "resume-rollback":
+        return None
     if operation in ("launch", "stop"):
         number = data["spec"]["round"] if operation == "launch" else 1
         with (root / "events.jsonl").open("a") as stream:
@@ -73,6 +77,8 @@ class JobLockingTests(unittest.TestCase):
         if name == "ack":
             receipt = self.run_command("result")
             args += ["--round", "1", "--receipt-id", json.loads(receipt.stdout)["receipt_id"]]
+        if name == "review":
+            args += ["--round", "1", "--void"]
         process = subprocess.Popen([sys.executable, "-c", TARGET, *args], env=dict(self.env, **env),
                                    stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
         self.addCleanup(self.reap, process)
@@ -133,6 +139,25 @@ class JobLockingTests(unittest.TestCase):
 
     def test_stop_excludes_resume_and_ack(self):
         self.assert_excludes("stop", "stop", ["resume", "ack"])
+
+    def test_review_holds_job_lock_against_review_resume_ack_and_stop(self):
+        self.record["handoff_version"] = 1
+        messages.atomic_json(self.state / "jobs/fixture-job.json", self.record)
+        self.assert_excludes("review", "report-read", ["review", "resume", "ack", "stop"])
+        result = json.loads(self.run_command("result").stdout)
+        self.assertEqual(result["review_state"], "voided")
+        again = self.run_command("review")
+        self.assertEqual(again.returncode, 4)
+        self.assertIn("already_reviewed", again.stderr)
+
+    def test_resume_lock_contention_reports_machine_readable_review_error(self):
+        first = self.command("resume", FIXTURE_HOLD="state")
+        self.wait_until_held(first)
+        review = self.run_command("review")
+        self.assertEqual(review.returncode, 4)
+        self.assertIn("round_in_progress", review.stderr)
+        _, stderr = first.communicate("release\n", timeout=10)
+        self.assertEqual(first.returncode, 0, stderr)
 
     def test_running_round_rejects_a_later_resume_without_incrementing(self):
         first = self.run_command("resume")

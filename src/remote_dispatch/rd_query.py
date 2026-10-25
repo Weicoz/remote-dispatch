@@ -31,7 +31,9 @@ class Query:
         """Return job records overlaid with their execution snapshot fields."""
         if snapshots is None:
             snapshots = self.states(records)
-        return [dict(rec, **snapshots.get(rec["job"], {})) for rec in records]
+        return [dict(dict(rec, **snapshots.get(rec["job"], {})),
+                     **self.review(rec, (int(snapshots.get(rec["job"], {}).get("round") or 0) or rec["rounds"])))
+                for rec in records]
 
     def result(self, rec, number=None, snapshot=None):
         """Return a cached or in-memory receipt, or None while unavailable.
@@ -43,10 +45,10 @@ class Query:
         number = messages.round_id(number if number is not None else rec["rounds"])
         cached = messages.read_json(result_path(self.state, rec, number))
         if cached is not None:
-            return cached
+            return dict(cached, **self.review(rec, number))
         if snapshot is None:
             snapshot = self.states([rec]).get(rec["job"], {})
-        current = int(snapshot.get("round") or rec["rounds"])
+        current = (int(snapshot.get("round") or 0) or rec["rounds"])
         if number != current:
             raise ValueError("该历史轮次尚无本地回执；先在原轮次收取结果。")
         if snapshot.get("state") not in ("done", "dead", "missing"):
@@ -64,7 +66,11 @@ class Query:
                        needs_initiator_review=True)
         receipt["receipt_id"] = receipt_id(receipt)
         receipt["captured_at"] = messages.utc_now()
-        return receipt
+        return dict(receipt, **self.review(rec, number))
+
+    def review(self, rec, number):
+        from . import rd_review
+        return rd_review.read(self.state, rec, number)
 
     def acknowledgement(self, rec, receipt):
         """Read the matching acknowledgement, including legacy records."""
@@ -78,10 +84,11 @@ class Query:
         """Return execution, reports, matching acknowledgement and delivery state."""
         if snapshot is None:
             snapshot = self.states([rec]).get(rec["job"], {})
-        number = int(snapshot.get("round") or rec["rounds"])
+        number = (int(snapshot.get("round") or 0) or rec["rounds"])
         progress = self.report(rec, number, "progress") if rec.get("handoff_version") and snapshot.get("state") in ("running", "done") else None
         receipt = self.result(rec, number, snapshot)
         return dict(job=rec["job"], initiator_session=rec.get("initiator_session"), execution=snapshot,
                     progress=progress, result=receipt,
                     acknowledgement=self.acknowledgement(rec, receipt) if receipt else None,
-                    delivery_state=self.delivery(rec, receipt) if receipt else "not_available")
+                    delivery_state=self.delivery(rec, receipt) if receipt else "not_available",
+                    **self.review(rec, number))

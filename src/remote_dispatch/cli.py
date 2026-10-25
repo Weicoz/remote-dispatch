@@ -30,6 +30,7 @@ from . import rd_messages as messages
 from . import rd_health as health
 from . import rd_agents as agents
 from . import rd_query as query
+from . import rd_review as reviews
 from .rd_lock import JobBusy, JobLock
 from . import rd_initiator as initiators
 
@@ -664,12 +665,12 @@ def locked_job(command):
             with JobLock(STATE, a.job):
                 return command(a, cfg)
         except JobBusy:
-            die("round in progress; another operation holds the job lock; retry after it finishes", 4)
+            die("round_in_progress: round in progress; another operation holds the job lock; retry after it finishes", 4)
     return run_locked
 
 
 def job_path(job):
-    return os.path.join(STATE, "jobs", job + ".json")
+    return os.path.join(str(Path(STATE).resolve()), "jobs", job + ".json")
 
 
 def save_job(rec):
@@ -732,7 +733,7 @@ def queries(cfg):
 
 def collect_result(cfg, rec, snapshot):
     """Explicit write path used by inbox, resume and cleanup, never by queries."""
-    number = int(snapshot.get("round") or rec["rounds"])
+    number = int(snapshot.get("round") or 0) or rec["rounds"]
     receipt = queries(cfg).result(rec, number, snapshot)
     if receipt is not None and messages.read_json(result_path(rec, number)) is None:
         messages.atomic_json(result_path(rec, number), receipt, limit=messages.RECEIPT_BYTES)
@@ -750,12 +751,12 @@ def cmd_result(a, cfg):
     receipt = messages.read_json(result_path(rec, a.round or rec["rounds"]))
     if receipt is None:
         snapshot = job_states(cfg, [rec]).get(rec["job"], {})
-        if a.round and int(snapshot.get("round") or rec["rounds"]) != a.round:
+        if a.round and (int(snapshot.get("round") or 0) or rec["rounds"]) != a.round:
             die("该历史轮次尚无本地回执；先在原轮次收取结果。", 4)
         receipt = queries(cfg).result(rec, a.round or rec["rounds"], snapshot)
     if receipt is None:
         die("结果尚未取得；用 rdispatch status 查看运行或连接状态。", 2)
-    result = dict(receipt, delivery_state=delivery(rec, receipt),
+    result = dict(dict(receipt, **queries(cfg).review(rec, receipt["round"])), delivery_state=delivery(rec, receipt),
                   acknowledgement=queries(cfg).acknowledgement(rec, receipt))
     if getattr(a, "summary", False):
         result = messages.result_summary(result)
@@ -779,9 +780,10 @@ def cmd_inbox(a, cfg):
             collect_result(cfg, rec, snapshot)
         directory = result_path(rec, 1).parent
         for path in sorted(directory.glob("r*.json")):
-            if path.name.endswith(".ack.json"):
+            if not re.fullmatch(r"r[0-9]+\.json", path.name):
                 continue
             receipt = messages.read_json(path)
+            receipt.update(queries(cfg).review(rec, receipt["round"]))
             ack = queries(cfg).acknowledgement(rec, receipt)
             if not ack:
                 receipts.append(dict(receipt, delivery_state="pending"))
@@ -801,11 +803,48 @@ def cmd_ack(a, cfg):
     receipt = queries(cfg).result(rec, a.round)
     if not receipt or receipt["receipt_id"] != a.receipt_id:
         die("回执 ID 或轮次不匹配；先收取并核对 rdispatch result。", 4)
+    acknowledge_receipt(rec, receipt, signer, via)
+    print(f"结果已由 {signer} 签收；此确认不代表验收通过，不会自动续派。")
+
+
+def acknowledge_receipt(rec, receipt, signer, via):
+    path = result_path(rec, receipt["round"])
     if messages.read_json(path) is None:
         messages.atomic_json(path, receipt, limit=messages.RECEIPT_BYTES)
-    messages.atomic_json(path.with_suffix(".ack.json"), dict(receipt_id=a.receipt_id, received_at=messages.utc_now(),
+    messages.atomic_json(path.with_suffix(".ack.json"), dict(receipt_id=receipt["receipt_id"], received_at=messages.utc_now(),
                                                            acked_by=signer, via=via))
-    print(f"结果已由 {signer} 签收；此确认不代表验收通过，不会自动续派。")
+
+
+@locked_job
+def cmd_review(a, cfg):
+    rec = load_job(a.job)
+    job_host(cfg, rec)
+    reviewer = messages.identifier(a.reviewed_by or initiator_session(a) or "cli", "验收方")
+    receipt = queries(cfg).result(rec, a.round)
+    if receipt is None:
+        die("round_in_progress: 轮次尚无可验收回执。", 4)
+    action = "rejected" if a.reject is not None else a.review_action
+    note = a.reject or ""
+    if action == "rejected" and not note.strip():
+        die("review_not_allowed: 打回必须提供附言。", 4)
+    record = reviews.decide(STATE, rec, a.round, receipt, action, reviewer, note)
+    if action == "rejected" and a.round != rec["rounds"]:
+        die("round_in_progress: 只能打回当前轮次。", 4)
+    path = result_path(rec, a.round)
+    with reviews.rollback_files([job_path(rec["job"]), path, path.with_suffix(".ack.json"),
+                                 reviews.review_path(STATE, rec, a.round)]):
+        def write_review():
+            try:
+                if not queries(cfg).acknowledgement(rec, receipt):
+                    acknowledge_receipt(rec, receipt, reviewer, a.via)
+                messages.atomic_json(reviews.review_path(STATE, rec, a.round), record)
+            except OSError as error:
+                raise ValueError("review_write_failed: 无法保存签收或验收记录；本次操作已撤销。") from error
+        if action == "rejected":
+            resume_job(a, cfg, rec, prompt=note, before_launch=write_review)
+        else:
+            write_review()
+    print(json.dumps(record, ensure_ascii=False, indent=2))
 
 
 # ---------------------------------------------------------------- run / resume
@@ -909,7 +948,7 @@ def launch(host, rec, round_no, cmd_text, prompt_text, timeout):
                     auth_file=host["codex_auth_file"], env_file=host["env_file"])
         native.request(host, "launch", {"spec": spec, "prompt": prompt_text})
         return
-    if rec.get("profile") and round_no == 1:
+    if rec.get("profile"):
         put_file(host, f"jobs/{j}/profile.json", json.dumps(rec["profile"]), "600")
     if (rec.get("profile") or rec.get("isolated")) and not rec.get("profile_script_uploaded"):
         with open(os.path.join(HERE, "rd_profiles.py"), encoding="utf-8") as stream:
@@ -1168,7 +1207,8 @@ def remote_state(host, jobs):
     elif [ -f "$D/pid" ] && kill -0 "$(cat "$D/pid")" 2>/dev/null; then st=running
     elif [ -f "$D/pid" ]; then st=dead; fi
   fi
-  n=$(ls "$D"/run.r*.sh 2>/dev/null | wc -l | tr -d ' ')
+  n=$(ls "$D"/run.r*.sh 2>/dev/null | sed 's/.*run.r//;s/\.sh$//' | sort -n | tail -n 1)
+  n=${n:-0}
   last=$(tail -n 5 "$D/stdout.r$n.log" 2>/dev/null | awk 'NF{l=$0}END{print l}' | tr '\t' ' ' | cut -c1-200)
   head=$(cat "$D/head" 2>/dev/null); dirty=$(cat "$D/dirty" 2>/dev/null); head_source=recorded
   if [ "$st" = running ] && [ -d "$ROOT/wt/$J" ]; then
@@ -1447,11 +1487,11 @@ def check_recovery(rec, receipt, args, cfg):
         messages.identifier(repair, "恢复证据说明")
     if new_context:
         if not failure or failure.get("kind") != "context":
-            die("仅已识别的上下文故障可以 --new-context；路由、认证或网络故障须先修复。", 4)
+            die("resume_recovery_not_allowed: 仅已识别的上下文故障可以 --new-context；路由、认证或网络故障须先修复。", 4)
         history = rec.get("context_history", [])
         if (history and history[-1].get("from_round") == rec["rounds"] - 1
                 and failure.get("work_observed") is False and not repair):
-            die("新上下文也未开始工作；保存回执并先修复启动条件，不重复新建。", 4)
+            die("resume_recovery_not_allowed: 新上下文也未开始工作；保存回执并先修复启动条件，不重复新建。", 4)
         return
     if not failure or failure.get("work_observed") is not False or repair:
         return
@@ -1466,41 +1506,54 @@ def check_recovery(rec, receipt, args, cfg):
         if count > limit:
             break
     if count > limit:
-        die("重复模型启动故障，已停止续跑；用 rdispatch result --summary 查看分类。取得修复证据后才用 --retry-after-repair，纯上下文故障可以显式 --new-context。", 4)
+        die("resume_recovery_not_allowed: 重复模型启动故障，已停止续跑；用 rdispatch result --summary 查看分类。取得修复证据后才用 --retry-after-repair，纯上下文故障可以显式 --new-context。", 4)
 
 
 @locked_job
 def cmd_resume(a, cfg):
     rec = load_job(a.job)
     require_initiator(rec, a)
+    resume_job(a, cfg, rec)
+
+
+def resume_job(a, cfg, rec, *, prompt=None, before_launch=None):
+    if getattr(a, "agent", None) and a.agent != rec.get("agent"):
+        die("harness_change_not_allowed: 续跑不能换 harness；请另派一单。", 4)
     require_user()
     if not rec.get("user_id") or not (rec.get("profile") or rec.get("isolated")):
-        die("旧任务未固定员工配置；查看、取回仍可用，续跑必须重新派单。", 4)
+        die("resume_not_allowed: 旧任务未固定用户配置；查看、取回仍可用，续跑必须重新派单。", 4)
     if not rec.get("agent"):
-        die("only agent jobs can be resumed; start a new job for commands")
+        die("resume_not_allowed: only agent jobs can be resumed; start a new job for commands")
     host = job_host(cfg, rec)
     host["probe_agent"] = rec["agent"]
     host["probe_profile_fingerprint"] = (rec.get("profile") or {}).get("fingerprint")
     st = remote_state(host, [rec["job"]]).get(rec["job"], {})
     if st.get("state") in ("running", "starting"):
-        die("round in progress; rdispatch stop it first or wait", 4)
-    if st.get("state") in ("missing", "unreachable"):
-        die(f"job is {st.get('state')} on {host['name']}")
+        die("round_in_progress: round in progress; rdispatch stop it first or wait", 4)
+    if st.get("state") == "unreachable":
+        die(f"resume_host_unavailable: job is unreachable on {host['name']}", 4)
+    source_host = host
+    moving = bool(getattr(a, "host", None) and a.host != rec["host"])
+    if moving:
+        host = scoped_host(cfg.host(a.host), rec["user_id"])
+        host["probe_agent"] = rec["agent"]
     info = probe(host)
     why = assess(host, info)
     print(fmt_probe(host, info, why))
     if why and not a.force_host:
-        die(f"{host['name']} cannot take the session now ({'; '.join(why)}).", 3)
+        reason = "resume_host_unavailable" if not info["reachable"] else "resume_resource_check_failed"
+        die(f"{reason}: {host['name']} cannot take the session now ({'; '.join(why)}).", 3)
     agent = rec.get("agent_config") or cfg.agent(rec["agent"])
-    session = a.session or rec.get("receiver_session") or find_session(host, rec, agent)
+    session = a.session or rec.get("receiver_session") or find_session(source_host, rec, agent)
     if not session:
-        die("could not find the agent's session id in the logs; pass --session ID")
-    known = rec.get("receiver_session") or (find_session(host, rec, agent) if rec.get("handoff_version") else None)
+        die("resume_session_not_found: could not find the agent's session id in the logs; pass --session ID")
+    known = rec.get("receiver_session") or (find_session(source_host, rec, agent) if rec.get("handoff_version") else None)
     if known and session != known:
-        die("续派必须复用原接收会话；指定 --session 与原会话不匹配。", 4)
+        die("resume_session_mismatch: 续派必须复用原接收会话；指定 --session 与原会话不匹配。", 4)
     receipt = collect_result(cfg, rec, st) if rec.get("handoff_version") else None
     check_recovery(rec, receipt, a, cfg)
-    prompt = sys.stdin.read() if a.prompt_file == "-" else Path(a.prompt_file).read_text(encoding="utf-8")
+    if prompt is None:
+        prompt = sys.stdin.read() if a.prompt_file == "-" else Path(a.prompt_file).read_text(encoding="utf-8")
     if getattr(a, "new_context", False):
         rec.setdefault("context_history", []).append(dict(receiver_session=session, from_round=rec["rounds"],
                                                           receipt_id=receipt["receipt_id"], reason="context", at=messages.utc_now()))
@@ -1510,20 +1563,65 @@ def cmd_resume(a, cfg):
     if getattr(a, "retry_after_repair", None):
         rec.setdefault("recovery_repairs", []).append(dict(from_round=rec["rounds"],
                                                            evidence=a.retry_after_repair, at=messages.utc_now()))
+    if moving:
+        target_profile = agent_preflight(host, rec["user_id"], rec["agent"], agent)
+        if target_profile != rec.get("profile"):
+            die("resume_profile_mismatch: 目标机用户配置与原派单不一致；先同步原配置。", 4)
+        rec.setdefault("context_history", []).append(dict(receiver_session=session, from_round=rec["rounds"],
+                                                          reason="host_changed", at=messages.utc_now()))
+        session = None
+        prompt = "续跑已更换目标机；沿用迁移工作树、原 harness 和授权，仅完成附言要求。\n\n" + prompt
     # 续跑沿用原权限档位；显式 --permission-mode 才改变并记入任务。
     permission = getattr(a, "permission_mode", None) or rec.get("permission_mode")
     command = agent_command(agent, a.model or rec.get("model"), a.effort or rec.get("effort"), session, permission)
     rec["permission_mode"] = permission
     rec["receiver_session"] = session
     rec["rounds"] += 1
-    if host["platform"] == "windows":
-        rec["session"] = session
-        rec["model"] = a.model or rec.get("model")
-        rec["effort"] = a.effort or rec.get("effort")
+    rec["session"] = session
+    rec["model"] = a.model or rec.get("model")
+    rec["effort"] = a.effort or rec.get("effort")
     check_controller(host, rec["user_id"])
-    save_job(rec)
-    launch(host, rec, rec["rounds"], command, prompt, a.timeout or host["timeout"])
+    with migrate_job(rec, source_host, host) if moving else contextlib.nullcontext():
+        checkpoint = native.request(host, "resume-checkpoint", dict(job=rec["job"])) if before_launch else None
+        if before_launch:
+            before_launch()
+        with reviews.rollback_files([job_path(rec["job"])]):
+            save_job(rec)
+            try:
+                launch(host, rec, rec["rounds"], command, prompt, a.timeout or host["timeout"])
+            except (Exception, SystemExit) as error:
+                if checkpoint is not None:
+                    try:
+                        native.request(host, "resume-rollback", dict(job=rec["job"], round=rec["rounds"], checkpoint=checkpoint))
+                    except (Exception, SystemExit) as rollback_error:
+                        raise ValueError("resume_launch_failed: 启动失败且目标机回滚未确认；请核对目标机状态。") from rollback_error
+                raise ValueError("resume_launch_failed: 目标机启动失败；请核对目标机状态后重试。") from error
     print(f"resumed {rec['job']} (round {rec['rounds']}, session {session or 'pending new context'})")
+
+
+@contextlib.contextmanager
+def migrate_job(rec, source, target):
+    """Transfer only this job's worktree; retain the source for recovery."""
+    data = dict(job=rec["job"], bare=rec["bare"], branch=rec["branch"])
+    try:
+        with tempfile.TemporaryFile() as archive:
+            native.request(source, "resume-export", data, output=archive)
+            archive.seek(0)
+            imported = native.request(target, "resume-import", data, payload=archive)
+    except (Exception, SystemExit) as error:
+        raise ValueError("resume_transfer_failed: 无法迁移派单工作树；原目标机与轮次保留。") from error
+    rec.setdefault("worker_history", []).append({key: rec[key] for key in
+        ("host", "worker_root", "shared_root", "worker_platform", "worker_python", "sync") if key in rec})
+    target["workdir"] = imported["root"]
+    rec.update(host=target["name"], worker_root=target["workdir"], shared_root=target["shared_workdir"],
+               worker_platform=target["platform"], worker_python=target["python"], sync="direct",
+               auth_file=target[agents.SPECS[rec["agent"]]["auth_key"]], profile_script_uploaded=False)
+    try:
+        yield
+    except (Exception, SystemExit, KeyboardInterrupt):
+        # Only the worktree created by this import is eligible for rollback.
+        native.request(target, "clean", dict(data, delete_branch=True))
+        raise
 
 
 def cmd_fetch(a, cfg):
@@ -1665,7 +1763,7 @@ def pending_results(cfg, rec, snapshot):
         if not receipt or delivery(rec, receipt) != "received":
             return True
     for path in result_path(rec, 1).parent.glob("r*.json"):
-        if not path.name.endswith(".ack.json"):
+        if re.fullmatch(r"r[0-9]+\.json", path.name):
             receipt = messages.read_json(path)
             if receipt and delivery(rec, receipt) != "received":
                 return True
@@ -2035,9 +2133,29 @@ def main():
     p.add_argument("--via", choices=["cli", "serve"], default="cli", help="签收渠道（默认 cli）")
     p.set_defaults(fn=cmd_ack)
 
+    p = sub.add_parser("review", help="验收指定轮次；打回附言并立即续跑")
+    p.add_argument("job")
+    p.add_argument("--round", type=int, required=True)
+    actions = p.add_mutually_exclusive_group(required=True)
+    actions.add_argument("--accept", dest="review_action", action="store_const", const="accepted", help="通过")
+    actions.add_argument("--reject", metavar="附言", help="打回并用附言续跑")
+    actions.add_argument("--void", dest="review_action", action="store_const", const="voided", help="作废")
+    p.add_argument("--initiator-session")
+    p.add_argument("--reviewed-by", help="验收方会话 ID 或设备名；默认当前会话，无会话时为 cli")
+    p.add_argument("--via", choices=["cli", "serve"], default="cli", help="签收渠道（默认 cli）")
+    p.add_argument("--host", help="续跑目标机；默认沿用原目标机")
+    p.add_argument("--agent", "--harness", help="必须与原派单 harness 一致；换 harness 请另派一单")
+    p.add_argument("--session", help="接收会话 ID")
+    p.add_argument("--model")
+    p.add_argument("--effort")
+    p.add_argument("--timeout", type=int)
+    p.set_defaults(fn=cmd_review, force_host=False)
+
     p = sub.add_parser("resume", help="continue an agent job in the same session")
     p.add_argument("job")
     p.add_argument("--prompt-file", required=True)
+    p.add_argument("--host", help="续跑目标机；默认沿用原目标机")
+    p.add_argument("--agent", "--harness", help="必须与原派单 harness 一致；换 harness 请另派一单")
     p.add_argument("--session", help="session id, if it cannot be found in the logs")
     p.add_argument("--model")
     p.add_argument("--effort")

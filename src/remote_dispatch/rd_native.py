@@ -52,7 +52,14 @@ def request(host, operation, data=None, payload=None, output=None, timeout=60):
     boot = "import json,sys,types; q=json.loads(sys.stdin.buffer.readline()); p=types.ModuleType('rd_profiles'); exec(q['profile_code'],p.__dict__); m=types.ModuleType('rd_messages'); exec(q['messages_code'],m.__dict__); h=types.ModuleType('rd_health'); exec(q['health_code'],h.__dict__); n={'__name__':'rd_remote','profiles':p,'messages':m,'health':h}; exec(q['worker_code'],n); n['serve'](q)"
     prefix = "$env:PATH=[Environment]::ExpandEnvironmentVariables(" + ps_quote(host["path"]) + ")+';'+$env:PATH; " if host["path"] else ""
     script = prefix + "$OutputEncoding=[Console]::OutputEncoding=[Text.UTF8Encoding]::new($false); & " + ps_quote(host["python"]) + " '-c' " + ps_quote(boot) + "; exit $LASTEXITCODE"
-    cmd = ["ssh", *shlex.split(host["ssh_opts"]), host["ssh"], " ".join(powershell(script))]
+    if host.get("platform") == "posix":
+        script = "python3 -c " + shlex.quote(boot)
+        if host["path"]:
+            script = 'export PATH="' + host["path"] + ':$PATH"; ' + script
+        cmd = (["sh", "-c", script] if host["ssh"] == "local" else
+               ["ssh", *shlex.split(host["ssh_opts"]), host["ssh"], "sh -c " + shlex.quote(script)])
+    else:
+        cmd = ["ssh", *shlex.split(host["ssh_opts"]), host["ssh"], " ".join(powershell(script))]
     with tempfile.TemporaryFile() as incoming, tempfile.TemporaryFile() as outgoing:
         incoming.write(json.dumps(message).encode() + b"\n")
         if payload is not None:
@@ -188,11 +195,87 @@ def extract(stream, destination):
                 raise ValueError("上传包含软链接或设备文件；仅支持普通文件。")
 
 
+def export_resume(root, job, destination):
+    """Transfer the current commit, index and complete worktree, without credentials."""
+    wt = checked_path(root, "wt/" + messages.job_id(job))
+    with tempfile.TemporaryDirectory() as temporary:
+        bundle = Path(temporary) / "source.bundle"
+        head = git(wt, "rev-parse", "HEAD").stdout.strip()
+        tree = git(wt, "write-tree").stdout.strip()
+        snapshot = git(wt, "-c", "user.name=Remote Dispatch", "-c", "user.email=noreply@local.invalid",
+                       "commit-tree", tree, "-p", head, "-m", "Resume index transfer").stdout.strip()
+        reference = "refs/rd-transfer/" + job
+        git(wt, "update-ref", reference, snapshot, "")
+        try:
+            git(wt, "bundle", "create", bundle, reference)
+        finally:
+            git(wt, "update-ref", "-d", reference, snapshot)
+        index = Path(git(wt, "rev-parse", "--path-format=absolute", "--git-path", "index").stdout.strip())
+        with tarfile.open(destination, "w") as archive:
+            archive.add(bundle, arcname="source.bundle")
+            archive.add(index, arcname="index")
+            for child in wt.iterdir():
+                if child.name != ".git":
+                    archive.add(child, arcname="workspace/" + child.name)
+            directory = checked_path(root, "jobs/" + job)
+            for name in ("setup.sh", "setup.ps1"):
+                if (directory / name).is_file():
+                    archive.add(directory / name, arcname=name)
+
+
+def import_resume(root, q, incoming):
+    job = messages.job_id(q["job"])
+    bare, wt = checked_path(root, q["bare"]), checked_path(root, "wt/" + job)
+    directory = checked_path(root, "jobs/" + job)
+    if wt.exists() or directory.exists():
+        raise ValueError("resume_target_conflict: 目标机已有同名派单；请先核对。")
+    bare.parent.mkdir(parents=True, exist_ok=True)
+    if not bare.exists():
+        bare.mkdir()
+        git(bare, "init", "--bare")
+    reference = "refs/heads/" + q["branch"]
+    git(bare, "check-ref-format", reference)
+    owned = False
+    try:
+        with tempfile.TemporaryDirectory() as temporary:
+            staged = Path(temporary)
+            extract(incoming, staged)
+            git(bare, "fetch", staged / "source.bundle", "refs/rd-transfer/" + job)
+            sha = git(bare, "rev-parse", "FETCH_HEAD^").stdout.strip()
+            git(bare, "update-ref", reference, sha, "")
+            owned = True
+            wt.parent.mkdir(parents=True, exist_ok=True)
+            git(bare, "worktree", "add", wt, q["branch"])
+            for child in wt.iterdir():
+                if child.name != ".git":
+                    shutil.rmtree(child) if child.is_dir() and not child.is_symlink() else child.unlink()
+            workspace = staged / "workspace"
+            if workspace.exists():
+                for child in workspace.iterdir():
+                    if child.name == ".git":
+                        raise ValueError("迁移工作树不得覆盖 Git 元数据。")
+                    shutil.move(str(child), str(wt / child.name))
+            index = Path(git(wt, "rev-parse", "--path-format=absolute", "--git-path", "index").stdout.strip())
+            shutil.copyfile(staged / "index", index)
+            directory.mkdir(parents=True)
+            for name in ("setup.sh", "setup.ps1"):
+                if (staged / name).exists():
+                    shutil.copyfile(staged / name, directory / name)
+        return dict(root=str(root))
+    except (Exception, SystemExit):
+        if owned:
+            git(bare, "worktree", "remove", "--force", wt, check=False)
+            git(bare, "update-ref", "-d", reference, check=False)
+            if directory.exists():
+                shutil.rmtree(directory)
+        raise
+
+
 def job_state(root, job):
     directory = checked_path(root, "jobs/" + job)
     read = lambda name: (directory / name).read_text(encoding="utf-8").strip() if (directory / name).exists() else ""
     state = "missing" if not directory.exists() else "done" if read("exit_code") else "running" if alive(read("pid")) else "starting" if not read("pid") else "dead"
-    rounds = len(list(directory.glob("run.r*.json")))
+    rounds = max((int(p.name.split(".")[1][1:]) for p in directory.glob("run.r*.json")), default=0)
     logs = directory / ("stdout.r" + str(rounds) + ".log")
     tail = []
     if logs.exists():
@@ -325,6 +408,33 @@ def handle(q, incoming):
     if q.get("path"):
         os.environ["PATH"] = os.path.expandvars(q["path"]) + os.pathsep + os.environ.get("PATH", "")
     op = q["operation"]
+    if op == "resume-import":
+        return import_resume(root, q, incoming)
+    if op in ("resume-checkpoint", "resume-rollback"):
+        directory = checked_path(root, "jobs/" + messages.job_id(q["job"]))
+        names = ("pid", "exit_code", "timed_out", "head", "dirty", "push_rc")
+        if op == "resume-checkpoint":
+            return {name: base64.b64encode((directory / name).read_bytes()).decode()
+                    for name in names if (directory / name).is_file()}
+        saved = q["checkpoint"]
+        pid = directory / "pid"
+        if pid.exists() and base64.b64encode(pid.read_bytes()).decode() != saved.get("pid"):
+            value = pid.read_text().strip()
+            if value.isdigit() and int(value) > 0 and alive(value):
+                stop_tree(int(value))
+        token = "r" + str(messages.round_id(q["round"]))
+        for folder in (directory, directory / "reports"):
+            if folder.exists():
+                for path in folder.iterdir():
+                    if token in path.name.split(".") and not path.is_dir():
+                        path.unlink()
+        for name in names:
+            path = directory / name
+            if name in saved:
+                path.write_bytes(base64.b64decode(saved[name], validate=True))
+            else:
+                path.unlink(missing_ok=True)
+        return None
     if op == "probe":
         info = win_metrics(root, shared)
         if q.get("env_file"):
@@ -469,7 +579,7 @@ def handle(q, incoming):
         directory.mkdir(parents=True, exist_ok=True)
         spec.update(directory=str(directory), wt=str(checked_path(root, "wt/" + spec["job"])), lock_dir=str(shared / "locks"), bin=str(root / "bin"))
         spec["last"] = str(directory / ("last.r" + str(spec["round"]) + ".txt"))
-        if spec["round"] == 1:
+        if not (directory / "rd_native.py").exists():
             (directory / "rd_profiles.py").write_text(q["profile_code"], encoding="utf-8")
             (directory / "rd_native.py").write_text(q["worker_code"], encoding="utf-8")
             if spec.get("profile"):
@@ -504,12 +614,14 @@ def handle(q, incoming):
 
 def serve(q):
     try:
-        if q["operation"] in ("fetch-bundle", "reports-bundle"):
+        if q["operation"] in ("fetch-bundle", "reports-bundle", "resume-export"):
             root = Path(os.path.expandvars(os.path.expanduser(q["workdir"]))).resolve()
             with tempfile.TemporaryDirectory() as temporary:
                 bundle = Path(temporary) / "result.bundle"
                 if q["operation"] == "fetch-bundle":
                     git(checked_path(root, q["bare"]), "bundle", "create", bundle, "refs/heads/" + q["branch"])
+                elif q["operation"] == "resume-export":
+                    export_resume(root, q["job"], bundle)
                 else:
                     reports = checked_path(root, "jobs/" + messages.job_id(q["job"]) + "/reports")
                     if reports.is_symlink() or (reports.exists() and not reports.is_dir()):
