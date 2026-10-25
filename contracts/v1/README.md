@@ -61,3 +61,11 @@ JSON 类型，另用行为断言覆盖实际值、用户隔离、纯查询、锁
   同一 pane／会话 ID／harness／项目最近一次持久 `session.changed` 或
   `session.message` 的事件 `time`，包含轮转段；详情见 `docs/serve.md`。
   老服务可省略此字段。事件结构不变，查询和无变化的轮询不补造更新时间。
+- `harness-stats.json`（票 41）：追加可选 `total_round_count`（累计已结束且保留回执），
+  顶层 `date_basis=controller_local`、`host_stats[].host/daily_round_counts[]`。
+  日序列固定 14 项升序，含今天和前 13 个本地日，空日为 0；每项含 `date/round_count`。
+  `harness.stats_changed` 附带同样的累计值与机器日序列；只有机器统计时 harness 为 null。
+  客户端应据事件刷新接口；统计不依赖事件日志，时间与旧记录口径见 `docs/serve.md`。
+- `projects-summary.json`（票 41）：`hosts[目标机].accepted_round_count` 是此项目×目标机
+  明确验收通过的累计轮次数；`project.changed` 的统计变体另带 `host/accepted_round_count`。
+  机器迁移前的轮次按回执目标机归属。App 同步契约时保留可选字段兼容。

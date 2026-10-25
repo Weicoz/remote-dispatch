@@ -20,7 +20,72 @@
           "last_checks": "passed",
           "last_job": "fixture-job",
           "last_round": 1,
-          "last_finished_at": "2026-10-25T01:00:00+00:00"
+          "last_finished_at": "2026-10-25T01:00:00+00:00",
+          "total_round_count": 1
+        }
+      ],
+      "date_basis": "controller_local",
+      "host_stats": [
+        {
+          "host": "target",
+          "daily_round_counts": [
+            {
+              "date": "2026-10-12",
+              "round_count": 0
+            },
+            {
+              "date": "2026-10-13",
+              "round_count": 0
+            },
+            {
+              "date": "2026-10-14",
+              "round_count": 0
+            },
+            {
+              "date": "2026-10-15",
+              "round_count": 0
+            },
+            {
+              "date": "2026-10-16",
+              "round_count": 0
+            },
+            {
+              "date": "2026-10-17",
+              "round_count": 0
+            },
+            {
+              "date": "2026-10-18",
+              "round_count": 0
+            },
+            {
+              "date": "2026-10-19",
+              "round_count": 0
+            },
+            {
+              "date": "2026-10-20",
+              "round_count": 0
+            },
+            {
+              "date": "2026-10-21",
+              "round_count": 0
+            },
+            {
+              "date": "2026-10-22",
+              "round_count": 0
+            },
+            {
+              "date": "2026-10-23",
+              "round_count": 0
+            },
+            {
+              "date": "2026-10-24",
+              "round_count": 0
+            },
+            {
+              "date": "2026-10-25",
+              "round_count": 1
+            }
+          ]
         }
       ]
     }
@@ -43,7 +108,72 @@
         "last_checks": "passed",
         "last_job": "fixture-job",
         "last_round": 1,
-        "last_finished_at": "2026-10-25T01:00:00+00:00"
+        "last_finished_at": "2026-10-25T01:00:00+00:00",
+        "total_round_count": 1,
+        "date_basis": "controller_local",
+        "host_stats": [
+          {
+            "host": "target",
+            "daily_round_counts": [
+              {
+                "date": "2026-10-12",
+                "round_count": 0
+              },
+              {
+                "date": "2026-10-13",
+                "round_count": 0
+              },
+              {
+                "date": "2026-10-14",
+                "round_count": 0
+              },
+              {
+                "date": "2026-10-15",
+                "round_count": 0
+              },
+              {
+                "date": "2026-10-16",
+                "round_count": 0
+              },
+              {
+                "date": "2026-10-17",
+                "round_count": 0
+              },
+              {
+                "date": "2026-10-18",
+                "round_count": 0
+              },
+              {
+                "date": "2026-10-19",
+                "round_count": 0
+              },
+              {
+                "date": "2026-10-20",
+                "round_count": 0
+              },
+              {
+                "date": "2026-10-21",
+                "round_count": 0
+              },
+              {
+                "date": "2026-10-22",
+                "round_count": 0
+              },
+              {
+                "date": "2026-10-23",
+                "round_count": 0
+              },
+              {
+                "date": "2026-10-24",
+                "round_count": 0
+              },
+              {
+                "date": "2026-10-25",
+                "round_count": 1
+              }
+            ]
+          }
+        ]
       }
     }
   ]

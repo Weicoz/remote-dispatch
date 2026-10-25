@@ -56,6 +56,33 @@ class ProjectRoutes:
                     in_progress_count=0, hosts={}, week_dispatch_count=0,
                     last_accepted_at=None, last_harness=None, recent_event=None)
 
+    def accepted_counts(self, rec, query):
+        counts = {}
+        for number in range(1, rec["rounds"] + 1):
+            if query.review(rec, number)["review_state"] != "accepted":
+                continue
+            receipt = messages.read_json(self.service.state / "results" / rec["job"] / f"r{number}.json")
+            host = (receipt or {}).get("host") or rec.get("host")
+            if host:
+                counts[host] = counts.get(host, 0) + 1
+        return counts
+
+    def observe(self):
+        service = self.service
+        query = service.query()
+        projects = {row["id"]: row for row in query.projects(service.user_id)}
+        counts = {}
+        for rec in query.jobs(self.records(), snapshots={}, user_id=service.user_id):
+            identity = rec["project_id"]
+            projects.setdefault(identity, dict(name=rec["project"], hidden=False))
+            for host, count in self.accepted_counts(rec, query).items():
+                key = (identity, host)
+                counts[key] = counts.get(key, 0) + count
+        log = events.EventLog(service.state)
+        for (identity, host), count in sorted(counts.items()):
+            log.publish("project.changed", dict(projects[identity], user_id=service.user_id,
+                        project_id=identity, host=host, accepted_round_count=count), only_if_changed=True)
+
     def projects(self, device=None):
         service = self.service
         query = service.query()
@@ -70,7 +97,7 @@ class ProjectRoutes:
         for event in visible_events:
             if event["data"].get("job"):
                 job_updates[event["data"]["job"]] = event["time"]
-        ranked, last_dispatch, job_projects = {}, {}, {}
+        ranked, last_dispatch, job_projects, accepted_counts = {}, {}, {}, {}
         for rec in self.records():
             card = self.card(rec, query)
             identity = card["project_id"]
@@ -88,6 +115,9 @@ class ProjectRoutes:
             if identity not in last_dispatch or key > last_dispatch[identity]:
                 last_dispatch[identity] = key
                 row["last_harness"] = card["harness"]
+            for host, count in self.accepted_counts(rec, query).items():
+                key = (identity, host)
+                accepted_counts[key] = accepted_counts.get(key, 0) + count
             for number in range(1, rec["rounds"] + 1):
                 review = query.review(rec, number)
                 accepted = review.get("reviewed_at") if review["review_state"] == "accepted" else None
@@ -122,15 +152,21 @@ class ProjectRoutes:
             row["origin"] = re.sub(r"(://)[^/@\s]+@", r"\1", row["origin"])
             for host in service.config.hosts():
                 row["hosts"].setdefault(host["name"], dict(state="idle", job=None, updated_at=None))
+            for identity, host in accepted_counts:
+                if identity == row["id"]:
+                    row["hosts"].setdefault(host, dict(state="idle", job=None, updated_at=None))
+            for host, cell in row["hosts"].items():
+                cell["accepted_round_count"] = accepted_counts.get((row["id"], host), 0)
         return sorted(rows.values(), key=lambda row: (row["name"] == "未归属", row["name"], row["id"]))
 
     def read(self, path, args, device=None):
         if path == "/v1/harness-stats":
-            from .rd_harness_stats import statistics
+            from .rd_harness_stats import host_statistics, statistics
             recent = int(args.get("recent", ["20"])[0])
             if not 1 <= recent <= 200 or any(len(values) != 1 for values in args.values()):
                 raise ValueError("invalid_stats_options")
-            return 200, {"harness_stats": statistics(self.service, recent)}
+            return 200, {"harness_stats": statistics(self.service, recent),
+                         "host_stats": host_statistics(self.service), "date_basis": "controller_local"}
         if path == "/v1/projects":
             return 200, {"projects": self.projects(device)}
         if path == "/v1/jobs":

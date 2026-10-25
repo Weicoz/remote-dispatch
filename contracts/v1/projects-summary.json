@@ -23,27 +23,49 @@
             "target": {
               "state": "idle",
               "job": "fixture-job",
-              "updated_at": "2026-10-25T01:00:00+00:00"
+              "updated_at": "2026-10-25T01:00:00+00:00",
+              "accepted_round_count": 1
             }
           },
           "week_dispatch_count": 1,
           "last_accepted_at": "2026-10-25T01:00:00+00:00",
           "last_harness": "codex",
           "recent_event": {
-            "seq": 3,
+            "seq": 4,
             "time": "2026-10-25T01:00:00+00:00",
-            "type": "job.state_changed",
+            "type": "project.changed",
             "data": {
-              "job": "fixture-job",
               "user_id": "fixture",
+              "project_id": "3e15c8030cfe7c2cd22b",
+              "name": "demo",
               "host": "target",
-              "round": 1,
-              "execution_state": "done"
+              "accepted_round_count": 1,
+              "first_dispatch_at": "2026-10-25T01:00:00+00:00",
+              "last_dispatch_at": "2026-10-25T01:00:00+00:00",
+              "dispatch_count": 1,
+              "hidden": false
             }
           }
         }
       ]
     }
   },
-  "events": []
+  "events": [
+    {
+      "seq": 4,
+      "time": "2026-10-25T01:00:00+00:00",
+      "type": "project.changed",
+      "data": {
+        "user_id": "fixture",
+        "project_id": "3e15c8030cfe7c2cd22b",
+        "name": "demo",
+        "host": "target",
+        "accepted_round_count": 1,
+        "first_dispatch_at": "2026-10-25T01:00:00+00:00",
+        "last_dispatch_at": "2026-10-25T01:00:00+00:00",
+        "dispatch_count": 1,
+        "hidden": false
+      }
+    }
+  ]
 }

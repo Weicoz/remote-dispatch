@@ -295,7 +295,7 @@ App 二维码、Keychain、实际握手固定校验、VPN 切换和真机推送�
 | --- | --- |
 | `needs_attention_count` / `in_progress_count` | 待处理派单数／starting、running 派单数 |
 | `recent_event` | 此项目最近的可见事件；没有时为 null |
-| `hosts` | 按目标机名索引，值含 `state/job/updated_at`；无派单的已配置目标机为 idle |
+| `hosts` | 按目标机名索引，值含 `state/job/updated_at/accepted_round_count`；无派单的已配置目标机为 idle |
 | `week_dispatch_count` | 控制端本地时间本周一零时以来的新派单数，续跑不重复计数 |
 | `last_accepted_at` / `last_harness` | 最近通过的时间／最近派单的执行 harness；未知为 null |
 | `session_only` / `sessions` | 本票为 false／空数组，供票 25 的仅会话项目接入 |
@@ -307,6 +307,13 @@ App 二维码、Keychain、实际握手固定校验、VPN 切换和真机推送�
 并纳入最近一次状态变更事件的时间；时间相同时按 job ID 升序。已通过／已作废为 idle。会话状态由票 25 补充。
 项目按名称和 ID 稳定排序，“未归属”在最后；origin URL 的 userinfo 不对外返回。
 缺少元数据的历史只返回已知内容，不推测 harness、时间或原用户。
+
+`hosts[目标机].accepted_round_count` 是当前用户在此项目、此目标机上明确验收为
+`accepted` 的累计轮次数；不是 `outcome=completed` 或 `checks=passed` 的次数。
+签收、待验收、打回和作废均不增加。每轮按保留回执的 `host` 归属，旧回执未记录
+目标机时回退到派单元数据；迁机续跑不会把已有回执的通过数移到新目标机。
+历史通过的目标机即使已从配置删除仍返回；没有通过记录的目标机为 0。
+统计读取派单／回执及逐轮验收，不依赖事件日志；清理 job 登记后仍可读回。
 
 `GET /v1/jobs?project=<项目ID>` 过滤当前登记派单；不传 project 保持原完整列表。
 `state=active` 排除已通过／作废，`state=history` 包含已通过／作废及已清理的保留历史。
@@ -337,6 +344,8 @@ App 二维码、Keychain、实际握手固定校验、VPN 切换和真机推送�
 N 为 1–200，默认 20。每项含：
 
 - `today_round_count`：控制端本地今日结束并保留回执的轮次数，不按 job 去重。
+- `total_round_count`：此 harness 的累计已结束且保留回执的轮次数，包含失败、
+  打回、作废和未知结束时间；不包含尚无回执的执行中轮次，不受 recent=N 限制。
 - `recent_round_limit/duration_sample_count/average_duration_seconds`：最近 N 个已结束轮次中，
   有有效起止时间的样本数和平均秒数；无样本为 null。
 - `current_rounds`：仍在执行的各轮 `job/round/elapsed_seconds`，支持同一 harness 并行多单。
@@ -351,6 +360,26 @@ N 为 1–200，默认 20。每项含：
 后台收取回执后计算默认 N 的统计，只在持久统计值变化时发 `harness.stats_changed`，
 含用户、harness 及上述标量统计字段；不把持续变化的 `current_rounds` 放入事件。
 按用户＋harness 持久去重，重启及事件轮转不重复发布；HTTP 查询本身不发布事件。
+
+响应还增加 `date_basis="controller_local"` 与 `host_stats`。后者按目标机名排序，
+每项含 `host` 和 `daily_round_counts: [{date: "YYYY-MM-DD", round_count: 整数}]`。
+日序列固定 14 项，按日期升序，含控制端本地今天和前 13 个日历日，空日补 0；
+今天只累计到查询时刻。按每轮结束时间转换为控制端操作系统本地时区后归日，
+正确处理夏令时的 23／25 小时日；不使用目标机时区，也不以固定 24 小时切桶。
+无时区的旧时间沿用控制端本地时间解释。结束时间的回退顺序与上面一致；
+无效／缺失时间和未来结束时间不进入日计数。所有 harness 和普通命令的回执均计入，
+仍执行中且没有回执的不计入。目标机归属规则与项目通过数相同，包含已配置及
+当前用户保留历史中的目标机；空目标机列表返回空数组。统计始终只取当前用户，
+兼容既有无用户字段的旧记录，不按发起会话过滤。
+
+`harness.stats_changed` 新增 `total_round_count/date_basis/host_stats`，
+让客户端同时刷新履历和机器日序列。没有具名 harness 但存在目标机时，后台发布
+`harness=null`、只含用户及机器日序列的统计事件，不补造 harness 历史；
+HTTP 的 `harness_stats` 仍为空。首次后台观察、轮次／验收变化和跨本地零时
+导致持久统计变化时才发布，执行中秒数变化不触发。
+项目累计通过数变化时，后台按用户＋项目＋目标机发布 `project.changed`，新增
+`host/accepted_round_count`；保留现有项目标量字段。没有通过记录时不额外发统计事件。
+索引变更事件与逐目标机统计事件分别持久去重，重启、轮转或两个项目交错轮询不重复发出。
 
 新增契约样例是 `projects-summary/projects-hide/projects-show/projects-key-required`、
 `jobs-project/jobs-history`、`harness-stats`，位于 `contracts/v1/`，由
