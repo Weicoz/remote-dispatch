@@ -11,6 +11,7 @@
           "name": "target",
           "local": true,
           "reachable": true,
+          "probed": true,
           "full": false,
           "load1": "1",
           "ncpu": "8",

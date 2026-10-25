@@ -20,6 +20,71 @@ class ReadLatencyTests(unittest.TestCase):
     next_event = base.ServeTests.next_event
     assert_structure = base.ServeTests.assert_structure
 
+    def test_first_hosts_response_lists_all_enabled_targets_before_probe_finishes(self):
+        self.config.write_text("[host:target]\nssh=local\n"
+                               "[host:remote]\nplatform=windows\nssh=remote.invalid\n"
+                               "[host:disabled]\nssh=disabled.invalid\nenabled=false\n")
+        entered, release = threading.Event(), threading.Event()
+
+        def delayed_probe(host):
+            entered.set()
+            if not release.wait(5):
+                raise AssertionError("probe was not released")
+            raise OSError("synthetic offline")
+
+        with patch.object(cli, "probe", side_effect=delayed_probe):
+            service = self.start(poll_interval=3600)
+            try:
+                self.assertTrue(entered.wait(2))
+                status, body = self.request("/v1/hosts")
+                self.assertEqual(status, 200)
+                example = json.loads((base.CONTRACTS / "hosts-cold-start.json").read_text())
+                row = example["response"]["body"]["hosts"][0]
+                self.assertEqual(body["hosts"], [row, dict(row, name="remote", local=False)])
+                release.set()
+                rows = self.eventually(lambda: self.request("/v1/hosts")[1]["hosts"],
+                                       lambda rows: all(row["probed"] for row in rows))
+                self.assertEqual(rows, [dict(row, probed=True),
+                                        dict(row, name="remote", local=False, probed=True)])
+            finally:
+                release.set()
+                service.close()
+
+    def test_host_probe_results_are_visible_while_job_collection_is_delayed(self):
+        self.config.write_text("[host:target]\nplatform=windows\nssh=target.invalid\n")
+        for number in range(195):
+            cli.save_job(dict(job=f"job-{number:03}", user_id="fixture", host="target", rounds=1))
+        entered, release = threading.Event(), threading.Event()
+        calls = []
+
+        def target(host, action, data=None, **kwargs):
+            calls.append(action)
+            if action == "probe":
+                return dict(load1="1", ncpu="8", memfree="80", disk="100", running="0", heavy="0")
+            if action == "state":
+                entered.set()
+                if not release.wait(5):
+                    raise AssertionError("job collection was not released")
+                return {data["jobs"][0]: dict(state="unreachable")}
+            raise AssertionError(f"unexpected RPC: {action}")
+
+        with patch.object(cli.native, "request", side_effect=target):
+            service = self.start(poll_interval=3600)
+            try:
+                self.assertTrue(entered.wait(2))
+                status, body = self.request("/v1/hosts")
+                self.assertEqual(status, 200)
+                self.assertEqual(len(body["hosts"]), 1)
+                row = body["hosts"][0]
+                self.assertTrue(row["probed"])
+                self.assertTrue(row["reachable"])
+                self.assertEqual(row["load1"], "1")
+                self.assertEqual(calls, ["probe", "state"])
+            finally:
+                service.stop.set()
+                release.set()
+                service.close()
+
     def test_two_hundred_jobs_and_thirty_projects_return_while_target_is_slow(self):
         self.config.write_text("[host:slow]\nplatform=windows\nssh=slow.invalid\n")
         for number in range(200):
@@ -31,6 +96,8 @@ class ReadLatencyTests(unittest.TestCase):
 
         def slow_target(*args, **kwargs):
             calls.append(args[1])
+            if args[1] == "probe":
+                raise ValueError("synthetic unreachable target")
             entered.set()
             time.sleep(5)
             raise ValueError("synthetic unreachable target")
@@ -45,12 +112,12 @@ class ReadLatencyTests(unittest.TestCase):
                     elapsed = time.monotonic() - started
                     self.assertEqual(status, 200)
                     self.assertEqual(len(body[key]), count)
-                    self.assertEqual(calls, ["state"], "后台请求阻塞期间，读请求不得联系目标机")
+                    self.assertEqual(calls, ["probe", "state"], "后台请求阻塞期间，读请求不得联系目标机")
                     self.assertLess(elapsed, 0.5, f"{path}: {elapsed:.3f}s")
             for path in ("/v1/jobs/job-000", "/v1/jobs?state=active", "/v1/jobs?state=history",
                          "/v1/harness-stats", "/v1/sessions", "/v1/jobs/job-000/session"):
                 self.assertEqual(self.request(path)[0], 200, path)
-            self.assertEqual(calls, ["state"])
+            self.assertEqual(calls, ["probe", "state"])
             service.close()
         self.assertFalse(self.path.exists())
 
@@ -125,8 +192,6 @@ class ReadLatencyTests(unittest.TestCase):
             service = self.start(poll_interval=3600)
             self.eventually(lambda: self.request("/v1/jobs/moving")[1],
                             lambda row: row["rounds"][0]["progress"] is not None)
-            # Wait for the host at the end of the first background cycle.
-            self.eventually(lambda: self.request("/v1/hosts")[1]["hosts"], bool)
             cli.save_job(dict(rec, host="second"))
             detail = self.request("/v1/jobs/moving")[1]
             self.assertEqual(detail["job"]["execution_state"], "starting")

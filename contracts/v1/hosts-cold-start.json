@@ -1,0 +1,24 @@
+{
+  "request": {"method": "GET", "path": "/v1/hosts"},
+  "response": {
+    "status": 200,
+    "body": {
+      "hosts": [
+        {
+          "name": "target",
+          "local": true,
+          "reachable": false,
+          "full": false,
+          "probed": false,
+          "load1": null,
+          "ncpu": null,
+          "memfree": null,
+          "disk": null,
+          "running": null,
+          "heavy": null
+        }
+      ]
+    }
+  },
+  "events": []
+}

@@ -236,7 +236,10 @@ class Service:
         self.generations = {}
         self.progress = {}
         self.restore_snapshots()
-        self.hosts = []
+        self.hosts = [dict(name=host["name"], local=cli.is_local(host), reachable=False,
+                           full=False, probed=False,
+                           **{key: None for key in ("load1", "ncpu", "memfree", "disk", "running", "heavy")})
+                      for host in self.config.hosts()]
         self.network = network.Network(self, push_sender=push_sender)
         self.server = None
         self.thread = None
@@ -437,6 +440,23 @@ class Service:
         log = events.EventLog(self.state)
         while not self.stop.is_set():
             self.wake.clear()
+            hosts = []
+            for host in self.config.hosts():
+                if self.stop.is_set():
+                    break
+                try:
+                    info = cli.probe(host)
+                    full = bool(info.get("reachable") and cli.assess(host, info))
+                    log.observe_host(host, info, full=full)
+                    hosts.append(dict(name=host["name"], local=cli.is_local(host),
+                                      reachable=bool(info.get("reachable")), full=full, probed=True,
+                                      **{key: info.get(key) for key in ("load1", "ncpu", "memfree", "disk", "running", "heavy")}))
+                except (ValueError, OSError, SystemExit, subprocess.SubprocessError):
+                    hosts.append(dict(name=host["name"], local=cli.is_local(host), reachable=False, full=False, probed=True,
+                                      **{key: None for key in ("load1", "ncpu", "memfree", "disk", "running", "heavy")}))
+                    print("rdispatch: poll_unavailable: cannot probe a host", file=sys.stderr)
+            with self.cache_lock:
+                self.hosts = hosts
             self.sessions.collect()
             try:
                 records = self.records()
@@ -483,23 +503,6 @@ class Service:
                 self.project_routes.observe()
             except (ValueError, OSError):
                 print("rdispatch: poll_unavailable: cannot update harness statistics", file=sys.stderr)
-            hosts = []
-            for host in self.config.hosts():
-                if self.stop.is_set():
-                    break
-                try:
-                    info = cli.probe(host)
-                    full = bool(info.get("reachable") and cli.assess(host, info))
-                    log.observe_host(host, info, full=full)
-                    hosts.append(dict(name=host["name"], local=cli.is_local(host),
-                                      reachable=bool(info.get("reachable")), full=full,
-                                      **{key: info.get(key) for key in ("load1", "ncpu", "memfree", "disk", "running", "heavy")}))
-                except (ValueError, OSError, SystemExit, subprocess.SubprocessError):
-                    hosts.append(dict(name=host["name"], local=cli.is_local(host), reachable=False, full=False,
-                                      **{key: None for key in ("load1", "ncpu", "memfree", "disk", "running", "heavy")}))
-                    print("rdispatch: poll_unavailable: cannot probe a host", file=sys.stderr)
-            with self.cache_lock:
-                self.hosts = hosts
             self.wake.wait(self.poll_interval)
 
     def card(self, rec, query):
