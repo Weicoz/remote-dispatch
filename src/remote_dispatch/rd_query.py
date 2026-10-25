@@ -8,6 +8,7 @@ import json
 from pathlib import Path
 
 from . import rd_messages as messages
+from .rd_projects import ProjectIndex, project_fields
 
 
 def result_path(state, rec, number):
@@ -16,17 +17,39 @@ def result_path(state, rec, number):
 
 
 class Query:
-    def __init__(self, state, *, states, report, receiver):
+    def __init__(self, state, *, states, report, receiver, project_names=()):
         self.state = state
         self.states = states
         self.report = report
         self.receiver = receiver
+        self.project_names = project_names
 
-    def jobs(self, records, snapshots=None):
+    def projects(self, user_id):
+        """Return persistent project history, including hidden projects."""
+        return sorted(ProjectIndex(self.state, user_id).read().values(), key=lambda row: (row["name"], row["id"]))
+
+    def jobs(self, records, snapshots=None, *, user_id=None):
         """Return job records overlaid with their execution snapshot fields."""
         if snapshots is None:
             snapshots = self.states(records)
-        return [dict(rec, **snapshots.get(rec["job"], {})) for rec in records]
+        known = set(self.project_names) | {rec["project"] for rec in records if rec.get("project")}
+        names_by_user = {}
+        rows = []
+        for rec in records:
+            uid = rec.get("user_id") or user_id
+            if uid not in names_by_user:
+                names = set(known)
+                if uid:
+                    names.update(row["name"] for row in self.projects(uid))
+                    for path in (Path(self.state) / "jobs").glob("*.json"):
+                        saved = messages.read_json(path)
+                        if saved and saved.get("project") and saved.get("user_id") in (None, "", uid):
+                            names.add(saved["project"])
+                names_by_user[uid] = names
+            row = dict(rec, **project_fields(rec, uid, names_by_user[uid]))
+            row.update(snapshots.get(rec["job"], {}))
+            rows.append(row)
+        return rows
 
     def result(self, rec, number=None, snapshot=None):
         """Return a cached or in-memory receipt, or None while unavailable.
@@ -65,13 +88,15 @@ class Query:
         ack = messages.read_json(result_path(self.state, rec, receipt["round"]).with_suffix(".ack.json"))
         return "received" if ack and ack.get("receipt_id") == receipt["receipt_id"] else "pending"
 
-    def details(self, rec, snapshot=None):
+    def details(self, rec, snapshot=None, *, user_id=None):
         """Return {job, initiator_session, execution, progress, result, delivery_state}."""
         if snapshot is None:
             snapshot = self.states([rec]).get(rec["job"], {})
         number = int(snapshot.get("round") or rec["rounds"])
         progress = self.report(rec, number, "progress") if rec.get("handoff_version") and snapshot.get("state") in ("running", "done") else None
         receipt = self.result(rec, number, snapshot)
-        return dict(job=rec["job"], initiator_session=rec.get("initiator_session"), execution=snapshot,
+        project = self.jobs([rec], {}, user_id=user_id)[0]
+        return dict(job=rec["job"], project=project["project"], project_id=project["project_id"],
+                    initiator_session=rec.get("initiator_session"), execution=snapshot,
                     progress=progress, result=receipt,
                     delivery_state=self.delivery(rec, receipt) if receipt else "not_available")

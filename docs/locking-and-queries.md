@@ -45,6 +45,12 @@ receipt_id, captured_at`。旧缓存保留原 ID 和字段。未缓存历史轮�
 
 查询不修改调用方的记录、不写缓存、不创建目录、不取写锁。
 `collect_result` 是保留的显式持久化路径，查询不调用它。
+
+项目索引新增 `Query.projects(user_id)`，返回持久项目列表（含隐藏项）；
+`jobs` 与 `details` 增加 `project`、`project_id` 只读推断，旧记录可传
+`user_id=` 指定当前用户。项目写入使用独立的
+`locks/projects/<用户ID>.lock`，竞争时 CLI 返回 4。
+格式、重建规则和使用方法见 [项目索引](project-index.md)。
 身份与输出策略由调用端负责：CLI 详情／结果仍检查原发起会话；未来 serve
 按当前用户筛选记录后可直接调用查询接口，响应字段按 serve 契约筛选。
 

@@ -30,6 +30,7 @@ from . import rd_messages as messages
 from . import rd_health as health
 from . import rd_agents as agents
 from . import rd_query as query
+from . import rd_projects as projects
 from .rd_lock import JobBusy, JobLock
 from . import rd_initiator as initiators
 
@@ -691,6 +692,13 @@ def all_jobs():
     return [load_job(n) for n in names]
 
 
+def cmd_project(a, cfg):
+    index = projects.ProjectIndex(STATE, require_user())
+    names = [section.split(":", 1)[1] for section in cfg.cp.sections() if section.startswith("project:")]
+    row = index.rebuild(names) if a.action == "rebuild" else index.set_hidden(a.project_id, a.action == "hide")
+    print(json.dumps(row, ensure_ascii=False, indent=2))
+
+
 def initiator_session(args, harness=None):
     value = (getattr(args, "initiator_session", None) or os.environ.get("RD_INITIATOR_SESSION")
              or initiators.session(harness if harness is not None else initiators.harness()))
@@ -727,7 +735,9 @@ def queries(cfg):
     return query.Query(STATE, states=lambda recs: job_states(cfg, recs),
                        report=lambda rec, number, kind: remote_report(job_host(cfg, rec), rec, number, kind),
                        receiver=lambda rec: find_session(job_host(cfg, rec), rec,
-                                                         rec.get("agent_config") or cfg.agent(rec["agent"])))
+                                                         rec.get("agent_config") or cfg.agent(rec["agent"])),
+                       project_names=[section.split(":", 1)[1] for section in cfg.cp.sections()
+                                      if section.startswith("project:")] if cfg else ())
 
 
 def collect_result(cfg, rec, snapshot):
@@ -1057,7 +1067,7 @@ def cmd_run(a, cfg):
         if a.agent:
             profile = agent_preflight(host, uid, a.agent, agent)
         origin_harness = initiators.harness()
-        rec = {"job": job, "host": host["name"], "project": project, "repo": repo, "branch": branch,
+        rec = {"job": job, "host": host["name"], "project": project, "origin": origin_url, "repo": repo, "branch": branch,
                "base": sha, "source_branch": source_branch, "include_paths": include_paths,
                "sync": host["sync"], "agent": a.agent, "cmd": a.cmd, "rounds": 1,
                "created": time.strftime("%Y-%m-%d %H:%M:%S"), "user_id": uid,
@@ -1071,10 +1081,11 @@ def cmd_run(a, cfg):
         print(f"dispatching {job} -> {host['name']} (branch {branch}, base {sha[:10]}, sync {host['sync']})")
 
         repo_key = hashlib.sha256((origin_url or repo).encode()).hexdigest()[:12]
+        rec["project_id"] = projects.project_id(project, origin_url)
         bare = f"repos/{project}-{repo_key}.git"
         rec["bare"] = bare
         rec["dispatch_state"] = "preparing"
-        save_job(rec)
+        projects.ProjectIndex(STATE, uid).register(rec)
         try:
             if host["platform"] == "windows":
                 native_init(host, rec, repo, sha, proj.get("origin_url") or origin_url)
@@ -1237,14 +1248,15 @@ def describe(rec, st):
     return line
 
 
-def scoped_jobs(a):
+def scoped_jobs(a, cfg=None, *, include_legacy=False):
     """跨发起会话查当前员工；项目显式指定，否则在当前仓库内筛选。"""
     uid = require_user()
     recs = [load_job(a.job)] if getattr(a, "job", None) else all_jobs()
-    recs = [r for r in recs if r.get("user_id") == uid]
+    recs = [r for r in recs if r.get("user_id") == uid or (include_legacy and not r.get("user_id"))]
     project = getattr(a, "project", None)
     if project:
-        recs = [r for r in recs if r.get("project") == project]
+        inferred = queries(cfg).jobs(recs, {}, user_id=uid)
+        recs = [rec for rec, row in zip(recs, inferred) if row["project"] == project]
     directory = get_dir(a)
     if directory or not project:
         probe = run(["git", "-C", directory or os.getcwd(), "rev-parse", "--show-toplevel"], check=False)
@@ -1287,7 +1299,7 @@ def cmd_status(a, cfg):
     if getattr(a, "into", None) and not unmerged:
         die("--into 需要 --unmerged。", 4)
     filtered = unmerged or getattr(a, "project", None) or get_dir(a)
-    recs = scoped_jobs(a) if filtered else ([load_job(a.job)] if a.job else [r for r in all_jobs() if not r.get("user_id") or r["user_id"] == require_user()])
+    recs = scoped_jobs(a, cfg, include_legacy=True) if filtered else ([load_job(a.job)] if a.job else [r for r in all_jobs() if not r.get("user_id") or r["user_id"] == require_user()])
     if not recs:
         print("no jobs.")
         return
@@ -1308,11 +1320,11 @@ def cmd_status(a, cfg):
         for rec in recs:
             require_initiator(rec, a)
             snapshot = states.get(rec["job"], {})
-            output.append(queries(cfg).details(rec, snapshot))
+            output.append(queries(cfg).details(rec, snapshot, user_id=require_user()))
         print(json.dumps(output, ensure_ascii=False, indent=2))
         return
     if a.json:
-        print(json.dumps(queries(cfg).jobs(recs, states), indent=2, ensure_ascii=False))
+        print(json.dumps(queries(cfg).jobs(recs, states, user_id=require_user()), indent=2, ensure_ascii=False))
         return
     for r in recs:
         snapshot = states.get(r["job"], {})
@@ -1661,7 +1673,7 @@ def cmd_clean_batch(a, cfg, mode):
     """--merged 只看合入；--expired 另按续跑可能性分级保留，过期才回收。两者共用同一组安全条件。"""
     if a.job or a.force or a.delete_branch or getattr(a, "discard_reports", False):
         die(f"--{mode} 不与 job、--force、--delete-branch 或 --discard-reports 混用。", 4)
-    recs = scoped_jobs(a)
+    recs = scoped_jobs(a, cfg)
     if not recs:
         print("no jobs.")
         return
@@ -1902,6 +1914,14 @@ def main():
     repo_parser.add_argument("-C", "--dir", dest="dir", help="本地仓库目录（默认为当前工作目录）")
 
     sub.add_parser("hosts", help="probe every configured machine").set_defaults(fn=cmd_hosts)
+
+    p = sub.add_parser("project", help="manage persistent project history")
+    actions = p.add_subparsers(dest="action", required=True)
+    for action in ("hide", "show"):
+        command = actions.add_parser(action, help=f"{action} a project")
+        command.add_argument("project_id", help="opaque project ID from status --json")
+        command.set_defaults(fn=cmd_project)
+    actions.add_parser("rebuild", help="rebuild projects from jobs and receipts; keep hidden flags").set_defaults(fn=cmd_project)
 
     p = sub.add_parser("profile", help="检查或确认同步用户 Codex 配置（不自动同步）")
     p.add_argument("action", choices=["check", "sync"])
