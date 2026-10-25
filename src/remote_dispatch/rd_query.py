@@ -28,6 +28,9 @@ class Query:
         self.report = report
         self.receiver = receiver
         self.project_names = project_names
+        # A Query is a single read view. Resolve legacy project names once,
+        # even when the adapter renders its records one card at a time.
+        self.names_by_user = {}
 
     def projects(self, user_id):
         """Return persistent project history, including hidden projects."""
@@ -38,7 +41,7 @@ class Query:
         if snapshots is None:
             snapshots = self.states(records)
         known = set(self.project_names) | {rec["project"] for rec in records if rec.get("project")}
-        names_by_user = {}
+        names_by_user = self.names_by_user
         rows = []
         for rec in records:
             uid = rec.get("user_id") or user_id
@@ -51,6 +54,7 @@ class Query:
                         if saved and saved.get("project") and saved.get("user_id") in (None, "", uid):
                             names.add(saved["project"])
                 names_by_user[uid] = names
+            names_by_user[uid].update(known)
             row = dict(rec, **project_fields(rec, uid, names_by_user[uid]))
             snapshot = snapshots.get(rec["job"], {})
             row.update(snapshot)

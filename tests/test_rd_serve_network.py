@@ -396,6 +396,8 @@ class NetworkTests(unittest.TestCase):
         item = dict(row=session, origin="", transcript=None)
         with patch.object(service.sessions, "discover", return_value=[item]), \
                 patch.object(service.sessions.herdr, "input") as send_input:
+            # Reads now use the last background collection, not discovery itself.
+            service.sessions.collect()
             for path in ("/v1/sessions", "/v1/jobs/missing/session", "/v1/%73essions/w1:p1/screen"):
                 with self.subTest(path=path):
                     self.assertEqual(self.request(path, connection=self.tls(info),
@@ -406,7 +408,7 @@ class NetworkTests(unittest.TestCase):
             self.assertEqual(self.request("/v1/sessions/w1:p1/input", "POST", {"text": "fixture"},
                 connection=self.tls(info), headers=headers)[0], 403)
             send_input.assert_not_called()
-            events.emit(self.state, "session.changed", dict(session, user_id="fixture"))
+            session_event = events.emit(self.state, "session.changed", dict(session, user_id="fixture"))
             events.emit(self.state, "job.created", dict(job="visible", user_id="fixture"))
             connection = self.tls(info)
             connection.request("GET", "/v1/events", headers=headers)
@@ -424,12 +426,13 @@ class NetworkTests(unittest.TestCase):
             stream.close()
             route = "/v1/devices/" + device["device_id"] + "/session-access"
             self.assertEqual(self.request(route, "POST", {"enabled": True}, key="enable")[0], 200)
+            expected_session = dict(session, updated_at=session_event["time"])
             self.assertEqual(self.request("/v1/sessions", connection=self.tls(info), headers=headers),
-                             (200, {"sessions": [session]}))
+                             (200, {"sessions": [expected_session]}))
             projects = self.request("/v1/projects", connection=self.tls(info), headers=headers)[1]["projects"]
             self.assertEqual(len(projects), 1)
             self.assertTrue(projects[0]["session_only"])
-            self.assertEqual(projects[0]["sessions"], [session])
+            self.assertEqual(projects[0]["sessions"], [expected_session])
             self.assertEqual(self.request("/v1/jobs/missing/session", connection=self.tls(info), headers=headers)[0], 404)
             self.assertEqual(self.request("/v1/sessions/w1:p1/input", "POST", {"text": "fixture"},
                 connection=self.tls(info), headers=headers), (200, {"pane_id": "w1:p1", "accepted": True}))

@@ -135,12 +135,15 @@ class ServeTests(unittest.TestCase):
         before = self.snapshot()
         detail = self.request("/v1/jobs/fixture-job")[1]
         receipt = self.request("/v1/jobs/fixture-job/rounds/1/receipt")[1]
-        logs = self.request("/v1/jobs/fixture-job/rounds/1/logs?stream=out&tail=2")[1]
+        logs = self.eventually(lambda: self.request("/v1/jobs/fixture-job/rounds/1/logs?stream=out&tail=2")[1],
+                               lambda row: row.get("snapshot_at") is not None)
         self.assertEqual(detail["job"]["initiator_session"], "original-session")
         self.assertEqual(detail["rounds"][0]["receipt"]["receipt_id"], receipt["receipt"]["receipt_id"])
         self.assertEqual(receipt["receipt"]["report"]["summary"], "完成")
         self.assertEqual(logs["text"], "second\nthird\n")
-        self.assertEqual(self.request("/v1/jobs/fixture-job/rounds/1/logs?stream=err&tail=1")[1]["text"], "error line\n")
+        error_log = self.eventually(lambda: self.request("/v1/jobs/fixture-job/rounds/1/logs?stream=err&tail=1")[1],
+                                    lambda row: row.get("snapshot_at") is not None)
+        self.assertEqual(error_log["text"], "error line\n")
         self.assertEqual(self.request("/v1/jobs/other-job")[0], 404)
         self.assertEqual(self.request("/v1/jobs/other-job/rounds/1/receipt")[0], 404)
         self.assertEqual(self.request("/v1/jobs/other-job/rounds/1/logs")[0], 404)
@@ -339,7 +342,7 @@ class ServeTests(unittest.TestCase):
             for key, value in example.items():
                 self.assert_structure(actual[key], value, nullable=key in {
                     "report", "progress", "execution_state", "load1", "ncpu", "memfree", "disk", "running", "heavy",
-                    "additions", "deletions"})
+                    "additions", "deletions", "snapshot_at"})
         elif isinstance(example, list) and example:
             self.assertTrue(actual)
             for row in actual:
@@ -398,7 +401,14 @@ class ServeTests(unittest.TestCase):
                       "/v1/jobs/fixture-job/rounds/1/logs?stream=err",
                       "/v1/jobs/other-job", "/unknown", "/v1/jobs/fixture-job/rounds/1/logs?tail=-1"):
             with self.subTest(route=route):
-                encoded = json.dumps(self.request(route)[1]).lower()
+                if "/logs?stream=" in route:
+                    body = self.eventually(lambda: self.request(route)[1],
+                                           lambda row: row.get("snapshot_at") is not None)
+                    if "stream=out" in route:
+                        self.assertIn("[redacted]", body["text"])
+                else:
+                    body = self.request(route)[1]
+                encoded = json.dumps(body).lower()
                 for forbidden in ("env_file", "auth_file", "ssh", "private-marker", "/private/fixture", "apikey", "private key"):
                     self.assertNotIn(forbidden, encoded)
         response = self.open_events()
@@ -547,7 +557,8 @@ class ServeTests(unittest.TestCase):
         log = self.worker / "stdout.r1.log"
         log.unlink()
         log.symlink_to(private)
-        status, body = self.request("/v1/jobs/fixture-job/rounds/1/logs")
+        status, body = self.eventually(lambda: self.request("/v1/jobs/fixture-job/rounds/1/logs"),
+                                       lambda row: row[0] == 503)
         self.assertEqual(status, 503)
         self.assertNotIn("private-marker", json.dumps(body))
 

@@ -28,6 +28,9 @@ POSIX 用 `flock`，Windows 用单字节 `msvcrt.locking`；均由操作系统�
 | `receiver` | `rec` | 接收会话 ID 或 `None` |
 
 CLI 的 `remote_dispatch.cli.queries(cfg)` 已接好现有目标机读取适配器，供复用。
+serve 的 `Service.query()` 则只接控制端本地快照，不能换成 CLI 的目标机回调。
+每次 HTTP 查询创建独立 `Query`；项目名称集合在该次读取中复用，
+列表逐卡片渲染不重复扫描 jobs。后台采集不持全局 writer 锁。
 
 | 方法 | 返回结构 |
 | --- | --- |

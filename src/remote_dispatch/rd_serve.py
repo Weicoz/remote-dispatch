@@ -27,6 +27,7 @@ from .rd_serve_writes import Writes
 from .rd_serve_projects import ProjectRoutes
 from . import rd_harness_stats
 from .rd_serve_sessions import Sessions
+from .rd_serve_logs import LogSnapshots
 from .rd_serve_history import instant
 
 
@@ -234,6 +235,7 @@ class Service:
         self.snapshots = {}
         self.generations = {}
         self.progress = {}
+        self.restore_snapshots()
         self.hosts = []
         self.network = network.Network(self, push_sender=push_sender)
         self.server = None
@@ -242,6 +244,7 @@ class Service:
         self.project_routes = ProjectRoutes(self)
         self.sensitive = set()
         self.sessions = Sessions(self)
+        self.log_snapshots = LogSnapshots(self)
         for host in self.config.hosts():
             for key, value in host.items():
                 if value and (key in ("env_file", "ssh_opts", "ssh") or "auth_file" in key):
@@ -278,6 +281,7 @@ class Service:
             self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
             self.thread.start()
             self.network.start(network.handler_class(Handler))
+            self.log_snapshots.start()
             self.poller = threading.Thread(target=self.poll, daemon=True)
             self.poller.start()
             return self
@@ -290,6 +294,7 @@ class Service:
         self.wake.set()
         self.network.close()
         self.sessions.close()
+        self.log_snapshots.close()
         if self.thread is not None:
             self.server.shutdown()
             self.thread.join()
@@ -380,16 +385,50 @@ class Service:
     def generation(rec):
         return rec["rounds"], rec["host"], rec.get("worker_root")
 
+    def restore_snapshots(self):
+        """A damaged derived cache must not prevent serving local records."""
+        for path in (self.state / "serve-snapshots").glob("*.json"):
+            try:
+                saved = messages.read_json(path)
+                if not isinstance(saved, dict) or saved.get("user_id") != self.user_id:
+                    continue
+                generation = saved["generation"]
+                snapshot, progress = saved["snapshot"], saved.get("progress")
+                if (not isinstance(generation, list) or len(generation) != 3
+                        or type(generation[0]) is not int or generation[0] < 1
+                        or not isinstance(generation[1], str)
+                        or generation[2] is not None and not isinstance(generation[2], str)
+                        or not isinstance(snapshot, dict) or not isinstance(snapshot.get("state"), str)
+                        or int(snapshot["round"]) != generation[0]
+                        or instant(snapshot.get("snapshot_at")) is None
+                        or progress is not None and not isinstance(progress, dict)):
+                    continue
+                self.snapshots[path.stem] = snapshot
+                self.generations[path.stem] = tuple(generation)
+                if progress:
+                    self.progress[(path.stem, generation[0])] = progress
+            except (OSError, ValueError, TypeError, KeyError):
+                continue
+
     def query(self):
         with self.cache_lock:
             snapshots, progress = dict(self.snapshots), dict(self.progress)
             generations = dict(self.generations)
         def states(records):
-            return {rec["job"]: snapshots.get(rec["job"], {})
-                    if generations.get(rec["job"]) == self.generation(rec)
-                    else {"state": "starting", "round": str(rec["rounds"])} for rec in records}
+            rows = {}
+            for rec in records:
+                if generations.get(rec["job"]) == self.generation(rec):
+                    rows[rec["job"]] = snapshots[rec["job"]]
+                    continue
+                receipt = messages.read_json(result_path(self.state, rec, rec["rounds"])) or {}
+                rows[rec["job"]] = dict(
+                    state=receipt.get("execution_state") or rec.get("execution_state") or
+                          ("dead" if rec.get("dispatch_state") == "preparation_failed" else "starting"),
+                    round=str(rec["rounds"]), snapshot_at=receipt.get("captured_at"))
+            return rows
         return Query(self.state, states=states,
-                     report=lambda rec, number, kind: progress.get((rec["job"], number)) if kind == "progress" else None,
+                     report=lambda rec, number, kind: progress.get((rec["job"], number))
+                     if kind == "progress" and generations.get(rec["job"]) == self.generation(rec) else None,
                      receiver=lambda rec: rec.get("receiver_session"),
                      project_names=[section.split(":", 1)[1] for section in self.config.cp.sections()
                                     if section.startswith("project:")])
@@ -413,9 +452,24 @@ class Service:
                         rec = cli.load_job(saved["job"])
                         snapshot = cli.job_states(self.config, [rec]).get(rec["job"], {"state": "unreachable"})
                         number = int(snapshot.get("round") or 0) or rec["rounds"]
+                        if number != rec["rounds"]:
+                            # A delayed target may still expose the previous launch.
+                            continue
+                        snapshot = dict(snapshot, round=str(number), snapshot_at=messages.utc_now())
                         progress = cli.remote_report(cli.job_host(self.config, rec), rec, number, "progress") if rec.get("handoff_version") and snapshot.get("state") in ("running", "done") else None
                         log.observe_job(rec, snapshot, progress)
                         cli.collect_result(self.config, rec, snapshot)
+                        # Persist only display data, so restart can serve the last
+                        # observation while the first remote collection is pending.
+                        saved_snapshot = {key: snapshot[key] for key in
+                                          ("state", "round", "exit", "head", "dirty", "started_at", "snapshot_at")
+                                          if key in snapshot}
+                        saved_progress = {key: progress[key] for key in
+                                          ("schema", "job", "round", "kind", "phase", "summary", "artifacts", "updated_at")
+                                          if key in progress} if progress else None
+                        messages.atomic_json(self.state / "serve-snapshots" / (rec["job"] + ".json"),
+                            dict(user_id=self.user_id, generation=self.generation(rec),
+                                 snapshot=self.redact(saved_snapshot), progress=self.redact(saved_progress)))
                         with self.cache_lock:
                             self.snapshots[rec["job"]] = snapshot
                             self.generations[rec["job"]] = self.generation(rec)
@@ -461,6 +515,7 @@ class Service:
                     executor_exit=receipt.get("executor_exit"), outcome=report.get("outcome"), checks=report.get("checks"),
                     delivery_state=detail["delivery_state"], review_state=detail["review_state"],
                     acknowledgement=detail["acknowledgement"], stopped_by=receipt.get("stopped_by"),
+                    snapshot_at=execution.get("snapshot_at"),
                     updated_at=report.get("updated_at") or progress.get("updated_at") or rec.get("created"))
         return card
 
@@ -526,7 +581,7 @@ class Service:
                 tail = int(args.get("tail", ["40"])[0])
                 if stream not in ("out", "err") or not 1 <= tail <= 10000:
                     raise ValueError("invalid_log_options")
-                return 200, dict(job=job, round=number, stream=stream, text=self.logs(rec, number, stream, tail))
+                return self.log_snapshots.read(rec, number, stream, tail)
             rounds = []
             progress_events = {}
             for event in events.read_after(self.state, 0):
@@ -554,6 +609,7 @@ class Service:
                                    started_at=((receipt or {}).get("report") or {}).get("started_at") or snapshot.get("started_at") or None,
                                    progress_events=progress_events.get(number, []),
                                    execution_state=snapshot.get("state") or (receipt or {}).get("execution_state"),
+                                   snapshot_at=snapshot.get("snapshot_at") or (receipt or {}).get("captured_at"),
                                    progress={key: progress[key] for key in ("schema", "job", "round", "kind", "phase", "summary", "artifacts", "updated_at")
                                              if key in progress} if progress else None))
             parameters = {key: rec.get(key) for key in ("branch", "base", "source_branch", "model", "effort", "permission_mode", "heavy", "sync")}
