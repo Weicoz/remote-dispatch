@@ -1,0 +1,13 @@
+{
+  "request": {"method": "GET", "path": "/v1/jobs"},
+  "response": {
+    "status": 200,
+    "body": {
+      "jobs": [
+        {"job": "finished", "round": 1, "execution_state": "done", "snapshot_at": "2026-10-25T01:00:00Z"},
+        {"job": "not-observed", "round": 1, "execution_state": "starting", "snapshot_at": null}
+      ]
+    }
+  },
+  "events": []
+}

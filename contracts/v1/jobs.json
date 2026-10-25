@@ -27,7 +27,8 @@
           "review_state": "pending",
           "acknowledgement": null,
           "stopped_by": null,
-          "updated_at": "2026-10-25T00:00:00+00:00"
+          "updated_at": "2026-10-25T00:00:00+00:00",
+          "snapshot_at": "2026-10-25T00:00:10+00:00"
         }
       ]
     }

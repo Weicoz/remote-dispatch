@@ -134,7 +134,7 @@ class ProjectRoutes:
                 row["hosts"][card["host"]] = dict(state=state, job=card["job"], updated_at=updated)
         if sessions_allowed:
             try:
-                sessions = service.sessions.discover()
+                sessions = service.sessions.cached()
             except OSError:
                 sessions = []
             for item in sessions:

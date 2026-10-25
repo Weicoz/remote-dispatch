@@ -12,6 +12,10 @@ JSON 类型，另用行为断言覆盖实际值、用户隔离、纯查询、锁
 - `hosts.json` / `hosts-populated.json`：空列表与已配置目标机。配置顺序固定；
   `local/reachable/full` 是布尔值，资源值沿用探针的字符串或数字，未采集到为 `null`。
 - `jobs.json`：卡片列表，只含当前用户和没有用户字段的旧记录，跨发起会话。
+  卡片与详情各轮可选 `snapshot_at` 是后台执行快照的控制端采集时间；
+  冷启动回退本地回执时取 `captured_at`，未知为 null。
+  `jobs-cold-start.json` 展示尚未完成首次采集时的已知状态与未知状态。
+  续跑或迁机不沿用上一代际的快照，查询不联系目标机。
   `round` 为整数；`outcome/checks/executor_exit` 在回执不可用时为 `null`；
   `delivery_state` 为 `not_available/pending/received`；验收状态沿用已有四个取值。
   来源、模型、签收、停止者、更新时间等未知值均可为 `null`。
@@ -34,6 +38,8 @@ JSON 类型，另用行为断言覆盖实际值、用户隔离、纯查询、锁
   未验收时 `reviewed_by/reviewed_at/review_note` 为 `null`。
 - `logs-out.json` / `logs-err.json`：UTF-8 日志尾部，`text` 保留换行。
   `stream` 只接受 `out/err`，`tail` 默认 40，接受 1–10000 的整数。
+  请求立即返回后台缓存并触发异步刷新；可选 `snapshot_at` 为缓存采集时间，
+  首次尚未就绪时为 null 且 text 为空。采集失败返回既有 read_unavailable。
 - `events.json`：SSE 响应的 JSON body 为 `null`，`events` 表示帧数据。
   帧格式为 `id: <seq>\nevent: <type>\ndata: <完整事件 JSON>\n\n`。
   冒号开头的注释是心跳，客户端应忽略。`Last-Event-ID` 优先于 `after`；
@@ -57,6 +63,8 @@ JSON 类型，另用行为断言覆盖实际值、用户隔离、纯查询、锁
 - `network-addresses-write-invalid.json`：禁用项也不能含通配地址，返回
   400 `invalid_listen_address`；其他失败与本机边界见 `docs/serve.md`。
 - `sessions-list.json` / `sessions-projects.json` / `sessions-resolve.json`：会话快照
+  来自最近一次成功的后台发现，HTTP 列表与反查不执行 Herdr；
+  冷启动尚未发现时为空，发现失败保留上次列表。屏幕与终端仍读本机 Herdr。
   增加可选 `updated_at`（带时区 ISO 8601 字符串，未知为 `null`）。来源为当前用户、
   同一 pane／会话 ID／harness／项目最近一次持久 `session.changed` 或
   `session.message` 的事件 `time`，包含轮转段；详情见 `docs/serve.md`。

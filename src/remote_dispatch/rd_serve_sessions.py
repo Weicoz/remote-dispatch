@@ -37,6 +37,7 @@ class Sessions:
         self.event_reader = events.EventCursor(service.state)
         self.latest = {}
         self.transcript_cache = {}
+        self.items = []
         for event in self.event_reader.read():
             data = event["data"]
             if data.get("user_id") != service.user_id:
@@ -74,6 +75,8 @@ class Sessions:
                 for pane in self.observed.keys() - current.keys():
                     events.emit(self.service.state, "session.changed", dict(self.observed[pane], removed=True))
             self.observed, self.seen_messages = current, seen
+            with self.cache_lock:
+                self.items = items
         except (OSError, ValueError, TypeError, KeyError):
             # A failed query is not evidence that panes have closed.
             return
@@ -94,7 +97,20 @@ class Sessions:
         return not event["type"].startswith("session.") or self.allowed(getattr(handler, "session_device", None))
 
     def list(self):
-        return [item["row"] for item in self.discover()]
+        return [item["row"] for item in self.cached()]
+
+    def cached(self):
+        """HTTP reads use the last successful collection, including during outages."""
+        with self.cache_lock:
+            for event in self.event_reader.read():
+                self.remember_event(event)
+            items = copy.deepcopy(self.items)
+            for item in items:
+                row = item["row"]
+                event = self.latest.get(row["pane_id"])
+                row["updated_at"] = event["time"] if event and all(
+                    event["data"].get(key) == row[key] for key in ("session_id", "harness", "project_id")) else None
+            return items
 
     def transcripts(self, harness):
         if harness == "codex":
@@ -261,7 +277,7 @@ class Sessions:
             return 200, dict(session=item, matched_by=matched_by)
         match = re.fullmatch(r"/v1/sessions/([^/]+)/(messages|screen)", path)
         if match:
-            item = next((item for item in self.discover() if item["row"]["id"] == match[1]), None)
+            item = next((item for item in self.cached() if item["row"]["id"] == match[1]), None)
             if item is None:
                 return 404, {"error": {"reason": "session_closed", "text": "会话已关闭"}}
             if match[2] == "screen":
@@ -374,7 +390,7 @@ class Sessions:
                     not isinstance(key, str) or key not in {"enter", "esc", "up", "down", "tab", "ctrl+c"}
                     for key in body["keys"])):
                 raise ValueError("invalid_session_input")
-            target = next((row for row in self.list() if row["id"] == pane), None)
+            target = next((item["row"] for item in self.discover() if item["row"]["id"] == pane), None)
             if target is None:
                 result = dict(status=404, body={"error": {"reason": "session_closed", "text": "会话已关闭"}})
             else:

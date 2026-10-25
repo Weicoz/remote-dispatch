@@ -13,13 +13,19 @@ from tests import test_rd_serve as base
 
 
 class SessionTests(unittest.TestCase):
-    start = base.ServeTests.start
     request = base.ServeTests.request
     eventually = base.ServeTests.eventually
     open_events = base.ServeTests.open_events
     next_event = base.ServeTests.next_event
     snapshot = base.ServeTests.snapshot
     assert_structure = base.ServeTests.assert_structure
+
+    def start(self, **options):
+        service = base.ServeTests.start(self, **options)
+        if service.sessions.enabled and not self.data.get("unavailable"):
+            self.eventually(lambda: self.request("/v1/sessions"),
+                            lambda reply: reply[0] == 403 or bool(reply[1].get("sessions")))
+        return service
 
     def setUp(self):
         from remote_dispatch import cli
@@ -152,7 +158,7 @@ else:
         stream.close()
         self.data["agents"].append(self.agent("w1:p2"))
         self.save_fixture()
-        self.assertIsNone(self.sessions()[1]["updated_at"])
+        self.assertEqual(len(self.sessions()), 1)
         service.wake.set()
         stream = self.open_events("/v1/events?after=" + str(initial["seq"]))
         changed = self.next_event(stream)[2]
@@ -165,24 +171,27 @@ else:
         from remote_dispatch.rd_projects import project_id
         self.transcript()
         self.saved_session()
-        self.start(poll_interval=3600)
+        service = self.start(poll_interval=3600)
         stream = self.open_events()
         self.next_event(stream)
         self.next_event(stream)
         stream.close()
         self.transcript("session-two")
         self.saved_session("session-two")
-        self.assertIsNone(self.sessions()[0]["updated_at"])
+        self.assertEqual(self.sessions()[0]["session_id"], "session-one")
+        service.wake.set()
+        self.eventually(self.sessions, lambda rows: rows[0]["session_id"] == "session-two")
+        updated = self.sessions()[0]["updated_at"]
         data = dict(user_id="other", pane_id="w1:p1", session_id="session-two", harness="codex",
                     project_id=project_id("demo", "https://example.test/user/demo.git"))
         rd_events.emit(self.state, "session.changed", data)
-        self.assertIsNone(self.sessions()[0]["updated_at"])
+        self.assertEqual(self.sessions()[0]["updated_at"], updated)
         rd_events.emit(self.state, "session.changed", dict(data, user_id="fixture", removed=True))
         self.assertIsNone(self.sessions()[0]["updated_at"])
 
     def test_input_updates_snapshot_event_time_but_idempotent_replay_does_not(self):
         from remote_dispatch import rd_messages
-        self.start(poll_interval=3600)
+        service = self.start(poll_interval=3600)
         stream = self.open_events()
         self.next_event(stream)
         with patch.object(rd_messages, "utc_now", return_value="2026-10-25T02:00:00+00:00"):
@@ -279,7 +288,7 @@ else:
     def test_session_only_projects_vanish_on_close_without_writing_project_index(self):
         from remote_dispatch.rd_projects import ProjectIndex
         index = ProjectIndex(self.state, "fixture")
-        self.start(poll_interval=3600)
+        service = self.start(poll_interval=3600)
         stream = self.open_events()
         self.assertEqual(self.next_event(stream)[1], "session.changed")
         stream.close()
@@ -298,7 +307,8 @@ else:
         self.assertFalse(index.path.exists())
         self.data["agents"] = []
         self.save_fixture()
-        self.assertEqual(self.request("/v1/projects"), (200, {"projects": []}))
+        service.wake.set()
+        self.eventually(lambda: self.request("/v1/projects"), lambda row: row == (200, {"projects": []}))
         self.assertFalse(index.path.exists())
 
     def test_live_sessions_extend_indexed_summary_and_respect_hidden_projects_and_device_access(self):
@@ -395,12 +405,13 @@ else:
     def test_malformed_saved_snapshot_falls_back_and_saved_path_identity_handles_public_pane_numbers(self):
         path = self.transcript()
         (self.herdr_config.parent / "session.json").write_text("[]")
-        self.start()
+        service = self.start()
         self.assertTrue(self.sessions()[0]["probable"])
         self.data["agents"] = [self.agent("w1:pA")]
         self.save_fixture()
         self.saved_session(str(path), "path", 10)
-        row = self.sessions()[0]
+        service.wake.set()
+        row = self.eventually(self.sessions, lambda rows: rows[0]["id"] == "w1:pA")[0]
         self.assertEqual((row["session_id"], row["probable"]), ("session-one", False))
 
     def test_disabled_stream_filters_existing_session_events_but_keeps_other_events(self):
@@ -445,7 +456,7 @@ else:
         self.data["unavailable"] = True
         self.save_fixture()
         self.start()
-        self.assertEqual(self.request("/v1/sessions")[0], 503)
+        self.assertEqual(self.request("/v1/sessions"), (200, {"sessions": []}))
         status, body = self.request("/v1/projects")
         self.assertEqual(status, 200)
         self.assertEqual([(p["name"], p["session_only"]) for p in body["projects"]], [("history", False)])
