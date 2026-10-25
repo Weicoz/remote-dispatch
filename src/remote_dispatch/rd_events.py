@@ -15,6 +15,8 @@ from .rd_lock import JobLock
 
 
 FIELDS = {
+    "network.addresses_changed": "user_id spki_sha256 candidates",
+    "device.changed": "user_id device_id revoked session_access_enabled",
     "job.created": "job user_id project_id project host round agent model initiator_session dispatch_state",
     "job.state_changed": "job user_id project_id project host round agent model dispatch_state execution_state executor_exit stopped_by stopped_at suppress_push",
     "progress.updated": "job user_id project_id host round phase summary updated_at",
@@ -68,8 +70,13 @@ def tail(path):
 def display_data(kind, data):
     if kind not in FIELDS:
         raise ValueError("unsupported event type")
-    return {key: data[key] for key in FIELDS[kind].split() if key in data
-            and (data[key] is None or type(data[key]) in (str, int, float, bool))}
+    projected = {key: data[key] for key in FIELDS[kind].split() if key in data
+                 and (data[key] is None or type(data[key]) in (str, int, float, bool))}
+    if kind == "network.addresses_changed" and isinstance(data.get("candidates"), list):
+        projected["candidates"] = [{"address": row["address"], "port": row["port"]}
+            for row in data["candidates"] if isinstance(row, dict)
+            and isinstance(row.get("address"), str) and type(row.get("port")) is int]
+    return projected
 
 
 def job_data(rec, **fields):

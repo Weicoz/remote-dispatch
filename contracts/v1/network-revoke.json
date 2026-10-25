@@ -1,0 +1,29 @@
+{
+  "request": {
+    "method": "DELETE",
+    "path": "/v1/devices/DEVICE_ID",
+    "headers": {
+      "Idempotency-Key": "revoke-1"
+    }
+  },
+  "response": {
+    "status": 200,
+    "body": {
+      "device_id": "DEVICE_ID",
+      "revoked": true
+    }
+  },
+  "events": [
+    {
+      "seq": 4,
+      "time": "2026-10-25T00:00:00+00:00",
+      "type": "device.changed",
+      "data": {
+        "user_id": "fixture",
+        "device_id": "DEVICE_ID",
+        "revoked": true,
+        "session_access_enabled": false
+      }
+    }
+  ]
+}

@@ -1,0 +1,22 @@
+{
+  "request": {
+    "method": "POST",
+    "path": "/v1/push-tokens",
+    "body": {
+      "token": "fixture-apns-token"
+    },
+    "headers": {
+      "X-Rdispatch-SPKI": "SPKI",
+      "Authorization": "Bearer DEVICE_TOKEN",
+      "Idempotency-Key": "push-1"
+    }
+  },
+  "response": {
+    "status": 200,
+    "body": {
+      "device_id": "DEVICE_ID",
+      "registered": true
+    }
+  },
+  "events": []
+}
