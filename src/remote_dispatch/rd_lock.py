@@ -1,6 +1,7 @@
 """Non-blocking job file locks shared by CLI and future service write paths."""
 import errno
 import os
+import time
 from pathlib import Path
 
 from .rd_messages import job_id
@@ -23,7 +24,7 @@ class JobLock:
         self.path = Path(state).resolve() / "locks" / (self.job + ".lock")
         self._stream = None
 
-    def acquire(self):
+    def acquire(self, *, blocking=False):
         if self._stream is not None:
             raise RuntimeError("job lock already acquired")
         if any(p.is_symlink() for p in (self.path, *self.path.parents)):
@@ -38,10 +39,17 @@ class JobLock:
                     stream.write(b"\0")
                     stream.flush()
                 stream.seek(0)
-                msvcrt.locking(stream.fileno(), msvcrt.LK_NBLCK, 1)
+                while True:
+                    try:
+                        msvcrt.locking(stream.fileno(), msvcrt.LK_NBLCK, 1)
+                        break
+                    except OSError as error:
+                        if not blocking or error.errno not in (errno.EACCES, errno.EAGAIN, errno.EDEADLK):
+                            raise
+                        time.sleep(0.01)
             else:
                 import fcntl
-                fcntl.flock(stream.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                fcntl.flock(stream.fileno(), fcntl.LOCK_EX | (0 if blocking else fcntl.LOCK_NB))
         except OSError as error:
             stream.close()
             if error.errno in (errno.EACCES, errno.EAGAIN, errno.EDEADLK):

@@ -10,6 +10,7 @@ import unittest
 from unittest.mock import patch
 
 from remote_dispatch import cli as rd
+from remote_dispatch import rd_events as events
 
 
 class AcknowledgementTests(unittest.TestCase):
@@ -55,6 +56,35 @@ class AcknowledgementTests(unittest.TestCase):
                      *args, json_output=False)
         return self.command("result", "fixture-job")
 
+    def test_delegated_ack_emits_receipt_and_signer_events_and_queries_emit_nothing(self):
+        cursor = len(events.read_after(rd.STATE, 0))
+        receipt = self.command("result", "fixture-job")
+        self.command("status", "fixture-job", "--details")
+        self.assertEqual(events.read_after(rd.STATE, cursor), [])
+        self.command("ack", "fixture-job", "--round", "1", "--receipt-id", receipt["receipt_id"],
+                     "--acked-by", "device", "--via", "serve", json_output=False)
+        rows = events.read_after(rd.STATE, cursor)
+        self.assertEqual([row["type"] for row in rows], ["receipt.ready", "receipt.acked"])
+        self.assertEqual(rows[0]["data"]["receipt_id"], receipt["receipt_id"])
+        self.assertEqual((rows[1]["data"]["acked_by"], rows[1]["data"]["via"]), ("device", "serve"))
+
+    def test_event_write_failure_leaves_receipt_unsigned_and_retry_publishes_both_events(self):
+        receipt = self.command("result", "fixture-job")
+        before = events.read_after(rd.STATE, 0)
+        replace = os.replace
+        def fail_events(source, destination):
+            if Path(destination) == Path(rd.STATE) / "events.jsonl":
+                raise OSError("fixture event disk full")
+            return replace(source, destination)
+        with patch.object(os, "replace", side_effect=fail_events), contextlib.redirect_stderr(io.StringIO()), \
+             self.assertRaises(SystemExit) as error:
+            self.command("ack", "fixture-job", "--round", "1", "--receipt-id", receipt["receipt_id"], json_output=False)
+        self.assertEqual(error.exception.code, 4)
+        self.assertEqual(events.read_after(rd.STATE, 0), before)
+        self.assertFalse(rd.result_path(self.rec, 1).exists())
+        self.assertFalse(rd.result_path(self.rec, 1).with_suffix(".ack.json").exists())
+        self.assertEqual(self.acknowledge()["delivery_state"], "received")
+
     def test_default_signer_is_current_session_and_channel_is_cli(self):
         result = self.acknowledge()
         self.assertEqual(result["acknowledgement"]["acked_by"], "sender")
@@ -99,6 +129,12 @@ class AcknowledgementTests(unittest.TestCase):
         self.assertTrue(result["suppress_push"])
         self.assertTrue(result["needs_initiator_review"])
         self.assertEqual(result["review_state"], "pending")
+        rows = events.read_after(rd.STATE, 0)
+        stopped = next(row for row in rows if row["type"] == "job.state_changed"
+                       and row["data"].get("executor_exit") == 143)
+        self.assertEqual(stopped["data"]["stopped_by"], "App MacBook")
+        self.assertEqual([row["type"] for row in rows[-2:]], ["receipt.ready", "receipt.acked"])
+        self.assertTrue(all(row["data"]["suppress_push"] for row in rows[-3:]))
 
     def test_details_and_summary_expose_acknowledgement_without_writing_query_state(self):
         self.acknowledge("--acked-by", "device")

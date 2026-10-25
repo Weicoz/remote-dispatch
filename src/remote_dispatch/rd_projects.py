@@ -6,6 +6,7 @@ import re
 
 from . import rd_messages as messages
 from . import rd_profiles as profiles
+from . import rd_events as events
 from .rd_lock import JobBusy, JobLock
 
 
@@ -77,7 +78,17 @@ class ProjectIndex:
         return value["projects"]
 
     def write(self, projects):
-        messages.atomic_json(self.path, dict(schema=1, projects=projects), limit=None)
+        with events.write_transaction([self.path]):
+            try:
+                previous = self.read()
+            except InvalidIndex:
+                previous = {}
+            messages.atomic_json(self.path, dict(schema=1, projects=projects), limit=None)
+            for identity in sorted(previous.keys() | projects.keys()):
+                if previous.get(identity) != projects.get(identity):
+                    row = projects.get(identity) or previous[identity]
+                    events.emit(self.state, "project.changed", dict(row, user_id=self.user_id,
+                                project_id=identity, removed=identity not in projects))
 
     def set_hidden(self, identity, hidden):
         with ProjectLock(self.state, self.user_id):
@@ -98,18 +109,21 @@ class ProjectIndex:
             manifest = self.state / "results" / job / "dispatch.json"
             if manifest.exists():
                 return
-            messages.atomic_json(self.state / "jobs" / (job + ".json"), rec, limit=None)
-            messages.atomic_json(manifest, {key: rec.get(key) for key in
-                                 ("job", "user_id", "project", "origin", "created")})
-            identity = project_id(rec["project"], rec.get("origin") or "")
-            row = projects.setdefault(identity, dict(id=identity, name=rec["project"],
-                                      origin=rec.get("origin") or "", first_dispatch_at=rec["created"],
-                                      last_dispatch_at=rec["created"], dispatch_count=0, hidden=False))
-            row["dispatch_count"] += 1
-            row["first_dispatch_at"] = min(row["first_dispatch_at"] or rec["created"], rec["created"])
-            row["last_dispatch_at"] = max(row["last_dispatch_at"] or rec["created"], rec["created"])
-            row["hidden"] = False
-            self.write(projects)
+            job_path = self.state / "jobs" / (job + ".json")
+            with events.write_transaction([job_path, manifest, self.path]):
+                messages.atomic_json(job_path, rec, limit=None)
+                messages.atomic_json(manifest, {key: rec.get(key) for key in
+                                     ("job", "user_id", "project", "origin", "created")})
+                events.emit(self.state, "job.created", events.job_data(rec))
+                identity = project_id(rec["project"], rec.get("origin") or "")
+                row = projects.setdefault(identity, dict(id=identity, name=rec["project"],
+                                          origin=rec.get("origin") or "", first_dispatch_at=rec["created"],
+                                          last_dispatch_at=rec["created"], dispatch_count=0, hidden=False))
+                row["dispatch_count"] += 1
+                row["first_dispatch_at"] = min(row["first_dispatch_at"] or rec["created"], rec["created"])
+                row["last_dispatch_at"] = max(row["last_dispatch_at"] or rec["created"], rec["created"])
+                row["hidden"] = False
+                self.write(projects)
 
     def rebuild(self, known_names=()):
         """Recount each dispatch once from jobs and retained receipt history."""
