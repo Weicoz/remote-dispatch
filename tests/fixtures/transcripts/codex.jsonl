@@ -1,0 +1,10 @@
+{"timestamp":"2026-01-01T00:00:00Z","ordinal":0,"type":"session_meta","payload":{"id":"synthetic-session","base_instructions":{"text":"不显示的元数据"}}}
+{"timestamp":"2026-01-01T00:00:01Z","ordinal":1,"type":"response_item","payload":{"type":"message","id":null,"role":"developer","content":[{"type":"input_text","text":"合成系统约束。"}]}}
+{"timestamp":"2026-01-01T00:00:02Z","ordinal":2,"type":"response_item","payload":{"type":"message","id":"codex-user","role":"user","content":[{"type":"input_text","text":"检查合成样例。"}]}}
+{"timestamp":"2026-01-01T00:00:03Z","ordinal":3,"type":"response_item","payload":{"type":"reasoning","id":"reason-1","summary":[{"type":"summary_text","text":"先核对样例。"}],"content":[{"type":"reasoning_text","text":"PRIVATE_REASONING"}],"encrypted_content":"SYNTHETIC_CIPHERTEXT"}}
+{"timestamp":"2026-01-01T00:00:04Z","ordinal":4,"type":"response_item","payload":{"type":"function_call","id":"function-1","call_id":"call-shell","name":"shell","arguments":"{\"command\":\"printf example\"}"}}
+{"timestamp":"2026-01-01T00:00:05Z","ordinal":5,"type":"response_item","payload":{"type":"function_call_output","id":"output-1","call_id":"call-shell","output":"example\n+合成 diff"}}
+{"timestamp":"2026-01-01T00:00:06Z","ordinal":6,"type":"response_item","payload":{"type":"custom_tool_call","id":"custom-1","call_id":"call-patch","name":"apply_patch","input":"合成补丁"}}
+{"timestamp":"2026-01-01T00:00:07Z","ordinal":7,"type":"response_item","payload":{"type":"custom_tool_call_output","id":"output-2","call_id":"call-patch","output":[{"type":"input_text","text":"合成失败输出"},{"type":"input_text","text":"下一行"}],"is_error":true}}
+{"timestamp":"2026-01-01T00:00:08Z","ordinal":8,"type":"response_item","payload":{"type":"reasoning","id":null,"summary":[],"encrypted_content":"SYNTHETIC_CIPHERTEXT"}}
+{"timestamp":"2026-01-01T00:00:09Z","ordinal":9,"type":"response_item","payload":{"type":"message","id":"codex-assistant","role":"assistant","content":[{"type":"output_text","text":"样例检查完成。"}]}}

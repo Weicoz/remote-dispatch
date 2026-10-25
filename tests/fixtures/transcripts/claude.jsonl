@@ -1,0 +1,5 @@
+{"type":"user","uuid":"claude-user","timestamp":"2026-01-01T00:00:00Z","message":{"role":"user","content":"请检查合成示例。"}}
+{"type":"assistant","uuid":"claude-assistant","timestamp":"2026-01-01T00:00:01Z","message":{"role":"assistant","content":[{"type":"thinking","thinking":"先检查示例文件。","signature":"synthetic-signature"},{"type":"text","text":"我会检查示例。"},{"type":"tool_use","id":"call-read","name":"Read","input":{"file_path":"example.txt"}}]}}
+{"type":"user","uuid":"claude-result","timestamp":"2026-01-01T00:00:02Z","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"call-read","content":[{"type":"text","text":"示例内容\n+一行 diff"},{"type":"image","source":{"type":"base64","data":"SYNTHETIC_IMAGE"}}],"is_error":false}]}}
+{"type":"user","uuid":"claude-meta","timestamp":"2026-01-01T00:00:03Z","isMeta":true,"message":{"role":"user","content":[{"type":"text","text":"合成上下文提示。"}]}}
+{"type":"system","uuid":"claude-error","timestamp":"2026-01-01T00:00:04Z","subtype":"local_command","level":"error","content":"合成命令失败。"}
