@@ -1,0 +1,31 @@
+{
+  "request": {
+    "method": "GET",
+    "path": "/v1/events?after=0",
+    "headers": {
+      "Last-Event-ID": "0"
+    }
+  },
+  "response": {
+    "status": 200,
+    "body": null
+  },
+  "events": [
+    {
+      "seq": 1,
+      "time": "2026-10-25T00:00:00+00:00",
+      "type": "receipt.ready",
+      "data": {
+        "job": "fixture-job",
+        "user_id": "fixture",
+        "host": "target",
+        "round": 1,
+        "receipt_id": "example-receipt-id",
+        "execution_state": "done",
+        "executor_exit": 0,
+        "outcome": "completed",
+        "checks": "passed"
+      }
+    }
+  ]
+}

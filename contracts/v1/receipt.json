@@ -1,0 +1,65 @@
+{
+  "request": {
+    "method": "GET",
+    "path": "/v1/jobs/fixture-job/rounds/1/receipt"
+  },
+  "response": {
+    "status": 200,
+    "body": {
+      "receipt": {
+        "schema": 1,
+        "job": "fixture-job",
+        "round": 1,
+        "host": "target",
+        "initiator_session": "original-session",
+        "execution_state": "done",
+        "executor_exit": 0,
+        "receiver_session": null,
+        "head": "base",
+        "dirty": "0",
+        "needs_initiator_review": true,
+        "receipt_id": "example-receipt-id",
+        "captured_at": "2026-10-25T00:00:00+00:00",
+        "stopped_by": null,
+        "stopped_at": null,
+        "suppress_push": null,
+        "review_state": "pending",
+        "reviewed_by": null,
+        "reviewed_at": null,
+        "review_note": null,
+        "acknowledgement": null,
+        "delivery_state": "pending",
+        "report": {
+          "schema": 1,
+          "job": "fixture-job",
+          "round": 1,
+          "kind": "result",
+          "phase": "",
+          "summary": "完成",
+          "outcome": "completed",
+          "checks": "passed",
+          "artifacts": [],
+          "updated_at": "2026-10-25T00:00:00+00:00"
+        }
+      }
+    }
+  },
+  "events": [
+    {
+      "seq": 1,
+      "time": "2026-10-25T00:00:00+00:00",
+      "type": "receipt.ready",
+      "data": {
+        "job": "fixture-job",
+        "user_id": "fixture",
+        "host": "target",
+        "round": 1,
+        "receipt_id": "example-receipt-id",
+        "execution_state": "done",
+        "executor_exit": 0,
+        "outcome": "completed",
+        "checks": "passed"
+      }
+    }
+  ]
+}

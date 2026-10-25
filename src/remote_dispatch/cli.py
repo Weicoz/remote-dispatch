@@ -1141,7 +1141,8 @@ def cmd_run(a, cfg):
         profile = None
         if a.agent:
             profile = agent_preflight(host, uid, a.agent, agent)
-        origin_harness = initiators.harness()
+        forwarded_origin = getattr(a, "_forwarded_origin", None)
+        origin_harness = forwarded_origin["initiator_harness"] if forwarded_origin else initiators.harness()
         rec = {"job": job, "host": host["name"], "project": project, "origin": origin_url, "repo": repo, "branch": branch,
                "base": sha, "source_branch": source_branch, "include_paths": include_paths,
                "sync": host["sync"], "agent": a.agent, "cmd": a.cmd, "rounds": 1,
@@ -1152,7 +1153,9 @@ def cmd_run(a, cfg):
                "auth_file": host[spec["auth_key"]] if a.agent else host["codex_auth_file"],
                "worker_platform": host["platform"], "worker_python": host["python"], "heavy": a.heavy,
                "handoff_version": 1, "initiator_session": initiator_session(a, origin_harness)}
-        rec.update(initiators.origin(origin_harness, rec["created"]))
+        source = dict(forwarded_origin) if forwarded_origin else initiators.origin(origin_harness, rec["created"])
+        source["initiator_herdr"] = dict(source["initiator_herdr"], captured_at=rec["created"])
+        rec.update(source)
         print(f"dispatching {job} -> {host['name']} (branch {branch}, base {sha[:10]}, sync {host['sync']})")
 
         repo_key = hashlib.sha256((origin_url or repo).encode()).hexdigest()[:12]
@@ -2083,7 +2086,12 @@ def cmd_doctor(a, cfg):
     sys.exit(r.returncode)
 
 
-def main():
+def cmd_serve(a, cfg):
+    from .rd_serve import run_service
+    run_service(cfg, a.socket, a.poll_interval)
+
+
+def main(argv=None, *, forwarded=None):
     if os.name == "nt":
         sys.stdout.reconfigure(encoding="utf-8")
         sys.stderr.reconfigure(encoding="utf-8")
@@ -2101,6 +2109,11 @@ def main():
     repo_parser.add_argument("-C", "--dir", dest="dir", help="本地仓库目录（默认为当前工作目录）")
 
     sub.add_parser("hosts", help="probe every configured machine").set_defaults(fn=cmd_hosts)
+
+    p = sub.add_parser("serve", help="serve local HTTP and events over a Unix socket")
+    p.add_argument("--socket", help="Unix socket path (default RD_SERVE_SOCKET or RD_STATE/serve.sock)")
+    p.add_argument("--poll-interval", type=float, default=15, help="background poll interval in seconds (default 15)")
+    p.set_defaults(fn=cmd_serve)
 
     p = sub.add_parser("project", help="manage persistent project history")
     actions = p.add_subparsers(dest="action", required=True)
@@ -2260,8 +2273,21 @@ def main():
     p.add_argument("--initiator-session")
     p.set_defaults(fn=cmd_clean)
 
-    a = ap.parse_args()
+    a = ap.parse_args(argv)
     try:
+        from . import rd_serve
+        if forwarded is not None:
+            if a.command not in rd_serve.WRITE_COMMANDS:
+                die("invalid_cli_command: command cannot be forwarded", 4)
+            a._forwarded_origin = forwarded["origin"]
+            if hasattr(a, "initiator_session"):
+                a.initiator_session = forwarded.get("initiator_session")
+            if hasattr(a, "via"):
+                a.via = "serve"
+        elif a.command in rd_serve.WRITE_COMMANDS:
+            code = rd_serve.forward(a, list(sys.argv[1:] if argv is None else argv))
+            if code is not None:
+                raise SystemExit(code)
         a.fn(a, Config())
     except ValueError as error:
         die(str(error), 4)
