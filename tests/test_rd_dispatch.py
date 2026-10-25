@@ -107,6 +107,149 @@ class DispatchTests(unittest.TestCase):
         rd.cmd_run(self.args(**kwargs), self.cfg)
         return next(r for r in rd.all_jobs() if r["job"] not in before)
 
+    @contextlib.contextmanager
+    def initiator_context(self, processes, **environment):
+        """伪造进程信息的系统边界，其余 Git、落盘与查询照常执行。"""
+        original = subprocess.run
+        def run(command, *args, **kwargs):
+            if command[0] == "ps":
+                pid = int(command[command.index("-p") + 1])
+                parent, executable = processes.get(pid, (0, "/sbin/launchd"))
+                return subprocess.CompletedProcess(command, 0, f"{parent} {executable}\n", "")
+            return original(command, *args, **kwargs)
+        values = dict(RD_INITIATOR_SESSION="", CODEX_THREAD_ID="codex-session",
+                      CLAUDE_CODE_SESSION_ID="claude-session", DSH_SESSION_ID="dsh-session",
+                      ANTIGRAVITY_CONVERSATION_ID="agy-session", KIMI_SESSION_ID="unconfirmed-kimi",
+                      HERDR_SESSION="herdr-session", HERDR_WORKSPACE_ID="workspace-1", HERDR_PANE_ID="pane-1")
+        values.update(environment)
+        with patch.dict(os.environ, values), patch.object(subprocess, "run", side_effect=run), \
+             patch("socket.gethostname", return_value="initiator-fixture"):
+            yield
+
+    def queried_job(self, job):
+        args = argparse.Namespace(job=job, details=False, json=True)
+        return json.loads(self.capture(rd.cmd_status, args))[0]
+
+    def test_run_records_codex_origin_and_dispatch_time_herdr_context(self):
+        processes = {os.getppid(): (700001, "/bin/zsh -c rdispatch run"),
+                     700001: (1, "/opt/bin/codex exec")}
+        with self.initiator_context(processes):
+            record = self.dispatch()
+        # 查询时的环境不应改变派单时捕获的值。
+        with patch.dict(os.environ, {"HERDR_PANE_ID": "moved-pane"}):
+            row = self.queried_job(record["job"])
+        self.assertEqual(row["initiator_harness"], "codex")
+        self.assertEqual(row["initiator_host"], "initiator-fixture")
+        self.assertEqual(row["initiator_session"], "codex-session")
+        self.assertEqual(row["initiator_herdr"], dict(session="herdr-session", workspace_id="workspace-1",
+                                                   pane_id="pane-1", captured_at=row["created"]))
+
+    def test_run_uses_nearest_harness_despite_conflicting_session_variables(self):
+        for harness, session in (("claude", "claude-session"), ("dsh", "dsh-session"),
+                                 ("agy", "agy-session"), ("kimi", None)):
+            with self.subTest(harness=harness):
+                processes = {os.getppid(): (700001, "/bin/bash -c codex"),
+                             700001: (700002, f"/opt/bin/{harness} --print"),
+                             700002: (1, "/opt/bin/codex")}
+                with self.initiator_context(processes):
+                    record = self.dispatch()
+                row = self.queried_job(record["job"])
+                self.assertEqual(row["initiator_harness"], harness)
+                self.assertEqual(row["initiator_session"], session)
+                self.assertEqual(row["initiator_host"], "initiator-fixture")
+                self.assertEqual(row["initiator_herdr"], dict(session="herdr-session", workspace_id="workspace-1",
+                                                           pane_id="pane-1", captured_at=row["created"]))
+
+    def test_run_recognizes_harness_launched_through_node_or_python(self):
+        cases = (("node /opt/node_modules/@openai/codex/bin/codex.js exec", "codex", "codex-session"),
+                 ("node /opt/node_modules/@anthropic-ai/claude-code/cli.js -p", "claude", "claude-session"),
+                 ("node /opt/node_modules/@deepseek-ai/dsh/lib/index.js headless", "dsh", "dsh-session"),
+                 ("python3 -m kimi_cli --auto", "kimi", None))
+        for command, harness, session in cases:
+            with self.subTest(command=command), self.initiator_context({os.getppid(): (1, command)}):
+                record = self.dispatch()
+                row = self.queried_job(record["job"])
+                self.assertEqual(row["initiator_harness"], harness)
+                self.assertEqual(row["initiator_session"], session)
+
+    def test_run_harness_detection_ignores_quotes_in_prompt_arguments(self):
+        for command in ("/opt/bin/codex --prompt don't guess", "node /opt/bin/codex.js --prompt don't guess"):
+            with self.subTest(command=command), self.initiator_context({os.getppid(): (1, command)}):
+                record = self.dispatch()
+                row = self.queried_job(record["job"])
+                self.assertEqual(row["initiator_harness"], "codex")
+                self.assertEqual(row["initiator_session"], "codex-session")
+
+    def test_run_preserves_explicit_and_rd_session_override_priority(self):
+        for explicit, expected in (("app:device-1", "app:device-1"), (None, "rd-session")):
+            with self.subTest(explicit=explicit), self.initiator_context(
+                    {os.getppid(): (1, "/opt/bin/claude")}, RD_INITIATOR_SESSION="rd-session"):
+                record = self.dispatch(initiator_session=explicit)
+                row = self.queried_job(record["job"])
+                self.assertEqual(row["initiator_session"], expected)
+                self.assertEqual(row["initiator_harness"], "claude")
+
+    def test_run_outside_herdr_records_empty_context(self):
+        with self.initiator_context({os.getppid(): (1, "/opt/bin/agy")},
+                                    HERDR_SESSION="", HERDR_WORKSPACE_ID="", HERDR_PANE_ID=""):
+            record = self.dispatch()
+        row = self.queried_job(record["job"])
+        self.assertEqual(row["initiator_harness"], "agy")
+        self.assertEqual(row["initiator_host"], "initiator-fixture")
+        self.assertEqual(row["initiator_session"], "agy-session")
+        self.assertEqual(row["initiator_herdr"], dict(session=None, workspace_id=None, pane_id=None,
+                                                   captured_at=row["created"]))
+
+    def test_run_unknown_process_chain_ignores_unrelated_session_variables(self):
+        cases = (("/bin/zsh -c 'codex exec'", 0),
+                 ("python3 -c 'print(\"claude\")'", os.getppid()),
+                 ("node -e 'console.log(\"dsh\")'", 0))
+        for command, parent in cases:
+            with self.subTest(command=command), self.initiator_context({os.getppid(): (parent, command)}):
+                record = self.dispatch()
+                row = self.queried_job(record["job"])
+                self.assertEqual(row["initiator_harness"], "unknown")
+                self.assertIsNone(row["initiator_session"])
+
+    def test_run_records_unknown_origin_when_process_information_is_unavailable(self):
+        original = subprocess.run
+        def run(command, *args, **kwargs):
+            if command[0] == "ps":
+                raise PermissionError("process information unavailable")
+            return original(command, *args, **kwargs)
+        with patch.dict(os.environ, {"RD_INITIATOR_SESSION": "", "CODEX_THREAD_ID": "unrelated-session"}), \
+             patch.object(subprocess, "run", side_effect=run):
+            record = self.dispatch()
+        row = self.queried_job(record["job"])
+        self.assertEqual(row["initiator_harness"], "unknown")
+        self.assertIsNone(row["initiator_session"])
+
+    def test_origin_without_session_variable_does_not_use_other_harness_session(self):
+        with self.initiator_context({os.getppid(): (1, "/opt/bin/claude")}, CLAUDE_CODE_SESSION_ID=""):
+            record = self.dispatch()
+        row = self.queried_job(record["job"])
+        self.assertEqual(row["initiator_harness"], "claude")
+        self.assertIsNone(row["initiator_session"])
+
+    def test_harness_can_query_its_result_without_an_explicit_session(self):
+        with self.initiator_context({os.getppid(): (1, "/opt/bin/claude")}):
+            record = self.dispatch()
+            result = json.loads(self.capture(rd.cmd_result, argparse.Namespace(
+                job=record["job"], round=None, initiator_session=None)))
+        self.assertEqual(result["initiator_session"], "claude-session")
+        self.assertEqual(result["job"], record["job"])
+
+    def test_status_accepts_legacy_jobs_without_initiator_fields(self):
+        record = self.dispatch()
+        for key in ("initiator_harness", "initiator_host", "initiator_session", "initiator_herdr"):
+            record.pop(key, None)
+        rd.save_job(record)
+        self.assertEqual(self.queried_job(record["job"])["job"], record["job"])
+        details = json.loads(self.capture(rd.cmd_status, argparse.Namespace(
+            job=record["job"], details=True, json=True, initiator_session=None)))
+        self.assertEqual(details[0]["job"], record["job"])
+        self.assertIsNone(details[0]["initiator_session"])
+
     def test_run_refuses_network_failure_before_registering_or_launching_job(self):
         info = dict(reachable=True, memfree="50", disk="100", network={"ok": False, "error": "TLS handshake failed"})
         for host in ("fixture", "auto"):

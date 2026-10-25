@@ -28,6 +28,7 @@ from . import rd_native as native
 from . import rd_messages as messages
 from . import rd_health as health
 from . import rd_agents as agents
+from . import rd_initiator as initiators
 
 CONFIG = os.environ.get("RD_CONFIG") or os.path.expanduser("~/.config/remote-dispatch/config.ini")
 STATE = os.environ.get("RD_STATE") or os.path.expanduser("~/.local/state/remote-dispatch")
@@ -661,8 +662,9 @@ def all_jobs():
     return [load_job(n) for n in names]
 
 
-def initiator_session(args):
-    value = getattr(args, "initiator_session", None) or os.environ.get("RD_INITIATOR_SESSION") or os.environ.get("CODEX_THREAD_ID")
+def initiator_session(args, harness=None):
+    value = (getattr(args, "initiator_session", None) or os.environ.get("RD_INITIATOR_SESSION")
+             or initiators.session(harness if harness is not None else initiators.harness()))
     return messages.identifier(value, "发起方会话") if value else None
 
 
@@ -1033,6 +1035,7 @@ def cmd_run(a, cfg):
         profile = None
         if a.agent:
             profile = agent_preflight(host, uid, a.agent, agent)
+        origin_harness = initiators.harness()
         rec = {"job": job, "host": host["name"], "project": project, "repo": repo, "branch": branch,
                "base": sha, "source_branch": source_branch, "include_paths": include_paths,
                "sync": host["sync"], "agent": a.agent, "cmd": a.cmd, "rounds": 1,
@@ -1042,7 +1045,8 @@ def cmd_run(a, cfg):
                "agent_kind": a.agent, "isolated": bool(a.agent), "permission_mode": permission,
                "auth_file": host[spec["auth_key"]] if a.agent else host["codex_auth_file"],
                "worker_platform": host["platform"], "worker_python": host["python"], "heavy": a.heavy,
-               "handoff_version": 1, "initiator_session": initiator_session(a)}
+               "handoff_version": 1, "initiator_session": initiator_session(a, origin_harness)}
+        rec.update(initiators.origin(origin_harness, rec["created"]))
         print(f"dispatching {job} -> {host['name']} (branch {branch}, base {sha[:10]}, sync {host['sync']})")
 
         repo_key = hashlib.sha256((origin_url or repo).encode()).hexdigest()[:12]
@@ -1911,7 +1915,7 @@ def main():
     p.add_argument("--permission-mode", choices=list(agents.AGY_PERMISSIONS),
                    help="AGY 必填：plan/accept-edits/auto/skip；无人值守只有 skip 能执行命令和 git 提交")
     p.add_argument("--timeout", type=int, help="seconds before the job is killed")
-    p.add_argument("--initiator-session", help="发起方会话ID；默认 RD_INITIATOR_SESSION，再 CODEX_THREAD_ID")
+    p.add_argument("--initiator-session", help="发起方会话ID；默认 RD_INITIATOR_SESSION，再读取父进程链识别的 harness 会话变量")
     p.set_defaults(fn=cmd_run)
 
     p = sub.add_parser("status", parents=[repo_parser], help="show jobs")
