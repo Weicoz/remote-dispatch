@@ -16,7 +16,7 @@ rdispatch resume <job> --prompt-file followup.md --initiator-session <当前会�
 
 参数优先于 `RD_INITIATOR_SESSION`，该变量优先于宿主实际提供的 `CODEX_THREAD_ID`。未配置且宿主未提供时新任务未绑定；既有任务不自动迁移或推断所属会话。绑定ID是路由元数据，不是鉴权凭据。同员工的其他会话必须显式使用原ID才能接管结果或续派，CLI不据此提供操作系统级隔离。
 
-`result` 缓存每个 job/round 的独立回执；`inbox` 只列当前员工、当前发起会话尚未 ack 的结果。缓存回执在连接中断时仍可读取；远端尚未收取的结果保留在任务目录，连接恢复后读取。`ack` 必须匹配轮次和具体 receipt_id，可以重复确认同一回执，不会启动任务。接收会话已识别后，`resume --session` 不接受不同线程ID。
+`status --json`、`status --details` 和 `result` 只读，不创建缓存或回写接收会话。已有缓存回执在连接中断时仍可读取；未缓存的结果按目标机当前状态即时生成，断线时无法取得。`ack` 在持有 job 锁时核对轮次和具体 receipt_id，并保存此前未缓存的回执；`inbox`、续跑和清理也保留原有的显式收取路径。`inbox` 只列当前用户、当前发起会话尚未 ack 的结果。`ack` 可以重复确认同一回执，不会启动任务。接收会话已识别后，`resume --session` 不接受不同线程ID。
 
 CLI以JSON/后台watch事件向调用它的宿主返回数据，未内置跨会话聊天发送器。宿主支持后台唤醒时，由原发起会话消费事件；不支持时保留pending结果，下次该会话主动读取inbox。不能将“写入回执”“返回元数据”“发起方收取”“用户已看到”混成一个状态。
 
@@ -44,7 +44,7 @@ runner收尾补 executor_exit、finished_at。代理未写结构化结果时，�
 
 `evidence`只接受`source_fingerprint`、`checks`、`artifacts`和布尔`cleanup_confirmed`。分项检查为`{name,status,artifact?}`，status沿用检查状态；产物为`{path,state,sha256?,bytes?,kind?}`，state为`present/missing/unverified`。索引最大64KiB；大原件留私有目录，不把完整源码散列表和日志反复打印进上下文。
 
-`rdispatch result --summary`最多返回600字摘要、来源指纹、分项状态计数、缺失／未核产物数量、模型故障分类和本机完整回执路径。默认完整JSON接口不变。所有执行方证据仍待发起方验收，不能把`present`或回收自述等同独立核验。
+`rdispatch result --summary`最多返回600字摘要、来源指纹、分项状态计数、缺失／未核产物数量、模型故障分类和本机完整回执路径（`receipt_path` 是签收／显式收取后的保存位置，纯查询不保证该文件已存在）。默认完整JSON接口不变。所有执行方证据仍待发起方验收，不能把`present`或回收自述等同独立核验。
 
 发起方结果另含 initiator_session、receiver_session、receipt_id、captured_at、head/dirty 和 needs_initiator_review。检查状态来自执行方报告，不是调度器独立验收。`delivery_state=pending/received` 只表示收取，原始执行/检查失败仍保留。
 
