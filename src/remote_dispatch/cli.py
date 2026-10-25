@@ -11,6 +11,7 @@ import argparse
 import contextlib
 import concurrent.futures
 import configparser
+import functools
 import hashlib
 import json
 import os
@@ -28,6 +29,8 @@ from . import rd_native as native
 from . import rd_messages as messages
 from . import rd_health as health
 from . import rd_agents as agents
+from . import rd_query as query
+from .rd_lock import JobBusy, JobLock
 
 CONFIG = os.environ.get("RD_CONFIG") or os.path.expanduser("~/.config/remote-dispatch/config.ini")
 STATE = os.environ.get("RD_STATE") or os.path.expanduser("~/.local/state/remote-dispatch")
@@ -638,6 +641,17 @@ def git_ssh_env(host):
 
 # ---------------------------------------------------------------- job records
 
+def locked_job(command):
+    @functools.wraps(command)
+    def run_locked(a, cfg):
+        try:
+            with JobLock(STATE, a.job):
+                return command(a, cfg)
+        except JobBusy:
+            die("round in progress; another operation holds the job lock; retry after it finishes", 4)
+    return run_locked
+
+
 def job_path(job):
     return os.path.join(STATE, "jobs", job + ".json")
 
@@ -673,7 +687,7 @@ def require_initiator(rec, args):
 
 
 def result_path(rec, number):
-    return Path(STATE).resolve() / "results" / messages.job_id(rec["job"]) / ("r" + str(messages.round_id(number)) + ".json")
+    return query.result_path(STATE, rec, number)
 
 
 def remote_report(host, rec, number, kind):
@@ -691,37 +705,25 @@ def remote_report(host, rec, number, kind):
     return messages.validate_report(json.loads(reply.stdout), rec["job"], number, kind)
 
 
+def queries(cfg):
+    """Adapt target reads to the reusable, write-free query interface."""
+    return query.Query(STATE, states=lambda recs: job_states(cfg, recs),
+                       report=lambda rec, number, kind: remote_report(job_host(cfg, rec), rec, number, kind),
+                       receiver=lambda rec: find_session(job_host(cfg, rec), rec,
+                                                         rec.get("agent_config") or cfg.agent(rec["agent"])))
+
+
 def collect_result(cfg, rec, snapshot):
+    """Explicit write path used by inbox, resume and cleanup, never by queries."""
     number = int(snapshot.get("round") or rec["rounds"])
-    path = result_path(rec, number)
-    cached = messages.read_json(path)
-    if cached is not None:
-        return cached
-    if snapshot.get("state") not in ("done", "dead", "missing"):
-        return None
-    host = job_host(cfg, rec)
-    report = remote_report(host, rec, number, "result") if snapshot.get("state") == "done" and rec.get("handoff_version") else None
-    code = snapshot.get("exit")
-    receipt = dict(schema=1, job=rec["job"], round=number, host=rec["host"],
-                   initiator_session=rec.get("initiator_session"), execution_state=snapshot["state"],
-                   executor_exit=int(code) if code not in (None, "") else None,
-                   receiver_session=rec.get("receiver_session"), report=report,
-                   head=snapshot.get("head"), dirty=snapshot.get("dirty"),
-                   captured_at=messages.utc_now(), needs_initiator_review=True)
-    if rec.get("agent") and snapshot.get("state") == "done":
-        receiver = find_session(host, rec, rec.get("agent_config") or cfg.agent(rec["agent"]))
-        if receiver:
-            receipt["receiver_session"] = receiver
-            rec["receiver_session"] = receiver
-            save_job(rec)
-    receipt["receipt_id"] = hashlib.sha256(json.dumps(receipt, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
-    messages.atomic_json(path, receipt, limit=messages.RECEIPT_BYTES)
+    receipt = queries(cfg).result(rec, number, snapshot)
+    if receipt is not None and messages.read_json(result_path(rec, number)) is None:
+        messages.atomic_json(result_path(rec, number), receipt, limit=messages.RECEIPT_BYTES)
     return receipt
 
 
 def delivery(rec, receipt):
-    ack = messages.read_json(result_path(rec, receipt["round"]).with_suffix(".ack.json"))
-    return "received" if ack and ack.get("receipt_id") == receipt["receipt_id"] else "pending"
+    return queries(None).delivery(rec, receipt)
 
 
 def cmd_result(a, cfg):
@@ -733,7 +735,7 @@ def cmd_result(a, cfg):
         snapshot = job_states(cfg, [rec]).get(rec["job"], {})
         if a.round and int(snapshot.get("round") or rec["rounds"]) != a.round:
             die("该历史轮次尚无本地回执；先在原轮次收取结果。", 4)
-        receipt = collect_result(cfg, rec, snapshot)
+        receipt = queries(cfg).result(rec, a.round or rec["rounds"], snapshot)
     if receipt is None:
         die("结果尚未取得；用 rdispatch status 查看运行或连接状态。", 2)
     result = dict(receipt, delivery_state=delivery(rec, receipt))
@@ -767,14 +769,17 @@ def cmd_inbox(a, cfg):
     print(json.dumps(dict(initiator_session=owner, results=receipts, unreachable=unavailable), ensure_ascii=False, indent=2))
 
 
+@locked_job
 def cmd_ack(a, cfg):
     rec = load_job(a.job)
     require_initiator(rec, a)
     job_host(cfg, rec)
     path = result_path(rec, a.round)
-    receipt = messages.read_json(path)
+    receipt = queries(cfg).result(rec, a.round)
     if not receipt or receipt["receipt_id"] != a.receipt_id:
         die("回执 ID 或轮次不匹配；先收取并核对 rdispatch result。", 4)
+    if messages.read_json(path) is None:
+        messages.atomic_json(path, receipt, limit=messages.RECEIPT_BYTES)
     messages.atomic_json(path.with_suffix(".ack.json"), dict(receipt_id=a.receipt_id, received_at=messages.utc_now()))
     print("结果已由发起方收取；此确认不代表验收通过，不会自动续派。")
 
@@ -1283,14 +1288,11 @@ def cmd_status(a, cfg):
         for rec in recs:
             require_initiator(rec, a)
             snapshot = states.get(rec["job"], {})
-            progress = remote_report(job_host(cfg, rec), rec, int(snapshot.get("round") or rec["rounds"]), "progress") if rec.get("handoff_version") and snapshot.get("state") in ("running", "done") else None
-            receipt = collect_result(cfg, rec, snapshot)
-            output.append(dict(job=rec["job"], initiator_session=rec.get("initiator_session"), execution=snapshot,
-                               progress=progress, result=receipt, delivery_state=delivery(rec, receipt) if receipt else "not_available"))
+            output.append(queries(cfg).details(rec, snapshot))
         print(json.dumps(output, ensure_ascii=False, indent=2))
         return
     if a.json:
-        print(json.dumps([dict(r, **states.get(r["job"], {})) for r in recs], indent=2, ensure_ascii=False))
+        print(json.dumps(queries(cfg).jobs(recs, states), indent=2, ensure_ascii=False))
         return
     for r in recs:
         snapshot = states.get(r["job"], {})
@@ -1440,6 +1442,7 @@ def check_recovery(rec, receipt, args, cfg):
         die("重复模型启动故障，已停止续跑；用 rdispatch result --summary 查看分类。取得修复证据后才用 --retry-after-repair，纯上下文故障可以显式 --new-context。", 4)
 
 
+@locked_job
 def cmd_resume(a, cfg):
     rec = load_job(a.job)
     require_initiator(rec, a)
@@ -1453,7 +1456,7 @@ def cmd_resume(a, cfg):
     host["probe_profile_fingerprint"] = (rec.get("profile") or {}).get("fingerprint")
     st = remote_state(host, [rec["job"]]).get(rec["job"], {})
     if st.get("state") in ("running", "starting"):
-        die("the job is still running; rdispatch stop it first or wait")
+        die("round in progress; rdispatch stop it first or wait", 4)
     if st.get("state") in ("missing", "unreachable"):
         die(f"job is {st.get('state')} on {host['name']}")
     info = probe(host)
@@ -1517,6 +1520,7 @@ def cmd_fetch(a, cfg):
         print(f"review: git diff {rec['base'][:10]}..rd/{b}     take it: git merge --ff-only rd/{b}")
 
 
+@locked_job
 def cmd_stop(a, cfg):
     rec = load_job(a.job)
     require_initiator(rec, a)
