@@ -1,0 +1,42 @@
+{
+  "request": {
+    "method": "POST",
+    "path": "/v1/projects/3e15c8030cfe7c2cd22b/hide",
+    "headers": {
+      "Content-Type": "application/json",
+      "Idempotency-Key": "example-hide"
+    },
+    "body": {}
+  },
+  "response": {
+    "status": 200,
+    "body": {
+      "project": {
+        "id": "3e15c8030cfe7c2cd22b",
+        "name": "demo",
+        "origin": "",
+        "first_dispatch_at": "2026-10-25T01:00:00+00:00",
+        "last_dispatch_at": "2026-10-25T01:00:00+00:00",
+        "dispatch_count": 1,
+        "hidden": true
+      }
+    }
+  },
+  "events": [
+    {
+      "seq": 1,
+      "time": "2026-10-25T01:00:00+00:00",
+      "type": "project.changed",
+      "data": {
+        "user_id": "fixture",
+        "project_id": "3e15c8030cfe7c2cd22b",
+        "name": "demo",
+        "hidden": true,
+        "removed": false,
+        "dispatch_count": 1,
+        "first_dispatch_at": "2026-10-25T01:00:00+00:00",
+        "last_dispatch_at": "2026-10-25T01:00:00+00:00"
+      }
+    }
+  ]
+}

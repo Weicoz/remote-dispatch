@@ -1,0 +1,50 @@
+{
+  "request": {
+    "method": "GET",
+    "path": "/v1/harness-stats"
+  },
+  "response": {
+    "status": 200,
+    "body": {
+      "harness_stats": [
+        {
+          "harness": "codex",
+          "today_round_count": 1,
+          "recent_round_limit": 20,
+          "duration_sample_count": 1,
+          "average_duration_seconds": 60.0,
+          "current_rounds": [],
+          "consecutive_accepted": 1,
+          "consecutive_rejected": 0,
+          "last_result": "completed",
+          "last_checks": "passed",
+          "last_job": "fixture-job",
+          "last_round": 1,
+          "last_finished_at": "2026-10-25T01:00:00+00:00"
+        }
+      ]
+    }
+  },
+  "events": [
+    {
+      "seq": 2,
+      "time": "2026-10-25T01:00:00+00:00",
+      "type": "harness.stats_changed",
+      "data": {
+        "user_id": "fixture",
+        "harness": "codex",
+        "today_round_count": 1,
+        "recent_round_limit": 20,
+        "duration_sample_count": 1,
+        "average_duration_seconds": 60.0,
+        "consecutive_accepted": 1,
+        "consecutive_rejected": 0,
+        "last_result": "completed",
+        "last_checks": "passed",
+        "last_job": "fixture-job",
+        "last_round": 1,
+        "last_finished_at": "2026-10-25T01:00:00+00:00"
+      }
+    }
+  ]
+}

@@ -23,6 +23,8 @@ from . import rd_messages as messages
 from . import rd_serve_network as network
 from .rd_query import Query, result_path
 from .rd_serve_writes import Writes
+from .rd_serve_projects import ProjectRoutes
+from . import rd_harness_stats
 
 
 WRITE_COMMANDS = {"run", "resume", "ack", "review", "stop", "project", "inbox", "keep", "clean"}
@@ -135,6 +137,8 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         try:
+            if self.server.service.project_routes.post(self):
+                return
             if self.path != "/_cli/v1":
                 return self.server.service.writes.handle(self)
             if self.headers.get("Transfer-Encoding") or self.headers.get_content_type() != "application/json":
@@ -211,6 +215,7 @@ class Service:
         self.server = None
         self.thread = None
         self.poller = None
+        self.project_routes = ProjectRoutes(self)
         self.sensitive = set()
         for host in self.config.hosts():
             for key, value in host.items():
@@ -383,6 +388,10 @@ class Service:
                     continue
                 except (ValueError, OSError, SystemExit, subprocess.SubprocessError):
                     print("rdispatch: poll_unavailable: cannot collect a job", file=sys.stderr)
+            try:
+                rd_harness_stats.observe(self)
+            except (ValueError, OSError):
+                print("rdispatch: poll_unavailable: cannot update harness statistics", file=sys.stderr)
             hosts = []
             for host in self.config.hosts():
                 if self.stop.is_set():
@@ -448,6 +457,9 @@ class Service:
         url = urlsplit(target)
         path = unquote(url.path)
         args = parse_qs(url.query)
+        extra = self.project_routes.read(path, args)
+        if extra is not None:
+            return extra
         query = self.query()
         if path == "/v1/hosts":
             with self.cache_lock:

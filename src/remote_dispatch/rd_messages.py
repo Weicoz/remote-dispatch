@@ -280,6 +280,9 @@ def finish(directory, job, number, code, agent=None):
         data = report(directory, job, number, "result", summary=summary, outcome="completed" if code == 0 else "failed")
     else:
         validate_report(data, job, number, "result")
+    started = directory / ("started.r" + str(number))
+    if started.is_file() and not started.is_symlink():
+        data["started_at"] = started.read_text(encoding="utf-8").strip()
     data.update(executor_exit=int(code), finished_at=utc_now(),
                 reply_file="last.r" + str(number) + ".txt", stdout_file="stdout.r" + str(number) + ".log")
     data.pop("runtime_failure", None)

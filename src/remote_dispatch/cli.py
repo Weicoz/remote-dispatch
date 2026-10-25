@@ -1263,21 +1263,21 @@ def remote_state(host, jobs):
   fi
   setup=; [ -f "$D/setup.sh" ] && { [ -f "$D/setup.done" ] && setup=done || setup=pending; }
   sample=$(python3 -c "$sample_code" "$D" "$n" 2>/dev/null)
-  printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$J" "$st" "$(cat "$D/exit_code" 2>/dev/null)" \
+  printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$J" "$st" "$(cat "$D/exit_code" 2>/dev/null)" \
     "$([ -f "$D/timed_out" ] && echo yes)" "$(cat "$D/push_rc" 2>/dev/null)" "$head" \
-    "$dirty" "$n" "$setup" "$last" "$head_source" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$sample"
+    "$dirty" "$n" "$setup" "$last" "$head_source" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$sample" "$(cat "$D/started.r$n" 2>/dev/null)"
 done'''
     r = ssh(host, script, check=False, timeout=30)
     out = {}
     if not r or r.returncode != 0:
         return {j: {"state": "unreachable"} for j in jobs}
-    keys = ["job", "state", "exit", "timed_out", "push_rc", "head", "dirty", "round", "setup", "last", "head_source", "observed_at", "network_sample"]
+    keys = ["job", "state", "exit", "timed_out", "push_rc", "head", "dirty", "round", "setup", "last", "head_source", "observed_at", "network_sample", "started_at"]
     for line in r.stdout.splitlines():
         parts = line.split("\t")
         if len(parts) == len(keys):
             out[parts[0]] = dict(zip(keys, parts))
             try:
-                out[parts[0]]["network_sample"] = json.loads(parts[-1])
+                out[parts[0]]["network_sample"] = json.loads(parts[-2])
             except ValueError:
                 out[parts[0]].pop("network_sample")
     return out
