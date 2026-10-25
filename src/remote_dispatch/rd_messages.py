@@ -136,7 +136,8 @@ def runtime_failure(directory, number):
 
 def result_summary(receipt):
     result = {k: receipt[k] for k in ("job", "round", "receipt_id", "head", "execution_state",
-                                    "executor_exit", "receiver_session", "needs_initiator_review", "delivery_state") if k in receipt}
+                                    "executor_exit", "receiver_session", "needs_initiator_review", "delivery_state",
+                                    "acknowledgement", "stopped_by", "stopped_at", "suppress_push", "review_state") if k in receipt}
     report = receipt.get("report") or {}
     result.update({k: report[k] for k in ("outcome", "checks", "phase") if k in report})
     if isinstance(report.get("runtime_failure"), dict):

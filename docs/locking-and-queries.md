@@ -32,9 +32,10 @@ CLI 的 `remote_dispatch.cli.queries(cfg)` 已接好现有目标机读取适配�
 | 方法 | 返回结构 |
 | --- | --- |
 | `jobs(records, snapshots=None)` | `list[dict]`，每条为 job 记录叠加 execution 快照字段；可复用已读快照 |
-| `details(rec, snapshot=None)` | `{job, initiator_session, execution, progress, result, delivery_state}` |
+| `details(rec, snapshot=None)` | `{job, initiator_session, execution, progress, result, acknowledgement, delivery_state}` |
 | `result(rec, number=None, snapshot=None)` | 已有或即时回执字典；未结束／失联且无缓存时为 `None` |
 | `delivery(rec, receipt)` | `pending` / `received` |
+| `acknowledgement(rec, receipt)` | 匹配回执 ID 的签收记录或 `None`，旧签收记录保持原字段 |
 
 回执字段：`schema, job, round, host, initiator_session, execution_state,
 executor_exit, receiver_session, report, head, dirty, needs_initiator_review,
@@ -51,3 +52,5 @@ receipt_id, captured_at`。旧缓存保留原 ID 和字段。未缓存历史轮�
 本票不改变部署方式。编排方合入后安装当前 Python 包即可；没有服务重启、端口、
 真实设备或测试栈部署步骤。macOS 上的跨进程测试使用假目标机 RPC，Windows
 目标机分支也经同一 RPC 边界覆盖；Windows 控制端的原生锁后端需在 Windows 复测。
+
+签收方、代签展示与停止自动签收字段见 [签收、代签与主动停止](acknowledgements.md)。

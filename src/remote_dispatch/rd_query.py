@@ -15,6 +15,11 @@ def result_path(state, rec, number):
             / ("r" + str(messages.round_id(number)) + ".json"))
 
 
+def receipt_id(receipt):
+    content = {k: v for k, v in receipt.items() if k not in ("receipt_id", "captured_at")}
+    return hashlib.sha256(json.dumps(content, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
+
+
 class Query:
     def __init__(self, state, *, states, report, receiver):
         self.state = state
@@ -57,16 +62,20 @@ class Query:
                        receiver_session=receiver, report=report,
                        head=snapshot.get("head"), dirty=snapshot.get("dirty"),
                        needs_initiator_review=True)
-        receipt["receipt_id"] = hashlib.sha256(json.dumps(receipt, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
+        receipt["receipt_id"] = receipt_id(receipt)
         receipt["captured_at"] = messages.utc_now()
         return receipt
 
-    def delivery(self, rec, receipt):
+    def acknowledgement(self, rec, receipt):
+        """Read the matching acknowledgement, including legacy records."""
         ack = messages.read_json(result_path(self.state, rec, receipt["round"]).with_suffix(".ack.json"))
-        return "received" if ack and ack.get("receipt_id") == receipt["receipt_id"] else "pending"
+        return ack if ack and ack.get("receipt_id") == receipt["receipt_id"] else None
+
+    def delivery(self, rec, receipt):
+        return "received" if self.acknowledgement(rec, receipt) else "pending"
 
     def details(self, rec, snapshot=None):
-        """Return {job, initiator_session, execution, progress, result, delivery_state}."""
+        """Return execution, reports, matching acknowledgement and delivery state."""
         if snapshot is None:
             snapshot = self.states([rec]).get(rec["job"], {})
         number = int(snapshot.get("round") or rec["rounds"])
@@ -74,4 +83,5 @@ class Query:
         receipt = self.result(rec, number, snapshot)
         return dict(job=rec["job"], initiator_session=rec.get("initiator_session"), execution=snapshot,
                     progress=progress, result=receipt,
+                    acknowledgement=self.acknowledgement(rec, receipt) if receipt else None,
                     delivery_state=self.delivery(rec, receipt) if receipt else "not_available")

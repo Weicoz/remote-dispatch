@@ -694,6 +694,47 @@ class DispatchTests(unittest.TestCase):
         self.assertIn("clean " + record["job"], self.expired())
         self.assertFalse((self.worker / "wt" / record["job"]).exists())
 
+    def test_stop_on_posix_and_native_targets_auto_acknowledges_failed_receipt(self):
+        for platform in ("posix", "windows"):
+            with self.subTest(platform=platform):
+                self.cfg.cp.set("host:fixture", "platform", platform)
+                record = self.dispatch(name="stop-" + platform, initiator_session="sender")
+                directory = self.worker / "jobs" / record["job"]
+                holder = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"], start_new_session=True)
+                try:
+                    (directory / "exit_code").unlink()
+                    (directory / "pid").write_text(str(holder.pid))
+                    self.capture(rd.cmd_stop, argparse.Namespace(job=record["job"], initiator_session="stopper"))
+                    holder.wait(timeout=5)
+                    result = json.loads(self.capture(rd.cmd_result, argparse.Namespace(
+                        job=record["job"], initiator_session="sender", round=None)))
+                    self.assertEqual(result["report"]["outcome"], "failed")
+                    self.assertEqual(result["delivery_state"], "received")
+                    self.assertEqual(result["acknowledgement"]["acked_by"], "stopper")
+                    self.assertEqual(result["acknowledgement"]["via"], "cli")
+                    self.assertEqual(result["review_state"], "pending")
+                finally:
+                    if holder.poll() is None:
+                        holder.kill()
+                    holder.wait(timeout=5)
+
+    def test_delegated_and_original_acknowledgements_start_the_same_retention_period(self):
+        for name, signer in (("ordinary", "sender"), ("delegated", "App MacBook")):
+            with self.subTest(signer=signer):
+                record = self.agent_job(self.dispatch(name=name, initiator_session="sender"))
+                self.remote_head(record)
+                old = time.time() - 10 * 24 * 3600
+                os.utime(rd.job_path(record["job"]), (old, old))
+                snapshot = rd.job_states(self.cfg, [record])[record["job"]]
+                receipt = rd.collect_result(self.cfg, record, snapshot)
+                rd.cmd_ack(argparse.Namespace(job=record["job"], round=1, receipt_id=receipt["receipt_id"],
+                                              initiator_session="sender", acked_by=signer, via="cli"), self.cfg)
+                self.assertIn("keep " + record["job"], self.expired())
+                self.assertIn("保留期 24 小时", self.expired())
+                self.age_ack(record, 25)
+                self.assertIn("clean " + record["job"], self.expired())
+                self.assertFalse(Path(rd.job_path(record["job"])).exists())
+
     def test_clean_expired_keeps_unmerged_fetched_work_for_a_week(self):
         record = self.agent_job(self.dispatch())
         self.remote_head(record, commit=True, fetch=True)
