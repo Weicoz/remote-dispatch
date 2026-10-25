@@ -1,0 +1,37 @@
+{
+  "request": {
+    "method": "GET",
+    "path": "/v1/jobs?project=3e15c8030cfe7c2cd22b"
+  },
+  "response": {
+    "status": 200,
+    "body": {
+      "jobs": [
+        {
+          "job": "fixture-job",
+          "host": "target",
+          "model": null,
+          "initiator_harness": null,
+          "initiator_host": null,
+          "initiator_session": null,
+          "initiator_herdr": null,
+          "project": "demo",
+          "project_id": "3e15c8030cfe7c2cd22b",
+          "harness": "codex",
+          "round": 1,
+          "execution_state": "done",
+          "executor_exit": 0,
+          "outcome": "completed",
+          "checks": "passed",
+          "delivery_state": "received",
+          "review_state": "accepted",
+          "acknowledgement": null,
+          "stopped_by": null,
+          "updated_at": "2026-10-25T00:00:00+00:00",
+          "created_at": "2026-10-25T01:00:00+00:00"
+        }
+      ]
+    }
+  },
+  "events": []
+}

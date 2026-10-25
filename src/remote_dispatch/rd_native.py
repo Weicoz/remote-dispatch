@@ -291,7 +291,7 @@ def job_state(root, job):
             dirty = str(len(git(wt, "status", "--porcelain", check=False).stdout.splitlines()))
     return {"job": job, "state": state, "exit": read("exit_code"), "timed_out": "yes" if (directory / "timed_out").exists() else "",
             "push_rc": read("push_rc"), "head": head, "dirty": dirty, "round": str(rounds),
-            "head_source": head_source, "observed_at": messages.utc_now(),
+            "head_source": head_source, "observed_at": messages.utc_now(), "started_at": read("started.r" + str(rounds)),
             "setup": "done" if (directory / "setup.done").exists() else "pending" if (directory / "setup.ps1").exists() else "", "last": tail[0] if tail else "",
             "network_sample": health.log_sample(directory, rounds)}
 

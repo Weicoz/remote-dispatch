@@ -92,12 +92,16 @@ class ProjectIndex:
 
     def set_hidden(self, identity, hidden):
         with ProjectLock(self.state, self.user_id):
-            projects = self.read()
-            if identity not in projects:
-                raise ValueError(f"unknown project '{identity}'; use a project ID from status --json")
-            projects[identity]["hidden"] = hidden
-            self.write(projects)
-            return projects[identity]
+            return self.set_hidden_locked(identity, hidden)
+
+    def set_hidden_locked(self, identity, hidden):
+        """Shared CLI/HTTP mutation; caller holds this user's ProjectLock."""
+        projects = self.read()
+        if identity not in projects:
+            raise ValueError(f"unknown project '{identity}'; use a project ID from status --json")
+        projects[identity]["hidden"] = hidden
+        self.write(projects)
+        return projects[identity]
 
     def register(self, rec):
         """Register a newly created dispatch exactly once, before target setup."""
@@ -113,7 +117,7 @@ class ProjectIndex:
             with events.write_transaction([job_path, manifest, self.path]):
                 messages.atomic_json(job_path, rec, limit=None)
                 messages.atomic_json(manifest, {key: rec.get(key) for key in
-                                     ("job", "user_id", "project", "origin", "created")})
+                                     ("job", "user_id", "project", "origin", "created", "host", "agent", "model")})
                 events.emit(self.state, "job.created", events.job_data(rec))
                 identity = project_id(rec["project"], rec.get("origin") or "")
                 row = projects.setdefault(identity, dict(id=identity, name=rec["project"],

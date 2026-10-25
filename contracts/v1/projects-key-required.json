@@ -1,0 +1,19 @@
+{
+  "request": {
+    "method": "POST",
+    "path": "/v1/projects/3e15c8030cfe7c2cd22b/hide",
+    "headers": {
+      "Content-Type": "application/json"
+    },
+    "body": {}
+  },
+  "response": {
+    "status": 400,
+    "body": {
+      "error": {
+        "reason": "idempotency_key_required"
+      }
+    }
+  },
+  "events": []
+}

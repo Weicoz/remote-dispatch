@@ -21,6 +21,7 @@ FIELDS = {
     "receipt.ready": "job user_id project_id host round receipt_id execution_state executor_exit outcome checks suppress_push stopped_by stopped_at",
     "receipt.acked": "job user_id project_id host round receipt_id received_at acked_by via suppress_push",
     "review.updated": "job user_id project_id host round review_state reviewed_by reviewed_at",
+    "harness.stats_changed": "user_id harness today_round_count recent_round_limit duration_sample_count average_duration_seconds consecutive_accepted consecutive_rejected last_result last_checks last_job last_round last_finished_at",
     "host.changed": "host reachable state load1 ncpu memfree disk running heavy full",
     "project.changed": "user_id project_id name first_dispatch_at last_dispatch_at dispatch_count hidden removed",
 }
@@ -156,7 +157,7 @@ class EventLog:
         return rows[0] if rows else None
 
     def latest(self, kind, data):
-        identity = ("job", "user_id") if "job" in data else ("host",)
+        identity = ("job", "user_id") if "job" in data else ("harness", "user_id") if "harness" in data else ("host",)
         for path in [self.path, *reversed(self.archives())]:
             try:
                 lines = physical(path).read_bytes().splitlines(keepends=True)
@@ -186,7 +187,7 @@ class EventLog:
                     last_seq, _ = tail(archives[-1])
             rows, latest = [], {}
             for kind, data, changed in items:
-                key = (kind, data.get("job"), data.get("user_id"), data.get("host") if "job" not in data else None)
+                key = (kind, data.get("job"), data.get("user_id"), data.get("host") if "job" not in data else None, data.get("harness"))
                 if changed:
                     if key not in latest:
                         latest[key] = self.latest(kind, data)

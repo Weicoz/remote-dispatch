@@ -1,0 +1,49 @@
+{
+  "request": {
+    "method": "GET",
+    "path": "/v1/projects"
+  },
+  "response": {
+    "status": 200,
+    "body": {
+      "projects": [
+        {
+          "id": "3e15c8030cfe7c2cd22b",
+          "name": "demo",
+          "origin": "",
+          "first_dispatch_at": "2026-10-25T01:00:00+00:00",
+          "last_dispatch_at": "2026-10-25T01:00:00+00:00",
+          "dispatch_count": 1,
+          "hidden": false,
+          "session_only": false,
+          "sessions": [],
+          "needs_attention_count": 0,
+          "in_progress_count": 0,
+          "hosts": {
+            "target": {
+              "state": "idle",
+              "job": "fixture-job",
+              "updated_at": "2026-10-25T01:00:00+00:00"
+            }
+          },
+          "week_dispatch_count": 1,
+          "last_accepted_at": "2026-10-25T01:00:00+00:00",
+          "last_harness": "codex",
+          "recent_event": {
+            "seq": 3,
+            "time": "2026-10-25T01:00:00+00:00",
+            "type": "job.state_changed",
+            "data": {
+              "job": "fixture-job",
+              "user_id": "fixture",
+              "host": "target",
+              "round": 1,
+              "execution_state": "done"
+            }
+          }
+        }
+      ]
+    }
+  },
+  "events": []
+}
