@@ -1,0 +1,39 @@
+{
+  "request": {
+    "method": "POST",
+    "path": "/v1/runs",
+    "headers": {
+      "Content-Type": "application/json",
+      "Idempotency-Key": "write-runs"
+    },
+    "body": {
+      "project": "demo",
+      "prompt": "请实现此功能",
+      "harness": "codex",
+      "host": "target",
+      "initiator_session": "app:device",
+      "model": "test-model"
+    }
+  },
+  "response": {
+    "status": 201,
+    "body": {
+      "job": "fixture-job",
+      "round": 1
+    }
+  },
+  "events": [
+    {
+      "seq": 1,
+      "time": "2026-10-25T00:00:00+00:00",
+      "type": "job.created",
+      "data": {
+        "job": "fixture-job",
+        "user_id": "fixture",
+        "round": 1,
+        "project": "demo",
+        "host": "target"
+      }
+    }
+  ]
+}

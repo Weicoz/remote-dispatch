@@ -1,0 +1,26 @@
+{
+  "request": {
+    "method": "POST",
+    "path": "/v1/jobs/fixture-job/rounds/1/review",
+    "headers": {
+      "Content-Type": "application/json",
+      "Idempotency-Key": "write-resume-launch-failed"
+    },
+    "body": {
+      "review_state": "rejected",
+      "reviewed_by": "App",
+      "review_note": "继续"
+    }
+  },
+  "response": {
+    "status": 422,
+    "body": {
+      "error": {
+        "reason": "resume_launch_failed",
+        "message": "示例错误原因",
+        "exit_code": 4
+      }
+    }
+  },
+  "events": []
+}

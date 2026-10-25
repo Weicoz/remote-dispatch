@@ -1,0 +1,43 @@
+{
+  "request": {
+    "method": "POST",
+    "path": "/v1/jobs/fixture-job/rounds/1/ack",
+    "headers": {
+      "Content-Type": "application/json",
+      "Idempotency-Key": "write-ack"
+    },
+    "body": {
+      "receipt_id": "receipt-example",
+      "acked_by": "App MacBook"
+    }
+  },
+  "response": {
+    "status": 200,
+    "body": {
+      "job": "fixture-job",
+      "round": 1,
+      "acknowledgement": {
+        "receipt_id": "receipt-example",
+        "received_at": "2026-10-25T00:00:00+00:00",
+        "acked_by": "App MacBook",
+        "via": "serve"
+      }
+    }
+  },
+  "events": [
+    {
+      "seq": 1,
+      "time": "2026-10-25T00:00:00+00:00",
+      "type": "receipt.acked",
+      "data": {
+        "job": "fixture-job",
+        "user_id": "fixture",
+        "round": 1,
+        "receipt_id": "receipt-example",
+        "received_at": "2026-10-25T00:00:00+00:00",
+        "acked_by": "App MacBook",
+        "via": "serve"
+      }
+    }
+  ]
+}
