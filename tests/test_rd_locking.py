@@ -32,6 +32,8 @@ def request(host, operation, data=None, **kwargs):
         return None
     if operation == "upload":
         return None
+    if operation == "controller-register":
+        return False
     if operation in ("launch", "stop"):
         number = data["spec"]["round"] if operation == "launch" else 1
         with (root / "events.jsonl").open("a") as stream:
