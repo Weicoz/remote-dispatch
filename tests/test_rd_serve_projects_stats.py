@@ -1,5 +1,7 @@
 """项目与统计通过临时 Unix HTTP/SSE 服务的外部行为。"""
 import json
+import os
+import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 import unittest
@@ -281,6 +283,8 @@ class ProjectsStatsTests(unittest.TestCase):
         self.start(poll_interval=3600)
         self.eventually(lambda: self.request("/v1/jobs/fixture-job")[1]["job"],
                         lambda row: row["execution_state"] == "done")
+        self.eventually(lambda: self.request("/v1/projects")[1]["projects"][0],
+                        lambda row: row["recent_event"]["data"].get("accepted_round_count") == 1)
         identity = self.request("/v1/projects")[1]["projects"][0]["id"]
         for name in ("projects-summary", "jobs-project", "jobs-history", "harness-stats", "projects-key-required", "projects-hide", "projects-show"):
             with self.subTest(contract=name):
@@ -296,7 +300,9 @@ class ProjectsStatsTests(unittest.TestCase):
                     for expected in example["events"]:
                         while True:
                             _, kind, event = self.next_event(stream)
-                            if kind == expected["type"] and (kind != "project.changed" or event["data"]["hidden"] == expected["data"]["hidden"]):
+                            if (kind == expected["type"] and (kind != "project.changed" or
+                                    (event["data"].get("hidden") == expected["data"]["hidden"] and
+                                     event["data"].get("host") == expected["data"].get("host")))):
                                 break
                         self.assert_structure(event, expected)
                     stream.close()
@@ -381,3 +387,189 @@ class ProjectsStatsTests(unittest.TestCase):
         self.assertEqual(self.snapshot(), before)
         service.close()
         self.assertFalse(self.path.exists())
+
+    def test_cumulative_harness_rounds_survive_cleanup_and_do_not_depend_on_recent_limit(self):
+        self.prepare()
+        rec = self.dispatch("history", "done", "completed", True, "rejected")
+        for number in (2, 3):
+            cli.messages.atomic_json(cli.result_path(rec, number), dict(
+                job=rec["job"], round=number, host="target", receipt_id=str(number),
+                execution_state="done", captured_at="2026-10-24T10:00:00Z",
+                report=dict(outcome="failed")))
+        cli.save_job(dict(rec, rounds=4))
+        self.dispatch("running-only", host="second")
+        self.dispatch("foreign-history", "done", "completed", user="other")
+        service = self.start(poll_interval=3600)
+        self.assertEqual(self.request("/v1/harness-stats?recent=1")[1]["harness_stats"][0]["total_round_count"], 3)
+        service.close()
+        Path(cli.job_path(rec["job"])).unlink()
+        for path in self.state.glob("events*.jsonl"):
+            path.unlink()
+        self.start(poll_interval=3600)
+        stats = self.request("/v1/harness-stats?recent=200")[1]["harness_stats"][0]
+        self.assertEqual(stats["total_round_count"], 3)
+
+    def test_host_history_uses_fourteen_local_dates_including_dst_and_receipt_host(self):
+        self.prepare()
+        original_timezone = os.environ.get("TZ")
+        def restore_timezone():
+            if original_timezone is None:
+                os.environ.pop("TZ", None)
+            else:
+                os.environ["TZ"] = original_timezone
+            time.tzset()
+        self.addCleanup(restore_timezone)
+        os.environ["TZ"] = "America/New_York"
+        time.tzset()
+        now = datetime(2026, 11, 2, 12, tzinfo=timezone.utc)
+        with patch("remote_dispatch.rd_harness_stats.datetime", wraps=datetime) as clock:
+            clock.now.return_value = now
+            self.config.write_text("[host:unused]\nssh=local\n")
+            rec = self.dispatch("migrated", host="new-target")
+            stamps = ["2026-10-20T03:59:59Z", "2026-10-20T04:00:00Z",
+                      "2026-11-01T03:59:59Z", "2026-11-01T05:30:00Z",
+                      "2026-11-01T06:30:00Z", "2026-11-02T04:59:59Z",
+                      "2026-11-02T05:00:00Z", "2026-11-02T13:00:00Z", "invalid"]
+            for number, stamp in enumerate(stamps, 1):
+                cli.messages.atomic_json(cli.result_path(rec, number), dict(
+                    job=rec["job"], round=number, host="old-target", receipt_id=str(number),
+                    captured_at=stamp, report=dict(outcome="completed", finished_at=stamp)))
+            cli.save_job(dict(rec, rounds=10))
+            self.dispatch("foreign-daily", "done", "completed", user="other", host="private-target", created=now.isoformat())
+            service = self.start(poll_interval=3600)
+            body = self.request("/v1/harness-stats")[1]
+            hosts = {row["host"]: row for row in body["host_stats"]}
+            self.assertEqual(body["date_basis"], "controller_local")
+            self.assertEqual(set(hosts), {"old-target", "new-target", "unused"})
+            days = hosts["old-target"]["daily_round_counts"]
+            self.assertEqual(len(days), 14)
+            self.assertEqual(days[0], dict(date="2026-10-20", round_count=1))
+            self.assertEqual(days[-3:], [dict(date="2026-10-31", round_count=1),
+                dict(date="2026-11-01", round_count=3), dict(date="2026-11-02", round_count=1)])
+            self.assertEqual(sum(day["round_count"] for day in days), 6)
+            self.assertTrue(all(day["round_count"] == 0 for day in hosts["new-target"]["daily_round_counts"]))
+            self.assertTrue(all(day["round_count"] == 0 for day in hosts["unused"]["daily_round_counts"]))
+            service.close()
+
+    def test_project_host_counts_only_accepted_rounds_and_keeps_original_hosts_after_cleanup(self):
+        self.prepare()
+        self.config.write_text("[host:unused]\nssh=local\n")
+        rec = self.dispatch("accepted-old", "done", "completed", True, "accepted", host="old")
+        for number, decision in ((2, "rejected"), (3, "voided"), (4, "pending"), (5, "accepted")):
+            cli.messages.atomic_json(cli.result_path(rec, number), dict(job=rec["job"], round=number,
+                host="new", receipt_id=str(number), report=dict(outcome="completed")))
+            if decision != "pending":
+                cli.messages.atomic_json(cli.result_path(rec, number).with_suffix(".review.json"),
+                    dict(review_state=decision, reviewed_at="2026-10-25T01:00:00Z"))
+        cli.save_job(dict(rec, rounds=5, host="new"))
+        self.dispatch("automatic-completed", "done", "completed", True, host="new")
+        self.dispatch("foreign-accepted", "done", "completed", True, "accepted", user="other", host="new")
+        self.dispatch("another-project", "done", "completed", True, "accepted", project="other", host="new")
+        service = self.start(poll_interval=3600)
+        projects = {row["name"]: row for row in self.request("/v1/projects")[1]["projects"]}
+        self.assertEqual(projects["demo"]["hosts"]["old"]["accepted_round_count"], 1)
+        self.assertEqual(projects["demo"]["hosts"]["new"]["accepted_round_count"], 1)
+        self.assertEqual(projects["demo"]["hosts"]["unused"]["accepted_round_count"], 0)
+        self.assertEqual(projects["other"]["hosts"]["new"]["accepted_round_count"], 1)
+        service.close()
+        Path(cli.job_path(rec["job"])).unlink()
+        for path in self.state.glob("events*.jsonl"):
+            path.unlink()
+        self.start(poll_interval=3600)
+        demo = next(row for row in self.request("/v1/projects")[1]["projects"] if row["name"] == "demo")
+        self.assertEqual(demo["hosts"]["old"]["accepted_round_count"], 1)
+        self.assertEqual(demo["hosts"]["new"]["accepted_round_count"], 1)
+
+    def test_history_stat_events_include_changed_counts_and_deduplicate_across_restart_and_rotation(self):
+        self.prepare()
+        from remote_dispatch import rd_events as events
+        with patch.dict(os.environ, {"RD_EVENT_LOG_MAX_BYTES": "1"}):
+            self.dispatch("first", "done", "completed", True, "accepted", project="one")
+            self.dispatch("second", "done", "completed", True, "accepted", project="two")
+            service = self.start(poll_interval=0.05)
+            stream = self.open_events()
+            accepted = {}
+            while len(accepted) < 2:
+                _, kind, event = self.next_event(stream)
+                if kind == "project.changed" and event["data"].get("accepted_round_count") is not None:
+                    accepted[event["data"]["name"]] = event["data"]["accepted_round_count"]
+            self.assertEqual(accepted, {"one": 1, "two": 1})
+            stream.close()
+            service.close()
+            before = events.read_after(self.state, 0)
+            stats = [row for row in before if row["type"] == "harness.stats_changed"]
+            self.assertEqual(stats[-1]["data"]["total_round_count"], 2)
+            self.assertEqual(stats[-1]["data"]["host_stats"][0]["host"], "target")
+            service = self.start(poll_interval=0.05)
+            self.eventually(lambda: self.request("/v1/jobs")[1]["jobs"],
+                            lambda rows: all(row["execution_state"] == "done" for row in rows))
+            time.sleep(0.2)
+            self.assertEqual(events.read_after(self.state, 0), before)
+            self.dispatch("third", "done", "completed", True, "accepted", project="one")
+            stream = self.open_events("/v1/events?after=" + str(before[-1]["seq"]))
+            changed = {}
+            while len(changed) < 2:
+                _, kind, event = self.next_event(stream)
+                if kind == "project.changed" and event["data"].get("accepted_round_count") == 2:
+                    changed["project"] = event["data"]
+                if kind == "harness.stats_changed" and event["data"].get("total_round_count") == 3:
+                    changed["harness"] = event["data"]
+            self.assertEqual(changed["project"]["name"], "one")
+            stream.close()
+            service.close()
+
+    def test_statistics_and_events_exclude_sensitive_fields_and_support_command_only_history(self):
+        self.prepare()
+        now = datetime.now().astimezone()
+        rec = self.dispatch("command-history", "done", "completed", True, "accepted", created=now.isoformat())
+        marker = "fixture-do-not-publish-41"
+        cli.save_job(dict(rec, agent=None, env_file=marker, profile=dict(token=marker)))
+        path = cli.result_path(rec, 1)
+        receipt = cli.messages.read_json(path)
+        receipt.update(agent=None, password=marker, agent_auth_file=marker)
+        receipt["report"].update(token=marker, ssh_opts=marker)
+        cli.messages.atomic_json(path, receipt)
+        self.start(poll_interval=3600)
+        stream = self.open_events()
+        while True:
+            _, kind, event = self.next_event(stream)
+            if kind == "harness.stats_changed":
+                break
+        self.assertIsNone(event["data"]["harness"])
+        self.assertEqual(sum(day["round_count"] for day in event["data"]["host_stats"][0]["daily_round_counts"]), 1)
+        stream.close()
+        body = self.request("/v1/harness-stats")[1]
+        self.assertEqual(body["harness_stats"], [])
+        self.assertEqual(body["host_stats"], event["data"]["host_stats"])
+        projects = self.request("/v1/projects")[1]
+        encoded = json.dumps([body, projects, event])
+        for value in (marker, "env_file", "agent_auth_file", "ssh_opts", "password", '"token"', '"profile"'):
+            self.assertNotIn(value, encoded)
+
+    def test_local_midnight_advances_daily_window_and_publishes_stats_without_new_rounds(self):
+        self.prepare()
+        now = datetime.now().astimezone().replace(hour=23, minute=59, second=0, microsecond=0)
+        self.dispatch("midnight", "done", "completed", created=now.isoformat())
+        with patch("remote_dispatch.rd_harness_stats.datetime", wraps=datetime) as clock:
+            clock.now.return_value = now
+            self.start(poll_interval=0.05)
+            stream = self.open_events()
+            while True:
+                _, kind, event = self.next_event(stream)
+                if kind == "harness.stats_changed":
+                    break
+            cursor = event["seq"]
+            first = event["data"]["host_stats"][0]["daily_round_counts"]
+            self.assertEqual(first[-1]["round_count"], 1)
+            clock.now.return_value = now + timedelta(minutes=2)
+            stream.close()
+            stream = self.open_events("/v1/events?after=" + str(cursor))
+            while True:
+                _, kind, event = self.next_event(stream)
+                if kind == "harness.stats_changed":
+                    break
+            second = event["data"]["host_stats"][0]["daily_round_counts"]
+            self.assertEqual(second[:-1], first[1:])
+            self.assertEqual(second[-1], dict(date=(now.date() + timedelta(days=1)).isoformat(), round_count=0))
+            self.assertEqual(event["data"]["total_round_count"], 1)
+            stream.close()

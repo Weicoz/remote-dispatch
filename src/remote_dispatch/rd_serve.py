@@ -414,6 +414,7 @@ class Service:
                     print("rdispatch: poll_unavailable: cannot collect a job", file=sys.stderr)
             try:
                 rd_harness_stats.observe(self)
+                self.project_routes.observe()
             except (ValueError, OSError):
                 print("rdispatch: poll_unavailable: cannot update harness statistics", file=sys.stderr)
             hosts = []

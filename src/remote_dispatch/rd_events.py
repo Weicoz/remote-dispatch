@@ -23,9 +23,9 @@ FIELDS = {
     "receipt.ready": "job user_id project_id host round receipt_id execution_state executor_exit outcome checks suppress_push stopped_by stopped_at",
     "receipt.acked": "job user_id project_id host round receipt_id received_at acked_by via suppress_push",
     "review.updated": "job user_id project_id host round review_state reviewed_by reviewed_at",
-    "harness.stats_changed": "user_id harness today_round_count recent_round_limit duration_sample_count average_duration_seconds consecutive_accepted consecutive_rejected last_result last_checks last_job last_round last_finished_at",
+    "harness.stats_changed": "user_id harness total_round_count today_round_count recent_round_limit duration_sample_count average_duration_seconds consecutive_accepted consecutive_rejected last_result last_checks last_job last_round last_finished_at date_basis",
     "host.changed": "host reachable state load1 ncpu memfree disk running heavy full",
-    "project.changed": "user_id project_id name first_dispatch_at last_dispatch_at dispatch_count hidden removed",
+    "project.changed": "user_id project_id name first_dispatch_at last_dispatch_at dispatch_count hidden removed host accepted_round_count",
     "session.changed": "user_id pane_id session_id harness project project_id status status_text has_new_reply probable identity_text removed",
     "session.message": "user_id pane_id session_id project_id harness message_id kind message_time",
 }
@@ -79,6 +79,12 @@ def display_data(kind, data):
         projected["candidates"] = [{"address": row["address"], "port": row["port"]}
             for row in data["candidates"] if isinstance(row, dict)
             and isinstance(row.get("address"), str) and type(row.get("port")) is int]
+    if kind == "harness.stats_changed" and isinstance(data.get("host_stats"), list):
+        projected["host_stats"] = [dict(host=row["host"], daily_round_counts=[
+            dict(date=day["date"], round_count=day["round_count"])
+            for day in row.get("daily_round_counts", []) if isinstance(day, dict)
+            and isinstance(day.get("date"), str) and type(day.get("round_count")) is int])
+            for row in data["host_stats"] if isinstance(row, dict) and isinstance(row.get("host"), str)]
     return projected
 
 
@@ -166,7 +172,9 @@ class EventLog:
         return rows[0] if rows else None
 
     def latest(self, kind, data):
-        identity = ("job", "user_id") if "job" in data else ("harness", "user_id") if "harness" in data else ("host",)
+        identity = (("project_id", "user_id", "host") if kind == "project.changed" else
+                    ("job", "user_id") if "job" in data else ("harness", "user_id")
+                    if kind == "harness.stats_changed" else ("host",))
         for path in [self.path, *reversed(self.archives())]:
             try:
                 lines = physical(path).read_bytes().splitlines(keepends=True)
@@ -196,7 +204,7 @@ class EventLog:
                     last_seq, _ = tail(archives[-1])
             rows, latest = [], {}
             for kind, data, changed in items:
-                key = (kind, data.get("job"), data.get("user_id"), data.get("host") if "job" not in data else None, data.get("harness"))
+                key = (kind, data.get("job"), data.get("user_id"), data.get("host") if "job" not in data else None, data.get("harness"), data.get("project_id") if kind == "project.changed" else None)
                 if changed:
                     if key not in latest:
                         latest[key] = self.latest(kind, data)
