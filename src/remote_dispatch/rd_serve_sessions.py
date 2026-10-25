@@ -185,19 +185,6 @@ class Sessions:
             return DISABLED
         if path == "/v1/sessions":
             return 200, {"sessions": self.list()}
-        if path == "/v1/projects":
-            projects = {p["id"]: dict({key: p[key] for key in (
-                        "id", "name", "first_dispatch_at", "last_dispatch_at", "dispatch_count", "hidden")}, session_only=False)
-                        for p in self.service.query().projects(self.service.user_id)}
-            if self.allowed(device):
-                try:
-                    rows = self.list()
-                except OSError:
-                    rows = []
-                for row in rows:
-                    projects.setdefault(row["project_id"], dict(id=row["project_id"], name=row["project"],
-                        first_dispatch_at=None, last_dispatch_at=None, dispatch_count=0, hidden=False, session_only=True))
-            return 200, {"projects": sorted(projects.values(), key=lambda p: (p["name"], p["id"]))}
         match = re.fullmatch(r"/v1/jobs/([^/]+)/session", path)
         if match:
             job = messages.job_id(match[1])
@@ -230,10 +217,6 @@ class Sessions:
         path = unquote(urlsplit(handler.path).path)
         if self.is_session_path(path) and not self.allowed(getattr(handler, "session_device", None)):
             handler.json(*DISABLED)
-            return True
-        if path == "/v1/projects":
-            response = self.read(handler.path, getattr(handler, "session_device", None))
-            handler.json(response[0], self.service.redact(response[1]))
             return True
         match = re.fullmatch(r"/v1/sessions/([^/]+)/terminal", path)
         if match is None:

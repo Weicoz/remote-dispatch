@@ -14,7 +14,30 @@
           "last_dispatch_at": null,
           "dispatch_count": 0,
           "hidden": false,
-          "session_only": true
+          "session_only": true,
+          "origin": "https://example.test/user/demo.git",
+          "sessions": [
+            {
+              "id": "w1:p1",
+              "pane_id": "w1:p1",
+              "harness": "codex",
+              "project": "demo",
+              "project_id": "example-project-id",
+              "status": "idle",
+              "status_text": "空闲",
+              "has_new_reply": false,
+              "session_id": "session-one",
+              "probable": false,
+              "identity_text": null
+            }
+          ],
+          "needs_attention_count": 0,
+          "in_progress_count": 0,
+          "hosts": {},
+          "week_dispatch_count": 0,
+          "last_accepted_at": null,
+          "last_harness": null,
+          "recent_event": null
         }
       ]
     }

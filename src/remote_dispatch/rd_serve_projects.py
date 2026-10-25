@@ -50,16 +50,22 @@ class ProjectRoutes:
             card["execution_state"] = "done"
         return card
 
-    def projects(self):
+    @staticmethod
+    def summary(row, session_only=False):
+        return dict(row, session_only=session_only, sessions=[], needs_attention_count=0,
+                    in_progress_count=0, hosts={}, week_dispatch_count=0,
+                    last_accepted_at=None, last_harness=None, recent_event=None)
+
+    def projects(self, device=None):
         service = self.service
         query = service.query()
-        rows = {row["id"]: dict(row, session_only=False, sessions=[], needs_attention_count=0,
-                               in_progress_count=0, hosts={}, week_dispatch_count=0,
-                               last_accepted_at=None, last_harness=None, recent_event=None)
+        sessions_allowed = service.sessions.allowed(device)
+        rows = {row["id"]: self.summary(row)
                 for row in query.projects(service.user_id)}
         now = datetime.now(timezone.utc).astimezone()
         week = (now - timedelta(days=now.weekday())).replace(hour=0, minute=0, second=0, microsecond=0)
-        visible_events = [event for event in events.read_after(service.state, 0) if service.visible(event)]
+        visible_events = [event for event in events.read_after(service.state, 0) if service.visible(event)
+                          and (sessions_allowed or not event["type"].startswith("session."))]
         job_updates = {}
         for event in visible_events:
             if event["data"].get("job"):
@@ -69,11 +75,9 @@ class ProjectRoutes:
             card = self.card(rec, query)
             identity = card["project_id"]
             job_projects[rec["job"]] = identity
-            row = rows.setdefault(identity, dict(id=identity, name=card["project"], hidden=False,
+            row = rows.setdefault(identity, self.summary(dict(id=identity, name=card["project"], hidden=False,
                       origin=rec.get("origin") or "", dispatch_count=0, first_dispatch_at=None,
-                      last_dispatch_at=None, session_only=False, sessions=[], needs_attention_count=0,
-                      in_progress_count=0, hosts={}, week_dispatch_count=0,
-                      last_accepted_at=None, last_harness=None, recent_event=None))
+                      last_dispatch_at=None)))
             state, priority = urgency(card)
             row["needs_attention_count"] += int(priority < 5)
             row["in_progress_count"] += int(priority == 5)
@@ -98,6 +102,18 @@ class ProjectRoutes:
             if host_key not in ranked or rank < ranked[host_key]:
                 ranked[host_key] = rank
                 row["hosts"][card["host"]] = dict(state=state, job=card["job"], updated_at=updated)
+        if sessions_allowed:
+            try:
+                sessions = service.sessions.discover()
+            except OSError:
+                sessions = []
+            for item in sessions:
+                session = item["row"]
+                identity = session["project_id"]
+                row = rows.setdefault(identity, self.summary(dict(id=identity, name=session["project"],
+                    origin=item["origin"], hidden=False, dispatch_count=0,
+                    first_dispatch_at=None, last_dispatch_at=None), session_only=True))
+                row["sessions"].append(session)
         for event in visible_events:
             identity = event["data"].get("project_id") or job_projects.get(event["data"].get("job"))
             if identity in rows:
@@ -108,7 +124,7 @@ class ProjectRoutes:
                 row["hosts"].setdefault(host["name"], dict(state="idle", job=None, updated_at=None))
         return sorted(rows.values(), key=lambda row: (row["name"] == "未归属", row["name"], row["id"]))
 
-    def read(self, path, args):
+    def read(self, path, args, device=None):
         if path == "/v1/harness-stats":
             from .rd_harness_stats import statistics
             recent = int(args.get("recent", ["20"])[0])
@@ -116,7 +132,7 @@ class ProjectRoutes:
                 raise ValueError("invalid_stats_options")
             return 200, {"harness_stats": statistics(self.service, recent)}
         if path == "/v1/projects":
-            return 200, {"projects": self.projects()}
+            return 200, {"projects": self.projects(device)}
         if path == "/v1/jobs":
             return 200, self.jobs(args)
         return None

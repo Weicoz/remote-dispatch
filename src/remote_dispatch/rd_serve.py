@@ -129,7 +129,7 @@ class Handler(BaseHTTPRequestHandler):
                 return
             if urlsplit(self.path).path == "/v1/events":
                 return self.events()
-            status, body = self.server.service.read(self.path)
+            status, body = self.server.service.read(self.path, getattr(self, "session_device", None))
             self.json(status, self.server.service.redact(body))
         except (ValueError, TypeError):
             self.json(400, {"error": {"reason": "invalid_request"}})
@@ -460,14 +460,14 @@ class Service:
             raise OSError("log_unavailable")
         return result.stdout
 
-    def read(self, target):
-        session_response = self.sessions.read(target)
+    def read(self, target, device=None):
+        session_response = self.sessions.read(target, device)
         if session_response is not None:
             return session_response
         url = urlsplit(target)
         path = unquote(url.path)
         args = parse_qs(url.query)
-        extra = self.project_routes.read(path, args)
+        extra = self.project_routes.read(path, args, device)
         if extra is not None:
             return extra
         query = self.query()

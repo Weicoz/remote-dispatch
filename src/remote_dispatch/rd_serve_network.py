@@ -187,6 +187,7 @@ class Network:
                         and secrets.compare_digest(row["token_hash"], digest(token[7:]))):
                     handler.device_id = row["device_id"]
                     handler.session_access_enabled = row["session_access_enabled"]
+                    handler.session_device = dict(id=row["device_id"], session_access=row["session_access_enabled"])
                     self.connections[handler.connection] = row["device_id"]
                     return None
         return error(401, "device_unauthorized")
@@ -332,6 +333,7 @@ def stream_allowed(handler):
     network = handler.server.service.network
     with network.lock:
         row = network.read()["devices"].get(device_id)
+        handler.session_device = dict(id=device_id, session_access=bool(row and row["session_access_enabled"]))
         return bool(row and not row["revoked"])
 
 

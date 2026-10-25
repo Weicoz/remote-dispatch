@@ -202,17 +202,59 @@ else:
     def test_session_only_projects_vanish_on_close_without_writing_project_index(self):
         from remote_dispatch.rd_projects import ProjectIndex
         index = ProjectIndex(self.state, "fixture")
-        self.start()
+        self.start(poll_interval=3600)
+        stream = self.open_events()
+        self.assertEqual(self.next_event(stream)[1], "session.changed")
+        stream.close()
         status, body = self.request("/v1/projects")
         self.assertEqual(status, 200)
         self.assertEqual([(p["name"], p["session_only"], p["dispatch_count"]) for p in body["projects"]],
                          [("demo", True, 0)])
+        project = body["projects"][0]
+        self.assertEqual(project["sessions"], self.sessions())
+        self.assertEqual((project["needs_attention_count"], project["in_progress_count"],
+                          project["week_dispatch_count"], project["hosts"]), (0, 0, 0, {}))
+        for field in ("first_dispatch_at", "last_dispatch_at", "last_accepted_at", "last_harness"):
+            self.assertIsNone(project[field])
+        self.assertEqual(project["recent_event"]["type"], "session.changed")
         self.assertEqual(index.read(), {})
         self.assertFalse(index.path.exists())
         self.data["agents"] = []
         self.save_fixture()
         self.assertEqual(self.request("/v1/projects"), (200, {"projects": []}))
         self.assertFalse(index.path.exists())
+
+    def test_live_sessions_extend_indexed_summary_and_respect_hidden_projects_and_device_access(self):
+        from remote_dispatch import rd_serve
+        from remote_dispatch.rd_projects import ProjectIndex, project_id
+        origin = "https://example.test/user/demo.git"
+        identity = project_id("demo", origin)
+        index = ProjectIndex(self.state, "fixture")
+        row = dict(id=identity, name="demo", origin=origin, first_dispatch_at="2026-10-24T00:00:00Z",
+                   last_dispatch_at="2026-10-24T00:00:00Z", dispatch_count=3, hidden=True)
+        index.write({identity: row})
+        class PairedHandler(rd_serve.Handler):
+            session_device = {"id": "phone", "session_access": True}
+        with patch.object(rd_serve, "Handler", PairedHandler):
+            service = self.start(poll_interval=3600)
+        project = self.request("/v1/projects")[1]["projects"][0]
+        self.assertEqual({key: project[key] for key in row}, row)
+        self.assertFalse(project["session_only"])
+        self.assertEqual(project["sessions"], self.sessions())
+        self.assertEqual(project["week_dispatch_count"], 0)
+        service.sessions.collect()
+        self.assertEqual(self.request("/v1/projects")[1]["projects"][0]["recent_event"]["type"], "session.changed")
+        PairedHandler.session_device = {"id": "phone"}
+        denied = self.request("/v1/projects")[1]["projects"][0]
+        self.assertEqual(denied["sessions"], [])
+        self.assertEqual(denied["recent_event"]["type"], "project.changed")
+        self.assertEqual(index.read(), {identity: row})
+        self.config.write_text("[serve]\nsession_access=false\n")
+        service.close()
+        service = self.start(poll_interval=3600)
+        disabled = self.request("/v1/projects")[1]["projects"][0]
+        self.assertEqual(disabled["sessions"], [])
+        self.assertEqual(disabled["recent_event"]["type"], "project.changed")
 
     def input(self, body, key="input-one", pane="w1:p1"):
         headers = {"Content-Type": "application/json"}
@@ -382,10 +424,11 @@ else:
         event_contract = json.loads((base.CONTRACTS / "sessions-events.json").read_text())
         for expected in event_contract["events"]:
             self.assert_structure(self.next_event(response)[2], expected)
-        cli.save_job(dict(job="fixture-job", user_id="fixture", rounds=1, host="none", initiator_session="session-one"))
-        cli.save_job(dict(job="closed", user_id="fixture", rounds=1, host="none", initiator_session="gone"))
-        for name in ("list", "screen", "messages", "after", "input-text", "input-keys", "resolve", "closed", "projects"):
+        for name in ("projects", "list", "screen", "messages", "after", "input-text", "input-keys", "resolve", "closed"):
             with self.subTest(contract=name):
+                if name == "resolve":
+                    cli.save_job(dict(job="fixture-job", user_id="fixture", rounds=1, host="none", initiator_session="session-one"))
+                    cli.save_job(dict(job="closed", user_id="fixture", rounds=1, host="none", initiator_session="gone"))
                 example = json.loads((base.CONTRACTS / ("sessions-" + name + ".json")).read_text())
                 request = example["request"]
                 body = json.dumps(request["body"]) if "body" in request else None

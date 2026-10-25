@@ -16,6 +16,7 @@ from unittest.mock import patch
 from remote_dispatch import cli
 from remote_dispatch import rd_events as events
 from remote_dispatch.rd_serve import Service, UnixHTTPConnection
+from remote_dispatch.rd_herdr import Herdr
 
 
 class NetworkTests(unittest.TestCase):
@@ -32,6 +33,9 @@ class NetworkTests(unittest.TestCase):
         stack.enter_context(patch.object(cli, "STATE", str(self.state)))
         stack.enter_context(patch.object(cli, "CONFIG", str(self.config)))
         stack.enter_context(patch.dict(os.environ, {"RD_USER_ID": "fixture"}))
+        # Network tests never consult real Herdr sessions or transcripts.
+        stack.enter_context(patch.object(Herdr, "snapshot", return_value={}))
+        stack.enter_context(patch.object(Herdr, "agents", return_value=[]))
 
     def start(self, **options):
         service = Service(cli.Config(), self.path, poll_interval=3600, **options).start()
@@ -227,8 +231,64 @@ class NetworkTests(unittest.TestCase):
         self.assertEqual(self.request(route, "POST", {"enabled": True}, connection=self.tls(info), headers=headers)[0], 403)
         self.assertEqual(self.request(route, "POST", {"enabled": True}, key="access")[0], 200)
         self.assertTrue(self.request("/v1/devices")[1]["devices"][0]["session_access_enabled"])
-        # Session routes belong to ticket 25; the base service returns 404 once the network gate opens.
-        self.assertEqual(self.request("/v1/sessions", connection=self.tls(info), headers=headers)[0], 404)
+        self.assertEqual(self.request("/v1/sessions", connection=self.tls(info), headers=headers),
+                         (200, {"sessions": []}))
+        self.assertEqual(self.request("/v1/sessions/missing/screen", connection=self.tls(info), headers=headers),
+                         (404, {"error": {"reason": "session_closed", "text": "会话已关闭"}}))
+
+    @unittest.skipUnless(shutil.which("openssl"), "openssl is required for TLS certificates")
+    def test_device_permission_applies_to_projects_resolution_events_and_session_input(self):
+        from remote_dispatch.rd_projects import project_id
+        self.configure_network()
+        service = self.start()
+        info = self.network_info()
+        device, headers = self.pair(info)
+        session = dict(id="w1:p1", pane_id="w1:p1", project="demo", project_id=project_id("demo", ""),
+                       harness="codex", session_id="one", probable=False, status="idle")
+        item = dict(row=session, origin="", transcript=None)
+        with patch.object(service.sessions, "discover", return_value=[item]), \
+                patch.object(service.sessions.herdr, "input") as send_input:
+            for path in ("/v1/sessions", "/v1/jobs/missing/session", "/v1/%73essions/w1:p1/screen"):
+                with self.subTest(path=path):
+                    self.assertEqual(self.request(path, connection=self.tls(info),
+                        headers=dict(headers, session_access="true")),
+                        (403, {"error": {"reason": "session_access_disabled"}}))
+            self.assertEqual(self.request("/v1/projects", connection=self.tls(info), headers=headers),
+                             (200, {"projects": []}))
+            self.assertEqual(self.request("/v1/sessions/w1:p1/input", "POST", {"text": "fixture"},
+                connection=self.tls(info), headers=headers)[0], 403)
+            send_input.assert_not_called()
+            events.emit(self.state, "session.changed", dict(session, user_id="fixture"))
+            events.emit(self.state, "job.created", dict(job="visible", user_id="fixture"))
+            connection = self.tls(info)
+            connection.request("GET", "/v1/events", headers=headers)
+            stream = connection.getresponse()
+            self.addCleanup(stream.close)
+            self.assertEqual(stream.status, 200)
+            while True:
+                line = stream.readline()
+                if not line.startswith(b"data: "):
+                    continue
+                event = json.loads(line[6:])
+                self.assertFalse(event["type"].startswith("session."))
+                if event["type"] == "job.created":
+                    break
+            stream.close()
+            route = "/v1/devices/" + device["device_id"] + "/session-access"
+            self.assertEqual(self.request(route, "POST", {"enabled": True}, key="enable")[0], 200)
+            self.assertEqual(self.request("/v1/sessions", connection=self.tls(info), headers=headers),
+                             (200, {"sessions": [session]}))
+            projects = self.request("/v1/projects", connection=self.tls(info), headers=headers)[1]["projects"]
+            self.assertEqual(len(projects), 1)
+            self.assertTrue(projects[0]["session_only"])
+            self.assertEqual(projects[0]["sessions"], [session])
+            self.assertEqual(self.request("/v1/jobs/missing/session", connection=self.tls(info), headers=headers)[0], 404)
+            self.assertEqual(self.request("/v1/sessions/w1:p1/input", "POST", {"text": "fixture"},
+                connection=self.tls(info), headers=headers), (200, {"pane_id": "w1:p1", "accepted": True}))
+            send_input.assert_called_once_with("w1:p1", {"text": "fixture"})
+            self.assertEqual(self.request(route, "POST", {"enabled": False}, key="disable")[0], 200)
+            self.assertEqual(self.request("/v1/projects", connection=self.tls(info), headers=headers),
+                             (200, {"projects": []}))
 
     @unittest.skipUnless(shutil.which("openssl"), "openssl is required for TLS certificates")
     def test_a_blocked_push_sender_does_not_delay_revocation_or_service_shutdown(self):
