@@ -130,6 +130,86 @@ class DispatchTests(unittest.TestCase):
         args = argparse.Namespace(job=job, details=False, json=True)
         return json.loads(self.capture(rd.cmd_status, args))[0]
 
+    def test_project_history_survives_clean_with_dispatch_count_and_times(self):
+        with patch.object(rd.time, "strftime", side_effect=lambda fmt: "2026-10-24 10:00:00" if fmt == "%Y-%m-%d %H:%M:%S" else "20261024-100000"):
+            first = self.dispatch(project="app")
+        with patch.object(rd.time, "strftime", side_effect=lambda fmt: "2026-10-25 11:00:00" if fmt == "%Y-%m-%d %H:%M:%S" else "20261025-110000"):
+            second = self.dispatch(project="app")
+        self.clean(first, discard_reports=True)
+        self.clean(second, discard_reports=True)
+        self.assertEqual(rd.all_jobs(), [])
+        projects = rd.queries(self.cfg).projects("employee_a")
+        self.assertEqual(len(projects), 1)
+        self.assertEqual(projects[0]["name"], "app")
+        self.assertEqual(projects[0]["dispatch_count"], 2)
+        self.assertEqual(projects[0]["first_dispatch_at"], "2026-10-24 10:00:00")
+        self.assertEqual(projects[0]["last_dispatch_at"], "2026-10-25 11:00:00")
+
+    def test_same_origin_worktrees_share_project_but_other_origins_are_distinct(self):
+        self.git("remote", "add", "origin", "https://example.invalid/one/app.git")
+        first = self.dispatch()
+        worktree = self.root / "another-worktree"
+        self.git("worktree", "add", "-q", "--detach", str(worktree), "baseline")
+        second = self.dispatch(dir=str(worktree))
+        self.git("remote", "set-url", "origin", "https://example.invalid/two/app.git")
+        third = self.dispatch()
+        first_id = self.queried_job(first["job"])["project_id"]
+        self.assertEqual(first_id, self.queried_job(second["job"])["project_id"])
+        self.assertNotEqual(first_id, self.queried_job(third["job"])["project_id"])
+        rows = rd.queries(self.cfg).projects("employee_a")
+        self.assertEqual(sorted(row["dispatch_count"] for row in rows), [1, 2])
+        self.assertEqual({row["name"] for row in rows}, {"app"})
+        self.assertRegex(first_id, r"^[A-Za-z0-9_-]{20}$")
+
+    def test_project_hide_show_and_new_dispatch_restore_visibility(self):
+        first = self.dispatch(project="app")
+        identity = self.queried_job(first["job"])["project_id"]
+        def command(action):
+            with patch.object(sys, "argv", ["rdispatch", "project", action, identity]), \
+                 contextlib.redirect_stdout(io.StringIO()) as output:
+                rd.main()
+            return json.loads(output.getvalue())
+        self.assertTrue(command("hide")["hidden"])
+        self.assertTrue(rd.queries(self.cfg).projects("employee_a")[0]["hidden"])
+        self.assertFalse(command("show")["hidden"])
+        command("hide")
+        self.dispatch(project="app")
+        row = rd.queries(self.cfg).projects("employee_a")[0]
+        self.assertFalse(row["hidden"])
+        self.assertEqual(row["dispatch_count"], 2)
+
+    def test_project_rebuild_matches_incremental_history_after_clean_and_keeps_hidden(self):
+        first = self.dispatch(project="app")
+        self.dispatch(project="app")
+        self.dispatch(project="tools")
+        identity = self.queried_job(first["job"])["project_id"]
+        with patch.object(sys, "argv", ["rdispatch", "project", "hide", identity]):
+            rd.main()
+        # Several receipt rounds still describe one dispatch, even after clean.
+        rd.collect_result(self.cfg, first, dict(state="done", round="1", exit="0"))
+        rd.messages.atomic_json(rd.result_path(first, 2), dict(job=first["job"], round=2))
+        self.clean(first, discard_reports=True)
+        expected = rd.queries(self.cfg).projects("employee_a")
+        # Recompute counts from dispatch/receipt history, not the old totals.
+        path = Path(rd.STATE) / "projects/employee_a.json"
+        damaged = json.loads(path.read_text())
+        damaged["projects"][identity]["dispatch_count"] = 99
+        path.write_text(json.dumps(damaged))
+        with patch.object(sys, "argv", ["rdispatch", "project", "rebuild"]), \
+             contextlib.redirect_stdout(io.StringIO()) as output:
+            rd.main()
+        self.assertEqual(json.loads(output.getvalue()), expected)
+        self.assertEqual(rd.queries(self.cfg).projects("employee_a"), expected)
+
+    def test_dispatch_after_rebuilding_legacy_project_with_unknown_time_succeeds(self):
+        rd.save_job(dict(job="legacy-job", project="app", host="fixture", rounds=1))
+        with patch.object(sys, "argv", ["rdispatch", "project", "rebuild"]):
+            rd.main()
+        record = self.dispatch(project="app")
+        row = rd.queries(self.cfg).projects("employee_a")[0]
+        self.assertEqual(row["dispatch_count"], 2)
+        self.assertEqual(row["last_dispatch_at"], record["created"])
+
     def test_run_records_codex_origin_and_dispatch_time_herdr_context(self):
         processes = {os.getppid(): (700001, "/bin/zsh -c rdispatch run"),
                      700001: (1, "/opt/bin/codex exec")}
