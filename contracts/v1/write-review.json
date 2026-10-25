@@ -1,0 +1,56 @@
+{
+  "request": {
+    "method": "POST",
+    "path": "/v1/jobs/fixture-job/rounds/1/review",
+    "headers": {
+      "Content-Type": "application/json",
+      "Idempotency-Key": "write-review"
+    },
+    "body": {
+      "review_state": "accepted",
+      "reviewed_by": "App MacBook"
+    }
+  },
+  "response": {
+    "status": 200,
+    "body": {
+      "job": "fixture-job",
+      "round": 1,
+      "review": {
+        "review_state": "accepted",
+        "reviewed_by": "App MacBook",
+        "reviewed_at": "2026-10-25T00:00:00+00:00",
+        "review_note": ""
+      }
+    }
+  },
+  "events": [
+    {
+      "seq": 1,
+      "time": "2026-10-25T00:00:00+00:00",
+      "type": "receipt.acked",
+      "data": {
+        "job": "fixture-job",
+        "user_id": "fixture",
+        "round": 1,
+        "receipt_id": "receipt-example",
+        "received_at": "2026-10-25T00:00:00+00:00",
+        "acked_by": "App MacBook",
+        "via": "serve"
+      }
+    },
+    {
+      "seq": 2,
+      "time": "2026-10-25T00:00:00+00:00",
+      "type": "review.updated",
+      "data": {
+        "job": "fixture-job",
+        "user_id": "fixture",
+        "round": 1,
+        "review_state": "accepted",
+        "reviewed_by": "App MacBook",
+        "reviewed_at": "2026-10-25T00:00:00+00:00"
+      }
+    }
+  ]
+}

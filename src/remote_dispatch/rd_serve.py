@@ -21,6 +21,7 @@ from .rd_lock import JobBusy, JobLock
 from . import rd_events as events
 from . import rd_messages as messages
 from .rd_query import Query, result_path
+from .rd_serve_writes import Writes
 
 
 WRITE_COMMANDS = {"run", "resume", "ack", "review", "stop", "project", "inbox", "keep", "clean"}
@@ -134,7 +135,7 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         try:
             if self.path != "/_cli/v1":
-                return self.json(404, {"error": {"reason": "not_found"}})
+                return self.server.service.writes.handle(self)
             if self.headers.get("Transfer-Encoding") or self.headers.get_content_type() != "application/json":
                 raise ValueError("invalid_request")
             length = int(self.headers.get("Content-Length", "0"))
@@ -200,6 +201,7 @@ class Service:
         self.wake = threading.Event()
         self.cache_lock = threading.Lock()
         self.writer = threading.Lock()
+        self.writes = Writes(self)
         self.snapshots = {}
         self.generations = {}
         self.progress = {}
@@ -272,7 +274,7 @@ class Service:
             self.poller.join()
             self.poller = None
         # Drain an accepted CLI write before another service can own this state.
-        with self.writer:
+        with self.writes.lock, self.writer:
             self.lock.release()
 
     def execute(self, request):

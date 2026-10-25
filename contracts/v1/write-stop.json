@@ -1,0 +1,64 @@
+{
+  "request": {
+    "method": "POST",
+    "path": "/v1/jobs/fixture-job/stop",
+    "headers": {
+      "Content-Type": "application/json",
+      "Idempotency-Key": "write-stop"
+    },
+    "body": {
+      "stopped_by": "App stopper"
+    }
+  },
+  "response": {
+    "status": 200,
+    "body": {
+      "job": "fixture-job",
+      "round": 1
+    }
+  },
+  "events": [
+    {
+      "seq": 1,
+      "time": "2026-10-25T00:00:00+00:00",
+      "type": "job.state_changed",
+      "data": {
+        "job": "fixture-job",
+        "user_id": "fixture",
+        "round": 1,
+        "execution_state": "done",
+        "executor_exit": 143,
+        "suppress_push": true,
+        "stopped_by": "App stopper"
+      }
+    },
+    {
+      "seq": 2,
+      "time": "2026-10-25T00:00:00+00:00",
+      "type": "receipt.ready",
+      "data": {
+        "job": "fixture-job",
+        "user_id": "fixture",
+        "round": 1,
+        "receipt_id": "receipt-example",
+        "outcome": "failed",
+        "suppress_push": true
+      }
+    },
+    {
+      "seq": 3,
+      "time": "2026-10-25T00:00:00+00:00",
+      "type": "receipt.acked",
+      "data": {
+        "job": "fixture-job",
+        "user_id": "fixture",
+        "round": 1,
+        "receipt_id": "receipt-example",
+        "received_at": "2026-10-25T00:00:00+00:00",
+        "acked_by": "App stopper",
+        "via": "serve",
+        "suppress_push": true
+      }
+    }
+  ]
+}

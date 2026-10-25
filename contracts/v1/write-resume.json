@@ -1,0 +1,34 @@
+{
+  "request": {
+    "method": "POST",
+    "path": "/v1/jobs/fixture-job/resume",
+    "headers": {
+      "Content-Type": "application/json",
+      "Idempotency-Key": "write-resume"
+    },
+    "body": {
+      "prompt": "继续",
+      "model": "new-model",
+      "harness": "codex"
+    }
+  },
+  "response": {
+    "status": 200,
+    "body": {
+      "job": "fixture-job",
+      "round": 2
+    }
+  },
+  "events": [
+    {
+      "seq": 1,
+      "time": "2026-10-25T00:00:00+00:00",
+      "type": "job.state_changed",
+      "data": {
+        "job": "fixture-job",
+        "user_id": "fixture",
+        "round": 2
+      }
+    }
+  ]
+}

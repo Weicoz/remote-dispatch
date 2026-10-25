@@ -113,7 +113,7 @@ class ProjectIndex:
             with events.write_transaction([job_path, manifest, self.path]):
                 messages.atomic_json(job_path, rec, limit=None)
                 messages.atomic_json(manifest, {key: rec.get(key) for key in
-                                     ("job", "user_id", "project", "origin", "created")})
+                                     ("job", "user_id", "project", "origin", "created", "repo", "agent")})
                 events.emit(self.state, "job.created", events.job_data(rec))
                 identity = project_id(rec["project"], rec.get("origin") or "")
                 row = projects.setdefault(identity, dict(id=identity, name=rec["project"],

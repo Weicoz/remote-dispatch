@@ -1,0 +1,26 @@
+{
+  "request": {
+    "method": "POST",
+    "path": "/v1/jobs/fixture-job/rounds/1/review",
+    "headers": {
+      "Content-Type": "application/json",
+      "Idempotency-Key": "write-review-not-allowed"
+    },
+    "body": {
+      "review_state": "accepted",
+      "reviewed_by": "App",
+      "review_note": "继续"
+    }
+  },
+  "response": {
+    "status": 409,
+    "body": {
+      "error": {
+        "reason": "review_not_allowed",
+        "message": "示例错误原因",
+        "exit_code": 4
+      }
+    }
+  },
+  "events": []
+}

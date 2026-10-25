@@ -1,0 +1,19 @@
+{
+  "request": {
+    "method": "POST",
+    "path": "/v1/jobs/fixture-job/stop",
+    "headers": {
+      "Content-Type": "application/json"
+    },
+    "body": {}
+  },
+  "response": {
+    "status": 400,
+    "body": {
+      "error": {
+        "reason": "idempotency_key_required"
+      }
+    }
+  },
+  "events": []
+}
