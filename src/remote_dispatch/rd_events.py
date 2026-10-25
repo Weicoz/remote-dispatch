@@ -23,6 +23,8 @@ FIELDS = {
     "review.updated": "job user_id project_id host round review_state reviewed_by reviewed_at",
     "host.changed": "host reachable state load1 ncpu memfree disk running heavy full",
     "project.changed": "user_id project_id name first_dispatch_at last_dispatch_at dispatch_count hidden removed",
+    "session.changed": "user_id pane_id session_id harness project project_id status status_text has_new_reply probable identity_text removed",
+    "session.message": "user_id pane_id session_id project_id harness message_id kind message_time",
 }
 DEFAULT_MAX_BYTES = 10 * 1024 * 1024
 _pending = ContextVar("pending_events", default=None)

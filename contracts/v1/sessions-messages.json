@@ -1,0 +1,21 @@
+{
+  "request": {
+    "method": "GET",
+    "path": "/v1/sessions/w1:p1/messages"
+  },
+  "response": {
+    "status": 200,
+    "body": {
+      "supported": true,
+      "messages": [
+        {
+          "id": "codex:line:1:0",
+          "time": "2026-10-25T00:00:00Z",
+          "kind": "assistant",
+          "text": "你好"
+        }
+      ]
+    }
+  },
+  "events": []
+}

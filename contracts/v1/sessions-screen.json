@@ -1,0 +1,14 @@
+{
+  "request": {
+    "method": "GET",
+    "path": "/v1/sessions/w1:p1/screen"
+  },
+  "response": {
+    "status": 200,
+    "body": {
+      "pane_id": "w1:p1",
+      "text": "❯ hello\n"
+    }
+  },
+  "events": []
+}

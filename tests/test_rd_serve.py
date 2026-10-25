@@ -46,6 +46,18 @@ class ServeTests(unittest.TestCase):
         stack.enter_context(patch.object(cli, "STATE", str(self.state)))
         stack.enter_context(patch.object(cli, "CONFIG", str(self.config)))
         stack.enter_context(patch.dict(os.environ, {"RD_USER_ID": "fixture"}))
+        # Session collection must never contact a user's real Herdr in these tests.
+        binary = self.root / "bin"
+        binary.mkdir()
+        herdr = binary / "herdr"
+        herdr.write_text("#!" + sys.executable + "\nimport sys\n"
+                         "if sys.argv[1:] != ['agent', 'list']: sys.exit(70)\n"
+                         "print('{\"id\":\"cli:agent:list\",\"result\":{\"agents\":[]}}')\n")
+        herdr.chmod(0o700)
+        stack.enter_context(patch.dict(os.environ, {
+            "PATH": str(binary) + os.pathsep + os.environ["PATH"],
+            "HERDR_CONFIG_PATH": str(self.root / "herdr" / "config.toml"),
+            "CLAUDE_CONFIG_DIR": str(self.root / "claude"), "CODEX_HOME": str(self.root / "codex")}))
 
     def start(self, **options):
         service = Service(cli.Config(), self.path, **options)

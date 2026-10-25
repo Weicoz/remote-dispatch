@@ -1,0 +1,26 @@
+{
+  "request": {
+    "method": "GET",
+    "path": "/v1/jobs/fixture-job/session"
+  },
+  "response": {
+    "status": 200,
+    "body": {
+      "session": {
+        "id": "w1:p1",
+        "pane_id": "w1:p1",
+        "harness": "codex",
+        "project": "demo",
+        "project_id": "example-project-id",
+        "status": "idle",
+        "status_text": "空闲",
+        "has_new_reply": false,
+        "session_id": "session-one",
+        "probable": false,
+        "identity_text": null
+      },
+      "matched_by": "session_id"
+    }
+  },
+  "events": []
+}

@@ -1,0 +1,23 @@
+{
+  "request": {
+    "method": "GET",
+    "path": "/v1/projects"
+  },
+  "response": {
+    "status": 200,
+    "body": {
+      "projects": [
+        {
+          "id": "example-project-id",
+          "name": "demo",
+          "first_dispatch_at": null,
+          "last_dispatch_at": null,
+          "dispatch_count": 0,
+          "hidden": false,
+          "session_only": true
+        }
+      ]
+    }
+  },
+  "events": []
+}
