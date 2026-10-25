@@ -1,4 +1,5 @@
 """Remote Dispatch 的员工配置包；仅用标准库，配置操作要求 Python 3.11+。"""
+import getpass
 import hashlib
 import io
 import json
@@ -35,11 +36,64 @@ def portable_name(value):
     return bool(value) and not re.search(r'[<>:"\\|?*\x00-\x1f]', value) and not value.endswith((".", " ")) and stem not in {"con", "prn", "aux", "nul", *{"com" + str(n) for n in range(1, 10)}, *{"lpt" + str(n) for n in range(1, 10)}}
 
 
-def user_id(value=None):
-    value = os.environ.get("RD_USER_ID", "") if value is None else value
-    if not re.fullmatch(r"[a-z0-9][a-z0-9_-]{0,63}", value) or not portable_name(value):
-        raise ValueError("必须设置 RD_USER_ID：员工自选固定 ID，1–64 位小写英文、数字、下划线或连字符；不自动生成。")
+def first_json(path, create):
+    """原子发布首次配置；并发创建时沿用先落盘的完整记录。"""
+    path = Path(path)
+    try:
+        if not path.exists():
+            value = create()
+            path.parent.mkdir(parents=True, exist_ok=True)
+            with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=path.parent, delete=False) as stream:
+                pending = Path(stream.name)
+                json.dump(value, stream)
+            try:
+                try:
+                    os.link(pending, path)
+                except FileExistsError:
+                    pass
+            finally:
+                pending.unlink()
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        raise ValueError("用户身份配置无法读取或保存；请检查配置文件及目录权限。") from None
+
+
+def user_id(value=None, config_dir=None):
+    if value is None:
+        value = os.environ.get("RD_USER_ID", "")
+        if not value:
+            directory = Path(config_dir) if config_dir is not None else Path.home() / ".config/remote-dispatch"
+            def default():
+                try:
+                    username = getpass.getuser()
+                except (OSError, KeyError):
+                    raise ValueError("无法取得电脑用户名；请手动设置 RD_USER_ID。") from None
+                normalized = re.sub(r"[^a-z0-9_-]", "-", username.lower()).strip("-")[:64]
+                return {"user_id": user_id(normalized)}
+            saved = first_json(directory / "default-user.json", default)
+            value = saved.get("user_id") if isinstance(saved, dict) else None
+    if not isinstance(value, str) or not re.fullmatch(r"[a-z0-9][a-z0-9_-]{0,63}", value) or not portable_name(value):
+        raise ValueError("用户 ID 无效；请手动设置 RD_USER_ID：1–64 位小写英文、数字、下划线或连字符，以英文或数字开头，不能使用 Windows 保留名。")
     return value
+
+
+def controller_fingerprint(config_dir):
+    saved = first_json(Path(config_dir) / "controller.json",
+                       lambda: {"fingerprint": hashlib.sha256(os.urandom(32)).hexdigest()})
+    fingerprint = saved.get("fingerprint") if isinstance(saved, dict) else None
+    if not isinstance(fingerprint, str) or not re.fullmatch(r"[a-f0-9]{64}", fingerprint):
+        raise ValueError("控制端指纹配置无效；请检查 controller.json。")
+    return fingerprint
+
+
+def register_controller(root, fingerprint):
+    if not isinstance(fingerprint, str) or not re.fullmatch(r"[a-f0-9]{64}", fingerprint):
+        raise ValueError("控制端指纹无效。")
+    saved = first_json(Path(root) / "controller.json", lambda: {"fingerprint": fingerprint})
+    original = saved.get("fingerprint") if isinstance(saved, dict) else None
+    if not isinstance(original, str) or not re.fullmatch(r"[a-f0-9]{64}", original):
+        raise ValueError("目标机控制端指纹记录无效；请检查用户目录下的 controller.json。")
+    return original != fingerprint
 
 
 def validate_config(text, files):

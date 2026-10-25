@@ -1,24 +1,32 @@
-# Employee Profiles
+# 用户配置
+
+## 默认用户 ID
+
+显式设置 `RD_USER_ID` 时优先使用该值，校验规则不变；不会规范化显式 ID，也不会覆盖已保存的默认 ID。未设置或为空时，取电脑用户名，依次转小写、将每个不合规字符替换为 `-`、去掉首尾 `-`、截到 64 位。结果必须是 1–64 位小写英文、数字、下划线或连字符，以英文或数字开头，并避开 Windows 保留名；全中文、全非法字符等无法得到合规值时，提示手动设置 `RD_USER_ID`。
+
+首次默认值保存到 rdispatch 配置目录下的 `default-user.json`，格式为 `{"user_id":"alice"}`，之后电脑用户名变化也不会改变该值。配置目录为 `$RD_CONFIG` 指向文件的父目录，默认 `~/.config/remote-dispatch/`。
+
+控制端在同目录保存 `controller.json`，格式为 `{"fingerprint":"<64位十六进制>"}`。指纹由随机数据的 SHA256 生成并固定，标识这一份控制端配置，不是认证凭据；复制此文件会复制控制端身份。目标机在 `<workdir>/users/<ID>/controller.json` 保存首次派单控制端的相同格式记录，使用 `--workdir` 时位于覆盖后的根目录。其他控制端使用同一 ID 时输出警告，派单照常进行，首次记录不会被覆盖。
 
 ## 同步确认
 
-每次首次登记或主动同步，代理先确认员工自选 ID；已有 `RD_USER_ID` 时展示该值，没有时询问。再准备选定配置包，运行 `rdispatch profile check <机器>`，展示机器、员工目录、文件清单、变化、版本指纹和源更新时间，询问是否同步。收到明确答复后才执行：
+每次首次登记或主动同步，先准备选定配置包，运行 `rdispatch profile check <机器>`，展示实际采用的用户 ID、机器、用户目录、文件清单、变化、版本指纹和源更新时间，询问是否同步。收到明确答复后才执行：
 
 ```bash
 rdispatch profile sync mini --confirm-user-id zhangsan --confirm-version <profile-check-输出的完整指纹>
 ```
 
-两个确认参数不是员工日常固定配置：它们记录本次同步已确认的 ID 和版本。清单变化后必须重新检查和确认。ID 缺失、确认 ID 错误、确认版本过期、远端同步竞争或本地比远端旧时停止同步。提醒不会自动更新，拒绝更新时使用旧配置；首次没有远端配置则不派任务。
+两个确认参数不是用户日常固定配置：它们记录本次同步已确认的 ID 和版本。清单变化后必须重新检查和确认。ID 无法解析、确认 ID 错误、确认版本过期、远端同步竞争或本地比远端旧时停止同步。提醒不会自动更新，拒绝更新时使用旧配置；首次没有远端配置则不派任务。
 
 ## 配置包
 
-来源是派单端员工选定的配置。`RD_PROFILE_DIR` 可指定包目录；默认 `~/.config/remote-dispatch/profiles/<ID>/`。不是整个 `~/.codex`，不是目标机机器主人的配置。机器之间共用 ID，但不自动上传新电脑的环境。
+来源是派单端用户选定的配置。`RD_PROFILE_DIR` 可指定包目录；默认 `~/.config/remote-dispatch/profiles/<ID>/`。不是整个 `~/.codex`，不是目标机机器主人的配置。机器之间共用 ID，但不自动上传新电脑的环境。
 
 ```text
 <本地配置包>/
 ├── config.toml         必需：模型、接口、权限、MCP、代理定义
-├── AGENTS.md           必需：公司规范＋员工允许的差异
-├── git.json            可选：{"name":"员工名","email":"员工邮箱"}
+├── AGENTS.md           必需：公司规范＋用户允许的差异
+├── git.json            可选：{"name":"用户名","email":"用户邮箱"}
 ├── skills/<name>/      可选：SKILL.md 及配套资源
 ├── agents/             可选：config_file 指向的相对路径
 ├── rules/              可选：Codex 执行规则
@@ -29,26 +37,27 @@ rdispatch profile sync mini --confirm-user-id zhangsan --confirm-version <profil
 
 检查目标机工具和 MCP 服务是否可用；派单端的 `localhost` 不代表目标机上的同一个服务。服务地址、环境变量和技能内部脚本须按目标平台准备，不自动猜测或改写业务接口。
 
-当前配置包不传 hooks、plugins、登录文件、个人历史或记忆。员工 skills 的清单附到独立 `AGENTS.md`，代理按需读取各自的 `SKILL.md`；不依赖共享账号的个人 skill 目录。员工之间的配置更新不改全局文件。
+当前配置包不传 hooks、plugins、登录文件、个人历史或记忆。用户 skills 的清单附到独立 `AGENTS.md`，代理按需读取各自的 `SKILL.md`；不依赖共享账号的个人 skill 目录。用户之间的配置更新不改全局文件。
 
 ## 目标机路径
 
-`workdir` 是机器级根目录，脚本追加员工命名空间：
+`workdir` 是机器级根目录，脚本追加用户命名空间：
 
 ```text
 <workdir>/
 ├── locks/                              整机重命令排队
 └── users/<RD_USER_ID>/
+    ├── controller.json                 首次派单控制端指纹（仅冲突警告）
     ├── profiles/current.json           当前配置指针
     ├── profiles/<内容指纹>/             保留的配置版本
-    ├── repos/<仓库名>-<仓库标识>.git    员工裸仓库
+    ├── repos/<仓库名>-<仓库标识>.git    用户裸仓库
     ├── wt/<job>/                       任务 worktree
     ├── jobs/<job>/                     提示词、日志、退出码
     │   └── codex/                      此任务的 CODEX_HOME、会话和配置
     └── bin/rd-heavy                    使用整机锁的排队入口
 ```
 
-配置中的 `/Users/员工/...`、`~/...` 或 Windows 绝对路径被拒绝。代理 `config_file` 写包内相对路径，例如 `agents/reviewer.toml`。需要绝对资源路径时，写 `@RD_PROFILE@/tools/tool.py`；启动时替换为此任务的目标机配置目录。AGENTS 和 skill 正文也必须使用资源相对路径，不保留个人机器绝对路径。
+配置中的 `/Users/用户/...`、`~/...` 或 Windows 绝对路径被拒绝。代理 `config_file` 写包内相对路径，例如 `agents/reviewer.toml`。需要绝对资源路径时，写 `@RD_PROFILE@/tools/tool.py`；启动时替换为此任务的目标机配置目录。AGENTS 和 skill 正文也必须使用资源相对路径，不保留个人机器绝对路径。
 
 共享账号的个人 skills 以明确 `SKILL.md` 路径禁用；hooks、plugins、memories 和外部记忆导入由启动参数关闭。项目自己的规则和 skills 仍属于项目。配置路径与会话隔离不等于共享系统账号的访问权限隔离。
 
@@ -66,10 +75,10 @@ Windows 的目录由目标机 Python `Path` 处理，不沿用 Mac/Linux 的 HOM
 
 本机和目标机配置操作要求 Python 3.11+。后台配置明确设置 `approval_policy = "never"`，权限按配置包的 `sandbox_mode` 执行。没有身份认证时，ID 只负责配置归属；不要将 ID 称为 token。
 
-Codex 还必须支持命名 permission profiles。默认 `workspace-write` 将 worktree 指向的 Git 元数据保护为只读，直接提交会失败。运行脚本将这种模式编译为继承 `:workspace` 的任务权限，开放当前员工 `repos/` 内的 Git 公共目录、本任务 Git 目录及机器级 `locks/` 写入，供提交与 `rd-heavy` 排队使用；工作区其余文件保护保留。任务网络统一开启，用于依赖下载及连接测试，源配置的 `sandbox_workspace_write.network_access = false` 不再生成禁网权限。用户当次明确要求离线或平台强制限制仍按该限制处理。模型、规则和源配置版本不变；`read-only` 与 `danger-full-access` 不自动转换。任务目录不在员工命名空间或 Git 元数据越出当前员工 `repos/` 时停止启动。既有任务权限调整需有对应授权和恢复副本，不自动覆盖续跑快照。
+Codex 还必须支持命名 permission profiles。默认 `workspace-write` 将 worktree 指向的 Git 元数据保护为只读，直接提交会失败。运行脚本将这种模式编译为继承 `:workspace` 的任务权限，开放当前用户 `repos/` 内的 Git 公共目录、本任务 Git 目录及机器级 `locks/` 写入，供提交与 `rd-heavy` 排队使用；工作区其余文件保护保留。任务网络统一开启，用于依赖下载及连接测试，源配置的 `sandbox_workspace_write.network_access = false` 不再生成禁网权限。用户当次明确要求离线或平台强制限制仍按该限制处理。模型、规则和源配置版本不变；`read-only` 与 `danger-full-access` 不自动转换。任务目录不在用户命名空间或 Git 元数据越出当前用户 `repos/` 时停止启动。既有任务权限调整需有对应授权和恢复副本，不自动覆盖续跑快照。
 
 认证只从目标机提供：主机 `codex_auth_file` 指向已授权的认证文件，或 `env_file` 导出配置引用的 API 环境变量。认证文件只复制到当前任务配置，权限 0600；不进入同步包、Git 或日志。不自动读共享账号默认 `auth.json` 或钥匙串。首次登录、验证码和扫码由用户接管。目标机环境只向代理传递基础变量、RD 变量及配置明确引用的 API/MCP 变量。
 
-员工配置包只用于 Codex。DSH 与 AGY 不读配置包，各用任务目录下的独立 `DSH_HOME` 或 `HOME`，只复制目标机上的凭据文件（`dsh_auth_file`、`agy_auth_file`），见 [代理适配](agents.md)。`kimi`、`claude` 阻止派单。旧版任务保留原路径，可查看、取回、停止和清理；旧任务无员工配置快照，不能直接续跑。`rdispatch status` 默认展示当前 ID 的任务及旧版任务，指定新任务 ID 时校验归属。ID 是操作防串用检查，不是安全授权边界。
+用户配置包只用于 Codex。DSH 与 AGY 不读配置包，各用任务目录下的独立 `DSH_HOME` 或 `HOME`，只复制目标机上的凭据文件（`dsh_auth_file`、`agy_auth_file`），见 [代理适配](agents.md)。`kimi`、`claude` 阻止派单。旧版任务保留原路径，可查看、取回、停止和清理；旧任务无用户配置快照，不能直接续跑。`rdispatch status` 默认展示当前 ID 的任务及旧版任务，指定新任务 ID 时校验归属。ID 是操作防串用检查，不是安全授权边界。
 
 权限依据：[OpenAI permission profiles](https://learn.chatgpt.com/docs/permissions) 和 [worktree Git 路径保护](https://learn.chatgpt.com/docs/agent-approvals-security#protected-paths-in-writable-roots)。
