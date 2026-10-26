@@ -1,0 +1,26 @@
+test_screen_and_frames_use_target_pane_viewport_and_cursor (tests.test_rd_serve_sessions.SessionTests.test_screen_and_frames_use_target_pane_viewport_and_cursor) ...
+  test_screen_and_frames_use_target_pane_viewport_and_cursor (tests.test_rd_serve_sessions.SessionTests.test_screen_and_frames_use_target_pane_viewport_and_cursor) (size=(149, 45)) ... ERROR
+  test_screen_and_frames_use_target_pane_viewport_and_cursor (tests.test_rd_serve_sessions.SessionTests.test_screen_and_frames_use_target_pane_viewport_and_cursor) (size=(83, 27)) ... ERROR
+
+======================================================================
+ERROR: test_screen_and_frames_use_target_pane_viewport_and_cursor (tests.test_rd_serve_sessions.SessionTests.test_screen_and_frames_use_target_pane_viewport_and_cursor) (size=(149, 45))
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/mac/remote-dispatch/users/weicoz/wt/weicoz-remote-dispatch-v4-68-20261027-005018-799752000/tests/test_rd_serve_sessions.py", line 351, in test_screen_and_frames_use_target_pane_viewport_and_cursor
+    self.assertEqual((screen["width"], screen["height"], screen["cursor"]),
+                      ~~~~~~^^^^^^^^^
+KeyError: 'width'
+
+======================================================================
+ERROR: test_screen_and_frames_use_target_pane_viewport_and_cursor (tests.test_rd_serve_sessions.SessionTests.test_screen_and_frames_use_target_pane_viewport_and_cursor) (size=(83, 27))
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/mac/remote-dispatch/users/weicoz/wt/weicoz-remote-dispatch-v4-68-20261027-005018-799752000/tests/test_rd_serve_sessions.py", line 351, in test_screen_and_frames_use_target_pane_viewport_and_cursor
+    self.assertEqual((screen["width"], screen["height"], screen["cursor"]),
+                      ~~~~~~^^^^^^^^^
+KeyError: 'width'
+
+----------------------------------------------------------------------
+Ran 1 test in 3.105s
+
+FAILED (errors=2)

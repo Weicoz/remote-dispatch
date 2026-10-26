@@ -9,7 +9,7 @@
   },
   "events": [],
   "frames": [
-    "{\"type\":\"terminal.frame\", \"data\":\"G1szMW1oaRtbMG0=\",\"seq\":7}",
+    "{\"type\":\"terminal.frame\",\"seq\":1,\"encoding\":\"ansi\",\"width\":149,\"height\":45,\"full\":true,\"data\":\"G1syShtbSOKdryBoZWxsbwobWzM7NUgbWz8yNWg=\",\"cursor\":{\"x\":4,\"y\":2,\"visible\":true}}",
     "{\"type\":\"terminal.closed\",\"reason\":\"closed\"}"
   ]
 }

@@ -1,0 +1,41 @@
+cpu_count: 10
+$ uptime exit 0
+0:59  1 user, load averages: 2.61 2.58 2.66
+$ memory_pressure exit 0
+The system has 17179869184 (1048576 pages with a page size of 16384).
+
+Stats:
+Pages free: 16629
+Pages purgeable: 303
+Pages purged: 85519514
+
+Swap I/O:
+Swapins: 2272160
+Swapouts: 9574192
+
+Page Q counts:
+Pages active: 183652
+Pages inactive: 181079
+Pages speculative: 1693
+Pages throttled: 0
+Pages wired down: 157416
+
+Compressor Stats:
+Pages used by compressor: 474656
+Pages decompressed: 1924026015
+Pages compressed: 1982055952
+
+File I/O:
+Pageins: 74739975
+Pageouts: 290454
+
+System-wide memory free percentage: 37%
+$ df -h . exit 0
+Filesystem      Size    Used   Avail Capacity iused ifree %iused  Mounted on
+/dev/disk3s5   228Gi   134Gi    62Gi    69%    2.6M  649M    0%   /System/Volumes/Data
+$ git config --get core.hooksPath exit 1
+
+$ git rev-parse --git-path hooks/pre-commit exit 0
+/Users/mac/remote-dispatch/users/weicoz/repos/remote-dispatch-2fd8213ed7d2.git/hooks/pre-commit
+mypy installed: False
+pyright installed: False

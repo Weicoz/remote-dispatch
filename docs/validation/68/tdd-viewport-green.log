@@ -1,0 +1,6 @@
+test_screen_and_frames_use_target_pane_viewport_and_cursor (tests.test_rd_serve_sessions.SessionTests.test_screen_and_frames_use_target_pane_viewport_and_cursor) ... ok
+
+----------------------------------------------------------------------
+Ran 1 test in 0.788s
+
+OK

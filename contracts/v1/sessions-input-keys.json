@@ -4,12 +4,20 @@
     "path": "/v1/sessions/w1:p1/input",
     "body": {
       "keys": [
+        "backspace",
+        "left",
+        "right",
+        "ctrl+d",
+        "shift+tab",
+        "ctrl+a",
+        "ctrl+u",
+        "space",
+        "enter",
         "esc",
         "up",
         "down",
         "tab",
-        "ctrl+c",
-        "enter"
+        "ctrl+c"
       ]
     },
     "headers": {

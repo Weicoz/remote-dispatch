@@ -1,0 +1,21 @@
+test_raw_text_does_not_submit_and_replays_without_resending (tests.test_rd_serve_sessions.SessionTests.test_raw_text_does_not_submit_and_replays_without_resending) ... FAIL
+
+======================================================================
+FAIL: test_raw_text_does_not_submit_and_replays_without_resending (tests.test_rd_serve_sessions.SessionTests.test_raw_text_does_not_submit_and_replays_without_resending)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/mac/remote-dispatch/users/weicoz/wt/weicoz-remote-dispatch-v4-68-20261027-005018-799752000/tests/test_rd_serve_sessions.py", line 457, in test_raw_text_does_not_submit_and_replays_without_resending
+    self.assertEqual(first, (200, {"pane_id": "w1:p1", "accepted": True}))
+AssertionError: Tuples differ: (400, {'error': {'reason': 'invalid_session_input'}}) != (200, {'pane_id': 'w1:p1', 'accepted': True})
+
+First differing element 0:
+400
+200
+
+- (400, {'error': {'reason': 'invalid_session_input'}})
++ (200, {'accepted': True, 'pane_id': 'w1:p1'})
+
+----------------------------------------------------------------------
+Ran 1 test in 2.259s
+
+FAILED (failures=1)

@@ -1,0 +1,42 @@
+{
+  "request": {
+    "method": "POST",
+    "path": "/v1/sessions/w1:p1/input",
+    "body": {
+      "text": "你好",
+      "submit": false
+    },
+    "headers": {
+      "Content-Type": "application/json",
+      "Idempotency-Key": "example-input-raw-text"
+    }
+  },
+  "response": {
+    "status": 200,
+    "body": {
+      "pane_id": "w1:p1",
+      "accepted": true
+    }
+  },
+  "events": [
+    {
+      "seq": 1,
+      "time": "2026-10-25T00:00:00+00:00",
+      "type": "session.changed",
+      "data": {
+        "pane_id": "w1:p1",
+        "harness": "codex",
+        "project": "demo",
+        "project_id": "example-project-id",
+        "status": "idle",
+        "status_text": "空闲",
+        "has_new_reply": false,
+        "session_id": "session-one",
+        "probable": false,
+        "identity_text": null,
+        "user_id": "fixture",
+        "removed": false
+      }
+    }
+  ]
+}

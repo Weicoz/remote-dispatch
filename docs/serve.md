@@ -475,7 +475,7 @@ HTTP 的 `harness_stats` 仍为空。首次后台观察、轮次／验收变化�
 ## 会话接口（票 25）
 
 会话路由在 `rd_serve_sessions.py`，所有 Herdr 子进程调用与保存快照读取在
-`rd_herdr.py`。只调用已有 Herdr 的 `agent list`、`pane read`、
+`rd_herdr.py`。只调用已有 Herdr 的 `agent list`、`pane layout`、
 `pane send-text/send-keys` 与 `terminal session observe`，不启动或续接 harness。
 Herdr 的环境和命名 session 沿用服务进程；可用 `HERDR_CONFIG_PATH` 指定配置文件。
 实时状态来自 `agent list`；`session.json` 仅用于身份定位。
@@ -493,10 +493,22 @@ Herdr 的环境和命名 session 沿用服务进程；可用 `HERDR_CONFIG_PATH`
   包含轮转段，重启后仍可读取；不是消息正文时间、查询时间或 Herdr 快照文件修改时间。
   尚无匹配事件时为 null；pane 换会话或移除后不沿用旧会话时间。
   项目内嵌会话和派单反查使用相同字段，供 App 冷启动时与派单按更新时间混合排序。
-- `GET /v1/sessions/{id}/screen`：`{pane_id,text}`，当前可见 ANSI 屏幕。
+- `GET /v1/sessions/{id}/screen`：`{pane_id,text,width,height,cursor}`，当前可见 ANSI 屏幕。
+  `text` 取按 pane 真实尺寸启动的只读 observer 首个完整帧，包含清屏、定位和样式序列；
+  `width/height` 是字符单元格数，`cursor={x,y,visible}` 为从 0 起算的列、行及可见性。
+  光标取自该帧 ANSI 末尾的 CUP 与 `?25h/l`，与屏幕正文属于同一帧。
 - `GET /v1/sessions/{id}/terminal`：SSE 的 `event` 为 `terminal.frame` 或
   `terminal.closed`，Base64 帧正文先解码、脱敏再编码；ANSI 控制序列和帧元数据保留。
-  无敏感内容时仍保留 Herdr NDJSON 原行；OSC 标题等控制序列正文也按相同规则脱敏。
+  新服务固定输出 `type/seq/encoding/width/height/full/data/cursor`（示例见合同）；
+  `data` 是 Base64 ANSI，兼容上游 `bytes` 或 `data` 字段，统一输出 `data`。
+  OSC 标题等控制序列正文也按相同规则脱敏，新增字段仍走敏感扫描。
+  连接前从 `herdr pane layout --pane <id>` 的目标 pane `rect.width/height` 读取尺寸，
+  显式传入 `observe <id> --cols <width> --rows <height>`，不使用整个 tab 的 area。
+  旧调用遗漏参数，Herdr 0.9.3 默认 120×40，因而出现与真实 pane 不同的换行和截断。
+  活跃流沿用 serve 的 `--poll-interval` 检查 layout（默认 15 秒），静默 pane 也检查；
+  尺寸变化时回收旧 observer，再以新尺寸重连，首帧为 `full=true`。
+  此过程中不向 Herdr 发送 resize、不改变真实 pane 尺寸；当前 HTTP 流的 `seq` 保持递增，
+  App 收到全量帧应清空旧网格并重绘。检查失败或上游尺寸不匹配时终止流，客户端重连。
   这不是持久事件流，不提供 `Last-Event-ID` 补读；重连重新观察当前终端。
   断连或服务停止会结束并回收本次观察子进程。
 - `GET /v1/sessions/{id}/messages?after=<消息ID>`：复用票 24 转换器，返回
@@ -512,10 +524,16 @@ Herdr 的环境和命名 session 沿用服务进程；可用 `HERDR_CONFIG_PATH`
   损坏 JSON、非对象、缺失或非法的 type、已识别消息缺必需字段或内容块非法时，
   整次返回 `supported=false/messages=[]/reason=unsupported_format/text="不支持"`，不返回部分正文，
   可继续使用终端。agy/kimi 尚无转写读取器，仍返回相同 unsupported 响应。
-- `POST /v1/sessions/{id}/input`：JSON 只接受 `{text}` 或 `{keys:[...]}`，必须带
-  `Idempotency-Key`（1–256 个可打印 ASCII 非空白字符）。文本写入后发送 Enter；
-  按键接受 `enter/esc/up/down/tab/ctrl+c`。本接口直接作用于原 pane。
-  成功返回 `{pane_id,accepted:true}`。
+- `POST /v1/sessions/{id}/input`：JSON 只接受 `{text}`、`{text,submit}` 或 `{keys:[...]}`，必须带
+  `Idempotency-Key`（1–256 个可打印 ASCII 非空白字符），逐键输入也每次带新键。
+  `submit` 必须是 JSON 布尔值，省略或 `true` 时文本写入后发送 Enter，保持聊天页行为；
+  `false` 只发送文本，不追加 Enter，可用于逐字回显、粘贴、输入法已提交文本及与 Tab 混用。
+  文本仍须非空、不含 NUL；`submit` 不能用于 keys 请求，未知字段一律拒绝。
+  按键接受 `backspace/left/right/ctrl+d/shift+tab/ctrl+a/ctrl+u/space/enter/esc/up/down/tab/ctrl+c`。
+  `delete/home/end/pageup/pagedown` 在已实测 Herdr 中为 unsupported，不加入白名单；
+  其他键名和大小写变体返回 400 `invalid_session_input`。本接口直接作用于原 pane。
+  成功返回 `{pane_id,accepted:true}`。同一幂等键仍重放首次结果（包括改变 submit 的重试），
+  不重复写入、不重复发事件；落盘只存结果、不存输入正文，失败／不确定结果不自动重发。
 - `GET /v1/jobs/{job}/session`：当前用户派单的会话反查，先匹配 `initiator_session`，
   再匹配 `initiator_herdr.pane_id`。返回 `session/matched_by`；都不存在时返回
   `session=null/reason=session_closed/text="会话已关闭"`。未知或其他用户派单返回 404。

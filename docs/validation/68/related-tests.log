@@ -1,0 +1,135 @@
+test_background_publishes_session_and_message_events_and_closed_state_without_content (tests.test_rd_serve_sessions.SessionTests.test_background_publishes_session_and_message_events_and_closed_state_without_content) ... ok
+test_cwd_and_summary_fields_pass_sensitive_field_scan (tests.test_rd_serve_sessions.SessionTests.test_cwd_and_summary_fields_pass_sensitive_field_scan) ... ok
+test_disabled_access_rejects_every_session_route_before_lookup_or_input_validation (tests.test_rd_serve_sessions.SessionTests.test_disabled_access_rejects_every_session_route_before_lookup_or_input_validation) ... ok
+test_disabled_stream_filters_existing_session_events_but_keeps_other_events (tests.test_rd_serve_sessions.SessionTests.test_disabled_stream_filters_existing_session_events_but_keeps_other_events) ... ok
+test_dispatch_resolution_prefers_session_then_pane_then_closed_and_is_user_scoped (tests.test_rd_serve_sessions.SessionTests.test_dispatch_resolution_prefers_session_then_pane_then_closed_and_is_user_scoped) ... rdispatch: no [host:none] in /private/tmp/rd25-0iwlzidx/config.ini
+rdispatch: poll_unavailable: cannot collect a job
+rdispatch: no [host:none] in /private/tmp/rd25-0iwlzidx/config.ini
+rdispatch: poll_unavailable: cannot collect a job
+rdispatch: no [host:none] in /private/tmp/rd25-0iwlzidx/config.ini
+rdispatch: poll_unavailable: cannot collect a job
+ok
+test_failed_external_input_is_remembered_and_never_automatically_retried (tests.test_rd_serve_sessions.SessionTests.test_failed_external_input_is_remembered_and_never_automatically_retried) ... ok
+test_input_preserves_option_like_text_and_screen_carriage_returns (tests.test_rd_serve_sessions.SessionTests.test_input_preserves_option_like_text_and_screen_carriage_returns) ... ERROR
+test_input_requires_key_and_replays_first_result_across_restart_without_resending (tests.test_rd_serve_sessions.SessionTests.test_input_requires_key_and_replays_first_result_across_restart_without_resending) ... ok
+test_input_updates_snapshot_event_time_but_idempotent_replay_does_not (tests.test_rd_serve_sessions.SessionTests.test_input_updates_snapshot_event_time_but_idempotent_replay_does_not) ... ok
+test_lists_only_project_agent_panes_and_maps_all_five_herdr_states (tests.test_rd_serve_sessions.SessionTests.test_lists_only_project_agent_panes_and_maps_all_five_herdr_states) ... ok
+test_live_identity_supersedes_stale_saved_identity_in_same_pane (tests.test_rd_serve_sessions.SessionTests.test_live_identity_supersedes_stale_saved_identity_in_same_pane) ... ok
+test_live_sessions_extend_indexed_summary_and_respect_hidden_projects_and_device_access (tests.test_rd_serve_sessions.SessionTests.test_live_sessions_extend_indexed_summary_and_respect_hidden_projects_and_device_access) ... ok
+test_local_execution_panes_are_excluded_from_initiator_sessions (tests.test_rd_serve_sessions.SessionTests.test_local_execution_panes_are_excluded_from_initiator_sessions) ... ok
+test_malformed_saved_snapshot_falls_back_and_saved_path_identity_handles_public_pane_numbers (tests.test_rd_serve_sessions.SessionTests.test_malformed_saved_snapshot_falls_back_and_saved_path_identity_handles_public_pane_numbers) ... ok
+test_missing_session_id_falls_back_to_latest_cwd_with_probable_label (tests.test_rd_serve_sessions.SessionTests.test_missing_session_id_falls_back_to_latest_cwd_with_probable_label) ... ok
+test_missing_snapshot_matches_latest_cwd_transcript_with_probable_label (tests.test_rd_serve_sessions.SessionTests.test_missing_snapshot_matches_latest_cwd_transcript_with_probable_label) ... ok
+test_new_session_in_same_pane_emits_messages_even_when_converter_line_ids_repeat (tests.test_rd_serve_sessions.SessionTests.test_new_session_in_same_pane_emits_messages_even_when_converter_line_ids_repeat) ... ok
+test_paired_device_defaults_to_denied_until_trusted_device_permission_is_enabled (tests.test_rd_serve_sessions.SessionTests.test_paired_device_defaults_to_denied_until_trusted_device_permission_is_enabled) ... ok
+test_persistent_projects_survive_herdr_outage_and_never_expose_origin_credentials (tests.test_rd_serve_sessions.SessionTests.test_persistent_projects_survive_herdr_outage_and_never_expose_origin_credentials) ... ok
+test_quiet_pane_resize_restarts_observer_with_full_frame_and_monotonic_sequence (tests.test_rd_serve_sessions.SessionTests.test_quiet_pane_resize_restarts_observer_with_full_frame_and_monotonic_sequence) ... ok
+test_raw_text_does_not_submit_and_replays_without_resending (tests.test_rd_serve_sessions.SessionTests.test_raw_text_does_not_submit_and_replays_without_resending) ... ok
+test_replaced_session_does_not_inherit_old_or_other_users_event_time (tests.test_rd_serve_sessions.SessionTests.test_replaced_session_does_not_inherit_old_or_other_users_event_time) ... ok
+test_saved_identity_wins_over_newer_transcript_and_messages_have_stable_after_cursor (tests.test_rd_serve_sessions.SessionTests.test_saved_identity_wins_over_newer_transcript_and_messages_have_stable_after_cursor) ... ok
+test_screen_and_frames_use_target_pane_viewport_and_cursor (tests.test_rd_serve_sessions.SessionTests.test_screen_and_frames_use_target_pane_viewport_and_cursor) ... ok
+test_screen_and_terminal_forward_rendered_text_and_raw_herdr_records (tests.test_rd_serve_sessions.SessionTests.test_screen_and_terminal_forward_rendered_text_and_raw_herdr_records) ... FAIL
+test_service_shutdown_reaps_terminal_observer_when_client_stops_reading (tests.test_rd_serve_sessions.SessionTests.test_service_shutdown_reaps_terminal_observer_when_client_stops_reading) ... ok
+test_session_only_projects_vanish_on_close_without_writing_project_index (tests.test_rd_serve_sessions.SessionTests.test_session_only_projects_vanish_on_close_without_writing_project_index) ... ok
+test_session_rows_expose_pane_cwd_in_list_and_project_summary (tests.test_rd_serve_sessions.SessionTests.test_session_rows_expose_pane_cwd_in_list_and_project_summary) ... ok
+test_session_v1_contract_examples_match_http_and_sse_responses (tests.test_rd_serve_sessions.SessionTests.test_session_v1_contract_examples_match_http_and_sse_responses) ...
+  test_session_v1_contract_examples_match_http_and_sse_responses (tests.test_rd_serve_sessions.SessionTests.test_session_v1_contract_examples_match_http_and_sse_responses) (contract='screen') ... FAIL
+test_session_v1_contract_examples_match_http_and_sse_responses (tests.test_rd_serve_sessions.SessionTests.test_session_v1_contract_examples_match_http_and_sse_responses) ... FAIL
+test_session_without_events_has_unknown_update_time_until_collected (tests.test_rd_serve_sessions.SessionTests.test_session_without_events_has_unknown_update_time_until_collected) ... ok
+test_snapshot_keeps_latest_session_event_time_across_rotation_and_restart_without_query_writes (tests.test_rd_serve_sessions.SessionTests.test_snapshot_keeps_latest_session_event_time_across_rotation_and_restart_without_query_writes) ... ok
+test_successful_input_emits_session_changed_without_input_content (tests.test_rd_serve_sessions.SessionTests.test_successful_input_emits_session_changed_without_input_content) ... ok
+test_supported_terminal_keys_and_strict_submit_validation (tests.test_rd_serve_sessions.SessionTests.test_supported_terminal_keys_and_strict_submit_validation) ... ok
+test_terminal_observer_is_reaped_after_disconnect_and_service_shutdown (tests.test_rd_serve_sessions.SessionTests.test_terminal_observer_is_reaped_after_disconnect_and_service_shutdown) ... ok
+test_unknown_transcript_record_preserves_chat_and_invalid_input_never_writes (tests.test_rd_serve_sessions.SessionTests.test_unknown_transcript_record_preserves_chat_and_invalid_input_never_writes) ... FAIL
+test_unreadable_live_cwd_is_null_and_does_not_break_other_sessions (tests.test_rd_serve_sessions.SessionTests.test_unreadable_live_cwd_is_null_and_does_not_break_other_sessions) ... ok
+test_network_key_is_bound_to_method_path_and_canonical_body (tests.test_rd_serve_review_fixes.NetworkFixTests.test_network_key_is_bound_to_method_path_and_canonical_body) ... ok
+test_pair_secrets_are_never_cached_and_replay_is_closed_across_restart (tests.test_rd_serve_review_fixes.NetworkFixTests.test_pair_secrets_are_never_cached_and_replay_is_closed_across_restart) ... ok
+test_push_failure_backs_off_without_rereading_and_success_resumes_cursor (tests.test_rd_serve_review_fixes.NetworkFixTests.test_push_failure_backs_off_without_rereading_and_success_resumes_cursor) ... ok
+test_start_scrubs_legacy_pairing_cache (tests.test_rd_serve_review_fixes.NetworkFixTests.test_start_scrubs_legacy_pairing_cache) ... ok
+test_tls_handshake_request_read_and_connection_slots_are_bounded (tests.test_rd_serve_review_fixes.NetworkFixTests.test_tls_handshake_request_read_and_connection_slots_are_bounded) ... ok
+test_event_cursor_skips_parsed_prefixes_and_survives_multiple_rotations (tests.test_rd_serve_review_fixes.ReaderAndMigrationFixTests.test_event_cursor_skips_parsed_prefixes_and_survives_multiple_rotations) ... ok
+test_resume_archive_excludes_nested_untracked_credentials_and_preserves_source (tests.test_rd_serve_review_fixes.ReaderAndMigrationFixTests.test_resume_archive_excludes_nested_untracked_credentials_and_preserves_source) ... ok
+test_discovery_keeps_incremental_event_cursor_without_query_writes (tests.test_rd_serve_review_fixes.SessionFixTests.test_discovery_keeps_incremental_event_cursor_without_query_writes) ... ok
+test_terminal_redacts_decoded_secret_and_preserves_ansi_and_binary_bytes (tests.test_rd_serve_review_fixes.SessionFixTests.test_terminal_redacts_decoded_secret_and_preserves_ansi_and_binary_bytes) ... ok
+test_transcript_parses_only_appended_lines_with_stable_ids_and_resets_on_replace (tests.test_rd_serve_review_fixes.SessionFixTests.test_transcript_parses_only_appended_lines_with_stable_ids_and_resets_on_replace) ... ok
+test_execute_timeout_kills_child_releases_writer_and_caches_unknown_result (tests.test_rd_serve_review_fixes.WriteFixTests.test_execute_timeout_kills_child_releases_writer_and_caches_unknown_result) ... ok
+test_slow_job_probe_does_not_block_another_jobs_ack (tests.test_rd_serve_review_fixes.WriteFixTests.test_slow_job_probe_does_not_block_another_jobs_ack) ... ok
+test_write_key_reuse_does_not_execute_and_is_bound_to_device_and_method (tests.test_rd_serve_review_fixes.WriteFixTests.test_write_key_reuse_does_not_execute_and_is_bound_to_device_and_method) ... ok
+test_cleaning_cannot_reassemble_a_sensitive_value_in_sent_text (tests.test_rd_report_delivery.ReportDeliveryTests.test_cleaning_cannot_reassemble_a_sensitive_value_in_sent_text) ... ok
+test_closed_or_missing_herdr_session_keeps_report_in_inbox_without_writing (tests.test_rd_report_delivery.ReportDeliveryTests.test_closed_or_missing_herdr_session_keeps_report_in_inbox_without_writing) ... ok
+test_crash_after_external_send_never_repeats_an_uncertain_delivery (tests.test_rd_report_delivery.ReportDeliveryTests.test_crash_after_external_send_never_repeats_an_uncertain_delivery) ... ok
+test_delivery_contract_and_sensitive_scan_cover_new_fields (tests.test_rd_report_delivery.ReportDeliveryTests.test_delivery_contract_and_sensitive_scan_cover_new_fields) ... ok
+test_enter_failure_preserves_text_delivery_without_retry_or_success_event (tests.test_rd_report_delivery.ReportDeliveryTests.test_enter_failure_preserves_text_delivery_without_retry_or_success_event) ... ok
+test_failed_delivery_event_is_recovered_without_sending_report_again (tests.test_rd_report_delivery.ReportDeliveryTests.test_failed_delivery_event_is_recovered_without_sending_report_again) ... ok
+test_failed_input_stays_in_inbox_without_retry_and_does_not_block_next_report (tests.test_rd_report_delivery.ReportDeliveryTests.test_failed_input_stays_in_inbox_without_retry_and_does_not_block_next_report) ... ok
+test_herdr_outage_keeps_inbox_without_using_cached_session_or_repeated_input (tests.test_rd_report_delivery.ReportDeliveryTests.test_herdr_outage_keeps_inbox_without_using_cached_session_or_repeated_input) ... ok
+test_http_and_sse_follow_delivery_contracts (tests.test_rd_report_delivery.ReportDeliveryTests.test_http_and_sse_follow_delivery_contracts) ... rdispatch: no [host:target] in /private/tmp/rd25-825_5tfi/config.ini
+rdispatch: poll_unavailable: cannot collect a job
+ok
+test_idle_report_is_written_to_herdr_and_delivered_once_across_restart (tests.test_rd_report_delivery.ReportDeliveryTests.test_idle_report_is_written_to_herdr_and_delivered_once_across_restart) ... ok
+test_invalid_input_does_not_abort_other_sessions_in_same_delivery_batch (tests.test_rd_report_delivery.ReportDeliveryTests.test_invalid_input_does_not_abort_other_sessions_in_same_delivery_batch) ... ok
+test_only_verified_codex_and_claude_harnesses_receive_reports (tests.test_rd_report_delivery.ReportDeliveryTests.test_only_verified_codex_and_claude_harnesses_receive_reports) ... ok
+test_replacement_pane_with_only_probable_old_identity_never_receives_report (tests.test_rd_report_delivery.ReportDeliveryTests.test_replacement_pane_with_only_probable_old_identity_never_receives_report) ... ok
+test_report_input_cannot_interleave_with_user_text_and_enter (tests.test_rd_report_delivery.ReportDeliveryTests.test_report_input_cannot_interleave_with_user_text_and_enter) ... ok
+test_report_text_removes_controls_flattens_lines_and_limits_whole_message (tests.test_rd_report_delivery.ReportDeliveryTests.test_report_text_removes_controls_flattens_lines_and_limits_whole_message) ... ok
+test_session_access_switch_off_keeps_inbox_without_even_querying_herdr (tests.test_rd_report_delivery.ReportDeliveryTests.test_session_access_switch_off_keeps_inbox_without_even_querying_herdr) ... ok
+test_session_becoming_idle_between_checks_cannot_let_second_report_overtake (tests.test_rd_report_delivery.ReportDeliveryTests.test_session_becoming_idle_between_checks_cannot_let_second_report_overtake) ... ok
+test_session_closing_after_collection_does_not_use_stale_pane (tests.test_rd_report_delivery.ReportDeliveryTests.test_session_closing_after_collection_does_not_use_stale_pane) ... ok
+test_waiting_for_input_and_unknown_status_never_receive_automatic_text (tests.test_rd_report_delivery.ReportDeliveryTests.test_waiting_for_input_and_unknown_status_never_receive_automatic_text) ... ok
+test_working_reports_wait_and_leave_in_fifo_order_after_restart (tests.test_rd_report_delivery.ReportDeliveryTests.test_working_reports_wait_and_leave_in_fifo_order_after_restart) ... ok
+
+======================================================================
+ERROR: test_input_preserves_option_like_text_and_screen_carriage_returns (tests.test_rd_serve_sessions.SessionTests.test_input_preserves_option_like_text_and_screen_carriage_returns)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/mac/remote-dispatch/users/weicoz/wt/weicoz-remote-dispatch-v4-68-20261027-005018-799752000/tests/test_rd_serve_sessions.py", line 620, in test_input_preserves_option_like_text_and_screen_carriage_returns
+    self.assertEqual(self.request("/v1/sessions/w1:p1/screen")[1]["text"], "\x1b[31mhello\r\n")
+                     ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^
+KeyError: 'text'
+
+======================================================================
+FAIL: test_screen_and_terminal_forward_rendered_text_and_raw_herdr_records (tests.test_rd_serve_sessions.SessionTests.test_screen_and_terminal_forward_rendered_text_and_raw_herdr_records)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/mac/remote-dispatch/users/weicoz/wt/weicoz-remote-dispatch-v4-68-20261027-005018-799752000/tests/test_rd_serve_sessions.py", line 393, in test_screen_and_terminal_forward_rendered_text_and_raw_herdr_records
+    self.assertEqual(self.request("/v1/sessions/w1:p1/screen"),
+AssertionError: Tuples differ: (503, {'error': {'reason': 'read_unavailable'}}) != (200, {'pane_id': 'w1:p1', 'text': '❯ hello\n'})
+
+First differing element 0:
+503
+200
+
+- (503, {'error': {'reason': 'read_unavailable'}})
++ (200, {'pane_id': 'w1:p1', 'text': '❯ hello\n'})
+
+======================================================================
+FAIL: test_session_v1_contract_examples_match_http_and_sse_responses (tests.test_rd_serve_sessions.SessionTests.test_session_v1_contract_examples_match_http_and_sse_responses) (contract='screen')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/mac/remote-dispatch/users/weicoz/wt/weicoz-remote-dispatch-v4-68-20261027-005018-799752000/tests/test_rd_serve_sessions.py", line 727, in test_session_v1_contract_examples_match_http_and_sse_responses
+    self.assertEqual(status, example["response"]["status"])
+AssertionError: 503 != 200
+
+======================================================================
+FAIL: test_session_v1_contract_examples_match_http_and_sse_responses (tests.test_rd_serve_sessions.SessionTests.test_session_v1_contract_examples_match_http_and_sse_responses)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/mac/remote-dispatch/users/weicoz/wt/weicoz-remote-dispatch-v4-68-20261027-005018-799752000/tests/test_rd_serve_sessions.py", line 739, in test_session_v1_contract_examples_match_http_and_sse_responses
+    self.assertEqual(response.readline().decode(), "data: " + frame + "\n")
+AssertionError: 'data: {"type": "terminal.frame", "data": "G1szMW1oaRtbM[87 chars]}}\n' != 'data: {"type":"terminal.frame", "data":"G1szMW1oaRtbMG0=","seq":7}\n'
+- data: {"type": "terminal.frame", "data": "G1szMW1oaRtbMG0=", "seq": 7, "width": 149, "height": 45, "cursor": {"x": 0, "y": 0, "visible": false}}
++ data: {"type":"terminal.frame", "data":"G1szMW1oaRtbMG0=","seq":7}
+
+
+======================================================================
+FAIL: test_unknown_transcript_record_preserves_chat_and_invalid_input_never_writes (tests.test_rd_serve_sessions.SessionTests.test_unknown_transcript_record_preserves_chat_and_invalid_input_never_writes)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/mac/remote-dispatch/users/weicoz/wt/weicoz-remote-dispatch-v4-68-20261027-005018-799752000/tests/test_rd_serve_sessions.py", line 700, in test_unknown_transcript_record_preserves_chat_and_invalid_input_never_writes
+    self.assertEqual(self.request("/v1/sessions/w1:p1/screen")[0], 200)
+AssertionError: 503 != 200
+
+----------------------------------------------------------------------
+Ran 69 tests in 53.049s
+
+FAILED (failures=4, errors=1)

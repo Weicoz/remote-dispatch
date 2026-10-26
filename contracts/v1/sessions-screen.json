@@ -7,7 +7,14 @@
     "status": 200,
     "body": {
       "pane_id": "w1:p1",
-      "text": "❯ hello\n"
+      "text": "\u001b[2J\u001b[H❯ hello\n\u001b[3;5H\u001b[?25h",
+      "width": 149,
+      "height": 45,
+      "cursor": {
+        "x": 4,
+        "y": 2,
+        "visible": true
+      }
     }
   },
   "events": []

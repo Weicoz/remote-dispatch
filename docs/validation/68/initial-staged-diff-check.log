@@ -1,0 +1,72 @@
+docs/validation/68/environment-checks.log:3: trailing whitespace.
++0:59  1 user, load averages: 2.61 2.58 2.66
+docs/validation/68/environment-checks.log:7: trailing whitespace.
++Stats:
+docs/validation/68/environment-checks.log:8: trailing whitespace.
++Pages free: 16629
+docs/validation/68/environment-checks.log:9: trailing whitespace.
++Pages purgeable: 303
+docs/validation/68/environment-checks.log:10: trailing whitespace.
++Pages purged: 85519514
+docs/validation/68/environment-checks.log:13: trailing whitespace.
++Swapins: 2272160
+docs/validation/68/environment-checks.log:14: trailing whitespace.
++Swapouts: 9574192
+docs/validation/68/environment-checks.log:17: trailing whitespace.
++Pages active: 183652
+docs/validation/68/environment-checks.log:18: trailing whitespace.
++Pages inactive: 181079
+docs/validation/68/environment-checks.log:19: trailing whitespace.
++Pages speculative: 1693
+docs/validation/68/environment-checks.log:20: trailing whitespace.
++Pages throttled: 0
+docs/validation/68/environment-checks.log:21: trailing whitespace.
++Pages wired down: 157416
+docs/validation/68/environment-checks.log:24: trailing whitespace.
++Pages used by compressor: 474656
+docs/validation/68/environment-checks.log:25: trailing whitespace.
++Pages decompressed: 1924026015
+docs/validation/68/environment-checks.log:26: trailing whitespace.
++Pages compressed: 1982055952
+docs/validation/68/environment-checks.log:29: trailing whitespace.
++Pageins: 74739975
+docs/validation/68/environment-checks.log:30: trailing whitespace.
++Pageouts: 290454
+docs/validation/68/environment-checks.log:32: trailing whitespace.
++System-wide memory free percentage: 37%
+docs/validation/68/environment-checks.log:35: trailing whitespace.
++/dev/disk3s5   228Gi   134Gi    62Gi    69%    2.6M  649M    0%   /System/Volumes/Data
+docs/validation/68/environment-checks.log:37: trailing whitespace.
++
+docs/validation/68/environment-checks.log:39: trailing whitespace.
++/Users/mac/remote-dispatch/users/weicoz/repos/remote-dispatch-2fd8213ed7d2.git/hooks/pre-commit
+docs/validation/68/herdr-interface-checks.log:3: trailing whitespace.
++
+docs/validation/68/herdr-interface-checks.log:11: trailing whitespace.
++
+docs/validation/68/herdr-interface-checks.log:15: trailing whitespace.
++
+docs/validation/68/herdr-interface-checks.log:19: trailing whitespace.
++
+docs/validation/68/herdr-interface-checks.log:27: trailing whitespace.
++
+docs/validation/68/herdr-interface-checks.log:31: trailing whitespace.
++
+docs/validation/68/herdr-interface-checks.log:39: trailing whitespace.
++
+docs/validation/68/herdr-interface-checks.log:44: trailing whitespace.
++
+docs/validation/68/herdr-interface-checks.log:48: trailing whitespace.
++
+docs/validation/68/herdr-interface-checks.log:54: trailing whitespace.
++
+docs/validation/68/herdr-interface-checks.log:58: trailing whitespace.
++
+docs/validation/68/related-tests.log:35: trailing whitespace.
++test_session_v1_contract_examples_match_http_and_sse_responses (tests.test_rd_serve_sessions.SessionTests.test_session_v1_contract_examples_match_http_and_sse_responses) ...
+docs/validation/68/review-layout-red.log:2: trailing whitespace.
++Exception occurred during processing of request from
+docs/validation/68/review-layout-red.log:34: trailing whitespace.
++Exception occurred during processing of request from
+docs/validation/68/tdd-viewport-red.log:1: trailing whitespace.
++test_screen_and_frames_use_target_pane_viewport_and_cursor (tests.test_rd_serve_sessions.SessionTests.test_screen_and_frames_use_target_pane_viewport_and_cursor) ...

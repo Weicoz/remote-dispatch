@@ -24,6 +24,8 @@ HARNESSES = {"codex": "codex", "claude": "claude", "claude-code": "claude",
              "kimi": "kimi", "kimi-code": "kimi", "agy": "agy",
              "antigravity": "agy", "antigravity-cli": "agy"}
 STATUS_TEXT = {"working": "工作中", "idle": "空闲", "blocked": "等待输入", "unknown": "状态未知"}
+TERMINAL_KEYS = {"backspace", "left", "right", "ctrl+d", "shift+tab", "ctrl+a", "ctrl+u",
+                 "space", "enter", "esc", "up", "down", "tab", "ctrl+c"}
 DISABLED = (403, {"error": {"reason": "session_access_disabled"}})
 
 
@@ -290,13 +292,11 @@ class Sessions:
             if item is None:
                 return 200, dict(session=None, matched_by=None, reason="session_closed", text="会话已关闭")
             return 200, dict(session=item, matched_by=matched_by)
-        match = re.fullmatch(r"/v1/sessions/([^/]+)/(messages|screen)", path)
+        match = re.fullmatch(r"/v1/sessions/([^/]+)/messages", path)
         if match:
             item = next((item for item in self.cached() if item["row"]["id"] == match[1]), None)
             if item is None:
                 return 404, {"error": {"reason": "session_closed", "text": "会话已关闭"}}
-            if match[2] == "screen":
-                return 200, dict(pane_id=item["row"]["pane_id"], text=self.herdr.screen(match[1]))
             after = parse_qs(urlsplit(target).query).get("after", [None])[0]
             return 200, self.messages(item, after)
         return None
@@ -306,20 +306,36 @@ class Sessions:
         if self.is_session_path(path) and not self.allowed(getattr(handler, "session_device", None)):
             handler.json(*DISABLED)
             return True
-        match = re.fullmatch(r"/v1/sessions/([^/]+)/terminal", path)
+        match = re.fullmatch(r"/v1/sessions/([^/]+)/(terminal|screen)", path)
         if match is None:
             return False
         item = next((item for item in self.list() if item["id"] == match[1]), None)
         if item is None:
             handler.json(404, {"error": {"reason": "session_closed", "text": "会话已关闭"}})
             return True
+        if match[2] == "screen":
+            frames = self.herdr.frames(match[1], self.service.stop, handler.connection, self.service.poll_interval)
+            try:
+                for line in frames:
+                    frame = json.loads(line)
+                    if frame.get("type") == "terminal.frame" and frame.get("full") is True:
+                        text = base64.b64decode(frame["data"], validate=True).decode("utf-8", "surrogateescape")
+                        handler.json(200, self.service.redact(dict(pane_id=match[1],
+                            text=redact_terminal(self.service, text), width=frame["width"],
+                            height=frame["height"], cursor=frame["cursor"])))
+                        return True
+                    if frame.get("type") == "terminal.closed":
+                        break
+                raise OSError("herdr_screen_unavailable")
+            finally:
+                frames.close()
         handler.send_response(200)
         handler.send_header("Content-Type", "text/event-stream; charset=utf-8")
         handler.send_header("Cache-Control", "no-cache")
         handler.send_header("Connection", "close")
         handler.end_headers()
         handler.close_connection = True
-        frames = self.herdr.frames(match[1], self.service.stop, handler.connection)
+        frames = self.herdr.frames(match[1], self.service.stop, handler.connection, self.service.poll_interval)
         try:
             for line in frames:
                 frame = json.loads(line)
@@ -396,13 +412,14 @@ class Sessions:
                 return previous["status"], previous["body"]
             if self.service.stop.is_set():
                 raise OSError("serve_stopping")
-            if not isinstance(body, dict) or set(body) not in ({"text"}, {"keys"}):
+            if not isinstance(body, dict) or set(body) not in ({"text"}, {"text", "submit"}, {"keys"}):
                 raise ValueError("invalid_session_input")
             if "text" in body:
-                if not isinstance(body["text"], str) or not body["text"] or "\0" in body["text"]:
+                if (not isinstance(body["text"], str) or not body["text"] or "\0" in body["text"]
+                        or type(body.get("submit", True)) is not bool):
                     raise ValueError("invalid_session_input")
             elif (not isinstance(body["keys"], list) or not body["keys"] or any(
-                    not isinstance(key, str) or key not in {"enter", "esc", "up", "down", "tab", "ctrl+c"}
+                    not isinstance(key, str) or key not in TERMINAL_KEYS
                     for key in body["keys"])):
                 raise ValueError("invalid_session_input")
             target = next((item["row"] for item in self.discover() if item["row"]["id"] == pane), None)

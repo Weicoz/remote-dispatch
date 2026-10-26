@@ -1,0 +1,62 @@
+$ herdr --version exit 0
+herdr 0.9.3
+
+$ herdr terminal session observe --help exit 0
+Observe a terminal stream
+
+Usage: herdr terminal session observe [OPTIONS] <TARGET>
+
+Arguments:
+  <TARGET>
+
+
+Options:
+      --cols <N>
+
+
+      --rows <N>
+
+
+$ herdr pane layout --help exit 0
+Show pane layout information
+
+Usage: herdr pane layout [OPTIONS]
+
+Options:
+      --pane <ID>
+
+
+      --current
+
+
+$ herdr pane read --help exit 0
+Read pane terminal output
+
+Usage: herdr pane read [OPTIONS] <PANE_ID>
+
+Arguments:
+  <PANE_ID>
+
+
+Options:
+      --source <SOURCE>
+          Terminal snapshot source (default: recent)
+
+          [possible values: visible, recent, recent-unwrapped, detection]
+
+      --lines <N>
+
+
+      --format <FORMAT>
+          [possible values: text, ansi]
+
+      --ansi
+
+
+      --raw
+
+
+PaneLayoutPane {"properties": {"focused": {"type": "boolean"}, "pane_id": {"type": "string"}, "rect": {"$ref": "#/schemas/event/$defs/PaneLayoutRect"}}, "required": ["pane_id", "focused", "rect"], "type": "object"}
+PaneLayoutRect {"properties": {"height": {"format": "uint16", "maximum": 65535, "minimum": 0, "type": "integer"}, "width": {"format": "uint16", "maximum": 65535, "minimum": 0, "type": "integer"}, "x": {"format": "uint16", "maximum": 65535, "minimum": 0, "type": "integer"}, "y": {"format": "uint16", "maximum": 65535, "minimum": 0, "type": "integer"}}, "required": ["x", "y", "width", "height"], "type": "object"}
+PaneLayoutSnapshot {"properties": {"area": {"$ref": "#/schemas/event/$defs/PaneLayoutRect"}, "focused_pane_id": {"type": "string"}, "panes": {"items": {"$ref": "#/schemas/event/$defs/PaneLayoutPane"}, "type": "array"}, "splits": {"items": {"$ref": "#/schemas/event/$defs/PaneLayoutSplit"}, "type": "array"}, "tab_id": {"type": "string"}, "workspace_id": {"type": "string"}, "zoomed": {"type": "boolean"}}, "required": ["workspace_id", "tab_id", "zoomed", "area", "focused_pane_id", "panes", "splits"], "type": "object"}
+Only CLI help/bundled schema inspected; no real pane queried or modified.

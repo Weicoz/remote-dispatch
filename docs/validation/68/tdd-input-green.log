@@ -1,0 +1,7 @@
+test_raw_text_does_not_submit_and_replays_without_resending (tests.test_rd_serve_sessions.SessionTests.test_raw_text_does_not_submit_and_replays_without_resending) ... ok
+test_input_requires_key_and_replays_first_result_across_restart_without_resending (tests.test_rd_serve_sessions.SessionTests.test_input_requires_key_and_replays_first_result_across_restart_without_resending) ... ok
+
+----------------------------------------------------------------------
+Ran 2 tests in 2.740s
+
+OK

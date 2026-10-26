@@ -136,3 +136,13 @@ JSON 类型，另用行为断言覆盖实际值、用户隔离、纯查询、锁
   字符串，protected_fields 只含字段名及 is_set；认证内容不回显。
   PUT 更新提交字段，null 删除本段覆盖；名称不可改。写前私密备份、保留注释、原子替换、
   热更新及删除任务保护的错误词表见 `docs/serve.md`，App 合同副本由编排方随后同步。
+
+- 票 68：`sessions-screen.json` 增加 `width/height/cursor`，`text` 是同一完整帧 ANSI。
+  `sessions-terminal.json` 展示 `data`（统一 Base64 字段）、真实 `width/height`、`full` 和
+  `cursor={x,y,visible}`（从 0 起算）；尺寸变化通过 `full:true` 全量替换，连接内 `seq` 递增。
+  `sessions-input-text.json` 保留默认带 Enter 的旧请求；`sessions-input-raw-text.json` 的
+  `submit:false` 不追加 Enter；显式 `true` 仍提交，只有 JSON 布尔值合法。
+  `sessions-input-keys.json` 列出已实测可用的 14 个键，未知键仍 400；
+  `delete/home/end/pageup/pagedown` 不支持。App 每次输入仍须带新的 `Idempotency-Key`。
+  从旧服务升级时，新响应字段在客户端解码应作为可选字段；旧请求行为保持不变。
+  接入与 resize 检查间隔见 `docs/serve.md`，本票未增加滚动历史／alt-screen 状态字段。

@@ -1,0 +1,6 @@
+test_invalid_herdr_layout_returns_service_unavailable_for_screen (tests.test_rd_serve_sessions.SessionTests.test_invalid_herdr_layout_returns_service_unavailable_for_screen) ... ok
+
+----------------------------------------------------------------------
+Ran 1 test in 0.775s
+
+OK

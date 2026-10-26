@@ -1,5 +1,6 @@
 """会话 HTTP 接缝；Herdr 仅在可执行文件边界替换，不接触真实会话。"""
 import json
+import base64
 import contextlib
 import os
 from pathlib import Path
@@ -64,11 +65,25 @@ if a == ["agent", "list"]:
     if v.get("unavailable"):
         sys.exit(1)
     print(json.dumps({"id": "cli:agent:list", "result": {"agents": v["agents"]}}))
+elif a[:2] == ["pane", "layout"]:
+    if "layout_result" in v:
+        print(json.dumps(v["layout_result"]))
+        sys.exit(0)
+    print(json.dumps({"result": {"layout": {"area": {"width": 240, "height": 90},
+          "panes": [{"pane_id": "other", "rect": {"width": 80, "height": 24}},
+                    {"pane_id": a[a.index("--pane") + 1], "rect": v.get("viewport", {"width": 149, "height": 45})}]}}}))
 elif a[:2] == ["pane", "read"]:
     sys.stdout.write(v["screen"])
 elif a[:3] == ["terminal", "session", "observe"]:
     if v.get("observer_pid"):
         Path(v["observer_pid"]).write_text(str(os.getpid()))
+    if v.get("sized_frames") or not v["frames"]:
+        import base64
+        cols = int(a[a.index("--cols") + 1]) if "--cols" in a else 120
+        rows = int(a[a.index("--rows") + 1]) if "--rows" in a else 40
+        text = "\\x1b[2J\\x1b[H" + v["screen"] + v.get("cursor_ansi", "\\x1b[3;5H\\x1b[?25h")
+        print(json.dumps({"type": "terminal.frame", "seq": 1, "width": cols, "height": rows,
+                         "full": True, "bytes": base64.b64encode(text.encode()).decode()}), flush=True)
     for line in v["frames"]:
         print(line, flush=True)
     if v.get("hold"):
@@ -324,17 +339,105 @@ else:
                     finally:
                         service.close()
 
-    def test_screen_and_terminal_forward_rendered_text_and_raw_herdr_records(self):
-        self.data["frames"] = ['{"type":"terminal.frame", "data":"G1szMW1oaRtbMG0=","seq":7}',
-                               '{"type":"terminal.closed","reason":"closed"}']
+    def test_invalid_herdr_layout_returns_service_unavailable_for_screen(self):
+        self.start(poll_interval=3600)
+        for layout in (None, [], {"result": None}, {"result": {"layout": None}},
+                       {"result": {"layout": {"panes": [None]}}}):
+            with self.subTest(layout=layout):
+                self.data["layout_result"] = layout
+                self.save_fixture()
+                self.assertEqual(self.request("/v1/sessions/w1:p1/screen"),
+                                 (503, {"error": {"reason": "read_unavailable"}}))
+
+    def test_quiet_pane_resize_restarts_observer_with_full_frame_and_monotonic_sequence(self):
+        self.data.update(sized_frames=True, hold=True, observer_pid=str(self.root / "resize.pid"))
+        self.save_fixture()
+        self.start(poll_interval=0.05)
+        response = self.open_events("/v1/sessions/w1:p1/terminal")
+        def next_frame():
+            self.assertEqual(response.readline(), b"event: terminal.frame\n")
+            frame = json.loads(response.readline()[6:])
+            self.assertEqual(response.readline(), b"\n")
+            return frame
+        first = next_frame()
+        first_pid = int((self.root / "resize.pid").read_text())
+        self.data.update(viewport={"width": 91, "height": 31}, screen="resized",
+                         cursor_ansi="\x1b[30;90H\x1b[?25h")
+        self.save_fixture()
+        resized = next_frame()
+        self.assertEqual((first["width"], first["height"]), (149, 45))
+        self.assertEqual((resized["width"], resized["height"], resized["full"]), (91, 31, True))
+        self.assertEqual(resized["cursor"], {"x": 89, "y": 29, "visible": True})
+        self.assertGreater(resized["seq"], first["seq"])
+        self.assertIn(b"resized", base64.b64decode(resized["data"]))
+        self.assertNotEqual(first_pid, int((self.root / "resize.pid").read_text()))
+        with self.assertRaises(ProcessLookupError):
+            os.kill(first_pid, 0)
+        response.close()
+
+    def test_screen_and_frames_use_target_pane_viewport_and_cursor(self):
+        self.data.update(sized_frames=True)
+        self.save_fixture()
+        self.start(poll_interval=3600)
+        for width, height, cursor, ansi in [
+                (149, 45, {"x": 4, "y": 2, "visible": True}, "\x1b[3;5H\x1b[?25h"),
+                (83, 27, {"x": 82, "y": 26, "visible": False}, "\x1b[27;83H\x1b[?25l")]:
+            with self.subTest(size=(width, height)):
+                self.data.update(viewport={"width": width, "height": height}, cursor_ansi=ansi)
+                self.save_fixture()
+                status, screen = self.request("/v1/sessions/w1:p1/screen")
+                self.assertEqual(status, 200)
+                self.assertEqual((screen["width"], screen["height"], screen["cursor"]),
+                                 (width, height, cursor))
+                self.assertEqual(screen["text"], "\x1b[2J\x1b[H❯ hello\n" + ansi)
+                response = self.open_events("/v1/sessions/w1:p1/terminal")
+                self.assertEqual(response.readline(), b"event: terminal.frame\n")
+                frame = json.loads(response.readline()[6:])
+                self.assertEqual((frame["width"], frame["height"], frame["cursor"], frame["full"]),
+                                 (width, height, cursor, True))
+                self.assertEqual(base64.b64decode(frame["data"]).decode(), screen["text"])
+                response.close()
+
+    def test_bytes_frames_and_initial_screen_redact_secrets_without_losing_cursor(self):
+        text = "\x1b[2J\x1b[Haccess_token=screen-private\nvery-\x1b[1msecret\x1b[0m\n"
+        text += "\x1b]0;token=osc-private\x07\x1b[4;7H\x1b[?25h"
+        self.data["frames"] = [json.dumps(dict(type="terminal.frame", seq=1, full=True,
+            width=149, height=45, bytes=base64.b64encode(text.encode()).decode()))]
+        self.save_fixture()
+        service = self.start(poll_interval=3600)
+        service.sensitive.add("very-secret")
+        status, screen = self.request("/v1/sessions/w1:p1/screen")
+        self.assertEqual(status, 200)
+        response = self.open_events("/v1/sessions/w1:p1/terminal")
+        self.assertEqual(response.readline(), b"event: terminal.frame\n")
+        frame = json.loads(response.readline()[6:])
+        self.assertNotIn("bytes", frame)
+        cleaned = base64.b64decode(frame["data"]).decode()
+        self.assertEqual(cleaned, screen["text"])
+        self.assertEqual(cleaned.count("[redacted]"), 3)
+        for secret in ("screen-private", "very-", "secret", "osc-private"):
+            self.assertNotIn(secret, cleaned)
+        self.assertEqual(frame["cursor"], {"x": 6, "y": 3, "visible": True})
+        self.assertEqual(screen["cursor"], frame["cursor"])
+        response.close()
+
+    def test_screen_and_terminal_preserve_ansi_and_frame_metadata(self):
+        text = "\x1b[31mhi\x1b[0m\x1b[2;9H\x1b[?25h"
+        frame = dict(type="terminal.frame", data=base64.b64encode(text.encode()).decode(),
+                     seq=7, full=True, width=149, height=45, encoding="ansi")
+        self.data["frames"] = [json.dumps(frame), '{"type":"terminal.closed","reason":"closed"}']
         self.save_fixture()
         self.start()
+        cursor = {"x": 8, "y": 1, "visible": True}
         self.assertEqual(self.request("/v1/sessions/w1:p1/screen"),
-                         (200, {"pane_id": "w1:p1", "text": "❯ hello\n"}))
+                         (200, {"pane_id": "w1:p1", "text": text, "width": 149, "height": 45,
+                                "cursor": cursor}))
         response = self.open_events("/v1/sessions/w1:p1/terminal")
-        raw = response.read()
-        self.assertEqual(raw, b"".join(("event: " + json.loads(line)["type"] + "\ndata: " + line + "\n\n").encode()
-                                        for line in self.data["frames"]))
+        self.assertEqual(response.readline(), b"event: terminal.frame\n")
+        self.assertEqual(json.loads(response.readline()[6:]), dict(frame, cursor=cursor))
+        self.assertEqual(response.readline(), b"\n")
+        self.assertEqual(response.readline(), b"event: terminal.closed\n")
+        self.assertEqual(json.loads(response.readline()[6:]), {"type": "terminal.closed", "reason": "closed"})
 
     def test_disabled_access_rejects_every_session_route_before_lookup_or_input_validation(self):
         self.config.write_text("[serve]\nsession_access=false\n", encoding="utf-8")
@@ -449,6 +552,39 @@ else:
             headers["Idempotency-Key"] = key
         return self.request("/v1/sessions/" + pane + "/input", "POST", json.dumps(body), headers)
 
+    def test_supported_terminal_keys_and_strict_submit_validation(self):
+        self.start(poll_interval=3600)
+        keys = ["backspace", "left", "right", "ctrl+d", "shift+tab", "ctrl+a", "ctrl+u",
+                "space", "enter", "esc", "up", "down", "tab", "ctrl+c"]
+        self.assertEqual(self.input({"keys": keys})[0], 200)
+        self.assertEqual(json.loads(self.writes.read_text()), ["pane", "send-keys", "w1:p1", *keys])
+        for index, body in enumerate(
+                [{"keys": [key]} for key in ["delete", "home", "end", "pageup", "pagedown", "--help", "CTRL+D"]]
+                + [{"text": "x", "submit": value} for value in [0, 1, "false", None]]
+                + [{"keys": ["enter"], "submit": False}]):
+            with self.subTest(body=body):
+                self.assertEqual(self.input(body, key="invalid-" + str(index))[0], 400)
+        self.assertEqual(len(self.writes.read_text().splitlines()), 1)
+        self.assertEqual(self.input({"text": "x", "submit": True}, key="explicit")[0], 200)
+        self.assertEqual(json.loads(self.writes.read_text().splitlines()[-1]),
+                         ["pane", "send-keys", "w1:p1", "enter"])
+
+    def test_raw_text_does_not_submit_and_replays_without_resending(self):
+        service = self.start(poll_interval=3600)
+        body = {"text": "--测试\n粘贴", "submit": False}
+        self.assertEqual(self.input(body, key=None)[0], 400)
+        first = self.input(body)
+        self.assertEqual(first, (200, {"pane_id": "w1:p1", "accepted": True}))
+        self.assertEqual(self.input({"text": "changed", "submit": True}), first)
+        service.close()
+        self.start(poll_interval=3600)
+        self.assertEqual(self.input(body), first)
+        saved = "".join(path.read_text() for path in (self.state / "sessions" / "inputs").glob("*.json"))
+        self.assertNotIn("--测试", saved)
+        self.assertNotIn("粘贴", saved)
+        self.assertEqual([json.loads(line) for line in self.writes.read_text().splitlines()],
+                         [["pane", "send-text", "w1:p1", "--", "--测试\n粘贴"]])
+
     def test_input_requires_key_and_replays_first_result_across_restart_without_resending(self):
         service = self.start()
         self.assertEqual(self.input({"text": "你好"}, key=None)[0], 400)
@@ -526,7 +662,8 @@ else:
         self.assertEqual(self.input({"text": "--help"})[0], 200)
         self.assertEqual(json.loads(self.writes.read_text().splitlines()[0]),
                          ["pane", "send-text", "w1:p1", "--", "--help"])
-        self.assertEqual(self.request("/v1/sessions/w1:p1/screen")[1]["text"], "\x1b[31mhello\r\n")
+        self.assertEqual(self.request("/v1/sessions/w1:p1/screen")[1]["text"],
+                         "\x1b[2J\x1b[H\x1b[31mhello\r\n\x1b[3;5H\x1b[?25h")
 
     def test_local_execution_panes_are_excluded_from_initiator_sessions(self):
         from remote_dispatch import cli
@@ -624,7 +761,7 @@ else:
         event_contract = json.loads((base.CONTRACTS / "sessions-events.json").read_text())
         for expected in event_contract["events"]:
             self.assert_structure(self.next_event(response)[2], expected)
-        for name in ("projects", "list", "screen", "messages", "after", "input-text", "input-keys", "resolve", "closed"):
+        for name in ("projects", "list", "screen", "messages", "after", "input-text", "input-raw-text", "input-keys", "resolve", "closed"):
             with self.subTest(contract=name):
                 if name == "resolve":
                     cli.save_job(dict(job="fixture-job", user_id="fixture", rounds=1, host="none", initiator_session="session-one"))
@@ -645,7 +782,7 @@ else:
         response = self.open_events(example["request"]["path"])
         for frame in example["frames"]:
             self.assertEqual(response.readline().decode(), "event: " + json.loads(frame)["type"] + "\n")
-            self.assertEqual(response.readline().decode(), "data: " + frame + "\n")
+            self.assertEqual(json.loads(response.readline()[6:]), json.loads(frame))
             self.assertEqual(response.readline(), b"\n")
         response.close()
         with transcript.open("a") as stream:

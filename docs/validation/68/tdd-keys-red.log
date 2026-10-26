@@ -1,0 +1,14 @@
+test_supported_terminal_keys_and_strict_submit_validation (tests.test_rd_serve_sessions.SessionTests.test_supported_terminal_keys_and_strict_submit_validation) ... FAIL
+
+======================================================================
+FAIL: test_supported_terminal_keys_and_strict_submit_validation (tests.test_rd_serve_sessions.SessionTests.test_supported_terminal_keys_and_strict_submit_validation)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/mac/remote-dispatch/users/weicoz/wt/weicoz-remote-dispatch-v4-68-20261027-005018-799752000/tests/test_rd_serve_sessions.py", line 456, in test_supported_terminal_keys_and_strict_submit_validation
+    self.assertEqual(self.input({"keys": keys})[0], 200)
+AssertionError: 400 != 200
+
+----------------------------------------------------------------------
+Ran 1 test in 0.681s
+
+FAILED (failures=1)
