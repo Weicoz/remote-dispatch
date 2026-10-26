@@ -126,6 +126,7 @@ ln -s "$PWD/skills/weicoz-remote-dispatch" ~/.agents/skills/weicoz-remote-dispat
 - `docs/worker-setup.md`：目标机准备
 - `docs/user-profiles.md`：员工配置包格式
 - `docs/handoff.md`：多轮交接协议
+- `docs/reports.md`：状态变化汇报、合并窗口与 inbox
 - `docs/serve.md`：本机 Unix socket HTTP、事件流与 CLI 转交
 - `docs/cache-retention.md`：运行状态与缓存保留
 

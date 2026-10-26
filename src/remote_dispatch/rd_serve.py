@@ -31,6 +31,7 @@ from .rd_serve_logs import LogSnapshots
 from .rd_serve_progress import ProgressHistory
 from .rd_serve_history import instant
 from .rd_host_metrics import host_metrics
+from .rd_reports import Reports, read_reports
 
 
 WRITE_COMMANDS = {"session-default", "run", "resume", "ack", "review", "stop", "project", "inbox", "keep", "clean"}
@@ -252,6 +253,7 @@ class Service:
         self.project_routes = ProjectRoutes(self)
         self.sensitive = set()
         self.sessions = Sessions(self)
+        self.reports = Reports(self)
         self.log_snapshots = LogSnapshots(self)
         for host in self.config.hosts():
             for key, value in host.items():
@@ -292,6 +294,7 @@ class Service:
             self.log_snapshots.start()
             self.poller = threading.Thread(target=self.poll, daemon=True)
             self.poller.start()
+            self.reports.start()
             return self
         except BaseException:
             self.close()
@@ -321,6 +324,7 @@ class Service:
         if self.poller is not None:
             self.poller.join()
             self.poller = None
+        self.reports.close()
         # Drain an accepted CLI write before another service can own this state.
         with self.writes.lock, self.writer:
             self.lock.release()
@@ -465,6 +469,7 @@ class Service:
             with self.cache_lock:
                 self.hosts = hosts
             self.sessions.collect()
+            self.reports.ready.set()
             try:
                 records = self.records()
             except (ValueError, OSError, SystemExit):
@@ -580,6 +585,8 @@ class Service:
         url = urlsplit(target)
         path = unquote(url.path)
         args = parse_qs(url.query)
+        if path == "/v1/reports":
+            return 200, {"reports": read_reports(self.state, self.user_id, args.get("initiator_session", [None])[0])}
         extra = self.project_routes.read(path, args, device)
         if extra is not None:
             return extra

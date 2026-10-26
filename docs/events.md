@@ -17,6 +17,7 @@
 | `job.created` | 新派单登记；job、用户、项目、目标机、round、harness、model、dispatch_state |
 | `job.state_changed` | 派单准备／启动、续跑轮次、显式采集执行快照、主动停止；execution_state、executor_exit、停止者 |
 | `progress.updated` | 后台显式观察到进度变化；phase、summary、updated_at |
+| `report.created` | 控制端生成合并汇报；user_id、report_id、initiator_session、job_count；正文经 `/v1/reports` 或 `inbox` 读取，见 [汇报说明](reports.md) |
 | `receipt.ready` | 首次收取或主动停止改写回执；receipt_id、outcome、checks、执行状态 |
 | `receipt.acked` | 签收、代签、停止自动签收；receipt_id、acked_by、received_at、via |
 | `review.updated` | 通过、打回、作废；review_state、reviewed_by、reviewed_at |
