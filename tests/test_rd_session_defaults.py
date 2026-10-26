@@ -123,6 +123,44 @@ class DefaultsTests(unittest.TestCase):
             service.sessions.collect()
         self.assertEqual(self.command('session-one')['host'], None)
 
+    def test_put_for_missing_or_just_closed_pane_does_not_write_defaults_or_events(self):
+        from remote_dispatch import rd_events
+        self.saved_session()
+        service = self.start(poll_interval=3600)
+        self.command('session-one', '--host', 'retained-target')
+        defaults = self.state / 'session-defaults' / 'fixture.json'
+        before = defaults.read_bytes()
+        # Keep the service's cached pane list to expose stale-target writes as well.
+        self.data['agents'] = []
+        self.save_fixture()
+        for pane in ('missing', 'w1:p1'):
+            with self.subTest(pane=pane):
+                event_count = len([e for e in rd_events.read_after(self.state, 0)
+                                   if 'dispatch_defaults' in e['data']])
+                status, body = self.request('/v1/sessions/' + pane + '/dispatch-defaults', 'PUT',
+                    '{"host":"new-target"}', {'Content-Type': 'application/json', 'Idempotency-Key': pane})
+                self.assertEqual((status, body), (404, {'error': {'reason': 'session_closed',
+                                                                             'message': '会话已关闭。'}}))
+                self.assertEqual(defaults.read_bytes(), before)
+                self.assertEqual(len([e for e in rd_events.read_after(self.state, 0)
+                                      if 'dispatch_defaults' in e['data']]), event_count)
+                self.assertFalse((self.state / 'session-default-requests').exists())
+
+    def test_closed_pane_replays_saved_put_result_without_new_write(self):
+        self.saved_session()
+        self.start(poll_interval=3600)
+        path = '/v1/sessions/w1:p1/dispatch-defaults'
+        headers = {'Content-Type': 'application/json', 'Idempotency-Key': 'completed-default'}
+        first = self.request(path, 'PUT', '{"host":"target"}', headers)
+        self.assertEqual(first, (200, {'host': 'target', 'harness': None}))
+        self.data['agents'] = []
+        self.save_fixture()
+        before = serve.ServeTests.snapshot(self)
+        self.assertEqual(self.request(path, 'PUT', '{"host":"target"}', headers), first)
+        self.assertEqual(self.request(path, 'PUT', '{}', headers),
+                         (422, {'error': {'reason': 'idempotency_key_reused'}}))
+        self.assertEqual(serve.ServeTests.snapshot(self), before)
+
 
     def test_http_contracts_and_sensitive_field_projection(self):
         from remote_dispatch import rd_events
@@ -130,7 +168,7 @@ class DefaultsTests(unittest.TestCase):
         self.config.write_text('[defaults]\nenv_file=PRIVATE_MARKER\n'
                                'auth_file=PRIVATE_MARKER\nssh_opts=PRIVATE_MARKER\ntoken=PRIVATE_MARKER\n')
         service = self.start(poll_interval=3600)
-        for name in ('get', 'put', 'clear'):
+        for name in ('get', 'put', 'clear', 'closed'):
             example = json.loads((serve.CONTRACTS / ('session-dispatch-defaults-' + name + '.json')).read_text())
             for request in filter(None, [example.get('previous_request'), example['request']]):
                 result = self.request(request['path'], request['method'],

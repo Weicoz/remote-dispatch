@@ -1,0 +1,24 @@
+{
+  "request": {
+    "method": "PUT",
+    "path": "/v1/sessions/missing/dispatch-defaults",
+    "headers": {
+      "Content-Type": "application/json",
+      "Idempotency-Key": "missing-defaults"
+    },
+    "body": {
+      "host": "target",
+      "harness": "codex"
+    }
+  },
+  "response": {
+    "status": 404,
+    "body": {
+      "error": {
+        "reason": "session_closed",
+        "message": "会话已关闭。"
+      }
+    }
+  },
+  "events": []
+}

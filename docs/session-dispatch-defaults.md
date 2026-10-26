@@ -40,9 +40,12 @@ harness = codex
   返回值按本次配置的敏感值脱敏；配置格式损坏时返回 503 `read_unavailable` 与中文错误信息。
 - `PUT` 相同路径，要求 JSON 对象和 `Idempotency-Key`；完整替换两项，缺项或 `null`
   表示读配置。CLI 设置只更新指定项。
+  PUT 在写入前重新发现窗格；窗格不存在或已关闭时返回 404 `session_closed`，
+  不写默认值、幂等记录或事件。GET 仍允许读取保留期内的历史默认值。
 - 会话 ID 优先；Herdr 只能给出推测匹配时按窗格保存，避免误用其他会话的默认值。
 - 相同调用方、键、方法、路径和规范 JSON 请求体重放首次结果；同键异请求返回
   422 `idempotency_key_reused`。结果持久保存，服务重启后仍有效。
+  窗格已关闭时，已有成功请求仍重放首次结果，不写记录；新请求返回上述 404。
 - 实际变化才发 `session.changed`，携带 `user_id / pane_id / session_id / dispatch_defaults`。
   客户端收到此变体后重新读取默认值；原有会话状态事件不变。
 - 沿用会话访问总开关和设备权限；未开启时读写均返回 403 `session_access_disabled`。

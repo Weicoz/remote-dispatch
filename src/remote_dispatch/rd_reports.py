@@ -1,6 +1,7 @@
 """控制端汇报：消费状态事件、持久去重与按发起会话合并并经 Herdr 送达。"""
 import copy
 import hashlib
+import json
 import math
 from pathlib import Path
 import sys
@@ -11,10 +12,19 @@ from . import rd_events as events
 from . import rd_messages as messages
 from .rd_query import result_path
 from .rd_lock import JobBusy, JobLock
+from .rd_herdr import InputNotSubmitted
 from .rd_serve_history import instant
 
 
 STATE_TEXT = {"completed": "已完成", "blocked": "卡住", "offline": "离线", "failed": "失败"}
+REPORT_TEXT_LIMIT = 8000
+
+
+def input_text(text, redact):
+    """外部汇报只能作为有界单行文本进入终端，不能携带终端控制字节。"""
+    single_line = " | ".join(text.splitlines())
+    clean = "".join(c for c in single_line if ord(c) >= 32 and not 127 <= ord(c) <= 159)
+    return redact(clean)[:REPORT_TEXT_LIMIT]
 
 
 def store_path(state, user_id):
@@ -37,6 +47,7 @@ class Reports:
         self.thread = None
         self.reader = events.EventCursor(service.state)
         self.batch = None
+        self.started_at = messages.utc_now()
         try:
             self.window = service.config.cp.getfloat("monitor", "report_merge_window_seconds", fallback=5)
         except ValueError:
@@ -64,9 +75,12 @@ class Reports:
 
     def tick(self, *, now=None):
         now = time.time() if now is None else now
-        saved = messages.read_json(events.physical(self.path), limit=None) or dict(cursor=0, states={}, observed_at={}, progress={}, pending={}, reports=[])
-        before = copy.deepcopy(saved)
+        saved = messages.read_json(events.physical(self.path), limit=None)
         records = {rec["job"]: rec for rec in self.service.records()}
+        if saved is None:
+            self.initialize(records, now)
+            return
+        before = copy.deepcopy(saved)
         if self.batch is None:
             self.reader.seq = saved["cursor"]
             self.batch = self.reader.read()
@@ -108,7 +122,9 @@ class Reports:
         for owner, group in list(saved["pending"].items()):
             if now < group["due"]:
                 continue
-            report_id = hashlib.sha256(str(group).encode()).hexdigest()
+            content = [owner, sorted("{job}:{round}:{state}".format(**entry) for entry in group["entries"]),
+                       group["due"]]
+            report_id = hashlib.sha256(json.dumps(content, ensure_ascii=False, separators=(",", ":")).encode()).hexdigest()
             row = dict(id=report_id, initiator_session=owner, created_at=messages.utc_now(), entries=group["entries"],
                        delivery=dict(status="queued", reason=None, pane_id=None, delivered_at=None))
             saved["reports"].append(row)
@@ -124,6 +140,33 @@ class Reports:
         # already consumed by the incremental cursor.
         self.batch = None
         self.deliver(saved)
+
+    def initialize(self, records, now):
+        """首次启用只记录当前状态；历史事件和终态不变成新汇报。"""
+        log = self.reader.log
+        with events.EventLock(self.service.state):
+            cursor, _ = events.tail(log.path)
+            if not cursor:
+                archives = log.archives()
+                if archives:
+                    cursor, _ = events.tail(archives[-1])
+        saved = dict(cursor=cursor, states={}, observed_at={}, progress={}, pending={}, reports=[],
+                     baseline_pending=[], baseline_started_at=self.started_at, scan_due=now + 60)
+        query = self.service.query()
+        for rec in records.values():
+            snapshot = query.states([rec]).get(rec["job"], {})
+            number = int(snapshot.get("round") or rec["rounds"])
+            receipt = messages.read_json(result_path(self.service.state, rec, number)) or {}
+            stamp = instant(snapshot.get("snapshot_at"))
+            fresh = stamp is not None and stamp >= instant(self.started_at)
+            execution = snapshot.get("state")
+            if (execution in ("starting", None) or execution == "done" and not receipt
+                    or execution != "done" and not fresh):
+                saved["baseline_pending"].append(rec["job"] + ":" + str(number))
+                continue
+            self.observe(saved, rec, number, snapshot, receipt, now, observed_at=snapshot.get("snapshot_at"))
+        saved["pending"] = {}
+        messages.atomic_json(self.path, saved, limit=None)
 
     def deliver(self, saved):
         self.publish_deliveries(saved)
@@ -188,8 +231,13 @@ class Reports:
             "{title} · {host} · 第{round}轮 · {state_text}\n{summary}".format(**entry)
             for entry in row["entries"])
         try:
-            self.service.sessions.herdr.input(pane, {"text": self.service.redact(text)})
-        except OSError:
+            self.service.sessions.herdr.input(pane, {"text": input_text(text, self.service.redact)})
+        except InputNotSubmitted:
+            row["delivery"].update(status="text_delivered", reason="session_submit_failed",
+                                   delivered_at=messages.utc_now())
+            messages.atomic_json(self.path, saved, limit=None)
+            return
+        except (OSError, ValueError):
             self.set_delivery(saved, row, "inbox_only", "session_input_failed", pane)
             return
         row["delivery"].update(status="delivered", reason=None, delivered_at=messages.utc_now())
@@ -225,8 +273,18 @@ class Reports:
                       receipt.get("executor_exit") not in (None, 0, "0"))
                  else "completed" if execution == "done" else "running")
         key = rec["job"] + ":" + str(number)
+        if key in saved.get("baseline_pending", []):
+            stamp = instant(observed_at)
+            if stamp is None or stamp < instant(saved["baseline_started_at"]):
+                return
         if observed_at:
             saved["observed_at"][key] = observed_at
+        if key in saved.get("baseline_pending", []):
+            # First target collection may finish after the reports thread starts.
+            # Its first trustworthy observation belongs to the upgrade baseline.
+            saved["baseline_pending"].remove(key)
+            saved["states"][key] = state
+            return
         if saved["states"].get(key) == state:
             return
         saved["states"][key] = state

@@ -8,6 +8,10 @@ import subprocess
 import threading
 
 
+class InputNotSubmitted(OSError):
+    """文本已写入窗格，但回车未成功；调用方不得重发文本。"""
+
+
 class Herdr:
     def __init__(self):
         self.observers = set()
@@ -93,7 +97,10 @@ class Herdr:
     def input(self, pane, body):
         if "text" in body:
             self.run("pane", "send-text", pane, "--", body["text"])
-            self.run("pane", "send-keys", pane, "enter")
+            try:
+                self.run("pane", "send-keys", pane, "enter")
+            except (OSError, ValueError) as error:
+                raise InputNotSubmitted("文本已送达，但回车未成功。") from error
         else:
             self.run("pane", "send-keys", pane, *body["keys"])
 
