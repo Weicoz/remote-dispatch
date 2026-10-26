@@ -14,6 +14,7 @@ import configparser
 import functools
 import hashlib
 import json
+import math
 import os
 from pathlib import Path
 import re
@@ -53,12 +54,16 @@ DEFAULTS = {
     "platform": "posix",
     "python": "python",
     "max_cpu_pct": "85",
+    "warn_cpu_pct": "70",
     "tags": "",
     "enabled": "true",
     "max_heavy": "1",
     "max_load_per_core": "1.5",
     "min_free_mem_pct": "10",
     "min_free_disk_gb": "10",
+    "warn_load_per_core": "1.0",
+    "warn_free_mem_pct": "20",
+    "warn_free_disk_gb": "20",
     # 交换区已用量只反映历史累积（macOS 不主动回收冷页），超过它只提示不拦；
     # 拦派单看换页速率：持续高速换页，或交换区快用尽且仍在换页。
     "max_swap_used_gb": "15",
@@ -155,7 +160,7 @@ fi
 a=$(swapped); sleep 3; b=$(swapped)
 swapio=$(awk -v a="$a" -v b="$b" -v p="$pg" 'BEGIN {if (a != "" && b != "") printf "%d", (b - a) * p / 1024 / 3}')
 d="$ROOT"; [ -d "$d" ] || d="$HOME"
-disk=$(df -Pk "$d" | awk 'NR==2{printf "%d",$4/1048576}')
+diskinfo=$(df -Pk "$d" | awk 'NR==2{printf "disk=%d disk_total=%d",$4/1048576,$2/1048576}')
 running=0
 for j in "$SHARED_ROOT"/jobs/*/ "$SHARED_ROOT"/users/*/jobs/*/; do
   [ -f "$j/pid" ] && [ ! -f "$j/exit_code" ] && kill -0 "$(cat "$j/pid")" 2>/dev/null && running=$((running+1))
@@ -164,7 +169,7 @@ heavy=0
 for s in "$SHARED_ROOT"/locks/heavy.*/; do
   [ -f "$s/pid" ] && kill -0 "$(cat "$s/pid")" 2>/dev/null && heavy=$((heavy+1))
 done
-echo "os=$os ncpu=$ncpu load1=$load1 memfree=$memfree swap=$swap swapfree=$swapfree swapio=$swapio disk=$disk running=$running heavy=$heavy"
+echo "os=$os ncpu=$ncpu load1=$load1 memfree=$memfree swap=$swap swapfree=$swapfree swapio=$swapio $diskinfo running=$running heavy=$heavy"
 """
 
 
@@ -237,6 +242,15 @@ class Config:
         if self.cp.has_section("defaults"):
             h.update(self.cp["defaults"])
         h.update(sec)
+        for key in ("warn_load_per_core", "warn_free_mem_pct", "warn_free_disk_gb", "warn_cpu_pct"):
+            try:
+                value = float(h[key])
+            except (TypeError, ValueError):
+                value = -1
+            if not math.isfinite(value) or value < 0:
+                die(f"[host:{name}] {key} 必须是有限的非负数。", 4)
+            if key in ("warn_free_mem_pct", "warn_cpu_pct") and value > 100:
+                die(f"[host:{name}] {key} 必须在 0 到 100 之间。", 4)
         if h["platform"] in ("macos", "linux"):
             h["platform"] = "posix"
         if h["platform"] not in ("posix", "windows"):

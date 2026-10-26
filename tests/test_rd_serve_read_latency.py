@@ -40,12 +40,15 @@ class ReadLatencyTests(unittest.TestCase):
                 self.assertEqual(status, 200)
                 example = json.loads((base.CONTRACTS / "hosts-cold-start.json").read_text())
                 row = example["response"]["body"]["hosts"][0]
-                self.assertEqual(body["hosts"], [row, dict(row, name="remote", local=False)])
+                remote = json.loads(json.dumps(row))
+                remote.update(name="remote", local=False)
+                remote["metrics"]["cpu"].update(unit="cpu_pct", warning=70.0, pressure=85.0)
+                self.assertEqual(body["hosts"], [row, remote])
                 release.set()
                 rows = self.eventually(lambda: self.request("/v1/hosts")[1]["hosts"],
                                        lambda rows: all(row["probed"] for row in rows))
                 self.assertEqual(rows, [dict(row, probed=True),
-                                        dict(row, name="remote", local=False, probed=True)])
+                                        dict(remote, probed=True)])
             finally:
                 release.set()
                 service.close()

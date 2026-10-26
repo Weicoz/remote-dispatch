@@ -18,7 +18,33 @@
           "memfree": "80",
           "disk": "100",
           "running": "0",
-          "heavy": "0"
+          "heavy": "0",
+          "cpu_pct": null,
+          "disk_total": "500",
+          "metrics": {
+            "cpu": {
+              "value": 0.125,
+              "unit": "load_per_core",
+              "warning": 1.0,
+              "pressure": 1.5,
+              "level": "normal"
+            },
+            "memory": {
+              "value": 80.0,
+              "unit": "free_pct",
+              "warning": 20.0,
+              "pressure": 10.0,
+              "level": "normal"
+            },
+            "disk": {
+              "value": 100.0,
+              "total": 500.0,
+              "unit": "free_gb",
+              "warning": 20.0,
+              "pressure": 10.0,
+              "level": "normal"
+            }
+          }
         }
       ]
     }

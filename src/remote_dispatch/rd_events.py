@@ -24,7 +24,7 @@ FIELDS = {
     "receipt.acked": "job user_id project_id host round receipt_id received_at acked_by via suppress_push",
     "review.updated": "job user_id project_id host round review_state reviewed_by reviewed_at",
     "harness.stats_changed": "user_id harness total_round_count today_round_count recent_round_limit duration_sample_count average_duration_seconds consecutive_accepted consecutive_rejected last_result last_checks last_job last_round last_finished_at date_basis",
-    "host.changed": "host reachable state load1 ncpu memfree disk running heavy full",
+    "host.changed": "host reachable state load1 ncpu cpu_pct memfree disk disk_total running heavy full",
     "project.changed": "user_id project_id name first_dispatch_at last_dispatch_at dispatch_count hidden removed host accepted_round_count",
     "session.changed": "user_id pane_id session_id harness project project_id status status_text has_new_reply probable identity_text removed",
     "session.message": "user_id pane_id session_id project_id harness message_id kind message_time",

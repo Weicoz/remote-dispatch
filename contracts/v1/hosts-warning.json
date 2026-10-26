@@ -1,0 +1,53 @@
+{
+  "request": {
+    "method": "GET",
+    "path": "/v1/hosts"
+  },
+  "response": {
+    "status": 200,
+    "body": {
+      "hosts": [
+        {
+          "name": "target",
+          "local": true,
+          "reachable": true,
+          "probed": true,
+          "full": false,
+          "load1": "8",
+          "ncpu": "8",
+          "memfree": "20",
+          "disk": "20",
+          "running": "0",
+          "heavy": "0",
+          "cpu_pct": null,
+          "disk_total": "500",
+          "metrics": {
+            "cpu": {
+              "value": 1.0,
+              "unit": "load_per_core",
+              "warning": 1.0,
+              "pressure": 1.5,
+              "level": "warning"
+            },
+            "memory": {
+              "value": 20.0,
+              "unit": "free_pct",
+              "warning": 20.0,
+              "pressure": 10.0,
+              "level": "warning"
+            },
+            "disk": {
+              "value": 20.0,
+              "total": 500.0,
+              "unit": "free_gb",
+              "warning": 20.0,
+              "pressure": 10.0,
+              "level": "warning"
+            }
+          }
+        }
+      ]
+    }
+  },
+  "events": []
+}

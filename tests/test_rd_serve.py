@@ -77,7 +77,7 @@ class ServeTests(unittest.TestCase):
                                "env_file=/private/fixture-env\ncodex_auth_file=/private/fixture-auth\n"
                                "ssh_opts=-o SecretOption=fixture-ssh\n", encoding="utf-8")
         # Only the OS/resource boundary is replaced; job/report/log reads use real shell + files.
-        probe = patch.object(cli, "PROBE", 'echo "os=Darwin ncpu=8 load1=1 memfree=80 disk=100 running=0 heavy=0"')
+        probe = patch.object(cli, "PROBE", 'echo "os=Darwin ncpu=8 load1=1 memfree=80 disk=100 disk_total=500 running=0 heavy=0"')
         probe.start()
         self.addCleanup(probe.stop)
         self.rec = dict(job="fixture-job", user_id="fixture", host="target", rounds=1,
@@ -341,7 +341,7 @@ class ServeTests(unittest.TestCase):
             self.assertTrue(set(example) <= set(actual), (set(example), set(actual)))
             for key, value in example.items():
                 self.assert_structure(actual[key], value, nullable=key in {
-                    "report", "progress", "execution_state", "load1", "ncpu", "memfree", "disk", "running", "heavy",
+                    "report", "progress", "execution_state", "load1", "ncpu", "cpu_pct", "memfree", "disk", "disk_total", "value", "total", "running", "heavy",
                     "additions", "deletions", "snapshot_at"})
         elif isinstance(example, list) and example:
             self.assertTrue(actual)
