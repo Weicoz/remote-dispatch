@@ -136,9 +136,8 @@ class ReportTests(unittest.TestCase):
         service.reports.tick(now=125)
         self.assertEqual(len(self.reports(service)), 1)
 
-    def test_closed_app_absent_and_other_user_sessions_do_not_generate(self):
+    def test_app_absent_and_other_user_sessions_do_not_generate(self):
         for job, fields in (
-                ('closed', dict(initiator_session='closed-session')),
                 ('app', dict(initiator_session='app:device')),
                 ('absent', dict(initiator_session=None)),
                 ('other', dict(user_id='other'))):
@@ -204,7 +203,7 @@ class ReportTests(unittest.TestCase):
         service.reports.tick(now=66)
         self.assertEqual(len(self.reports(service)), 2)
 
-    def test_session_closed_during_merge_window_is_skipped(self):
+    def test_session_closed_during_merge_window_is_kept_in_inbox(self):
         self.receipt(self.job())
         service = self.service()
         service.reports.tick(now=0)
@@ -212,7 +211,9 @@ class ReportTests(unittest.TestCase):
         self.save_fixture()
         service.sessions.collect()
         service.reports.tick(now=5)
-        self.assertEqual(self.reports(service), [])
+        report = self.reports(service)[0]
+        self.assertEqual(report['delivery']['status'], 'inbox_only')
+        self.assertEqual(report['delivery']['reason'], 'session_closed')
 
     def test_failed_receipt_without_summary_preserves_exit_reason(self):
         rec = self.job()

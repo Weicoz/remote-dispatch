@@ -1,0 +1,12 @@
+{
+  "seq": 2,
+  "time": "2026-10-26T00:00:00+00:00",
+  "type": "report.delivered",
+  "data": {
+    "user_id": "fixture",
+    "report_id": "report-fixture",
+    "initiator_session": "session-one",
+    "pane_id": "w1:p1",
+    "delivered_at": "2026-10-26T00:00:00+00:00"
+  }
+}

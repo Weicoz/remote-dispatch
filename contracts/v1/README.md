@@ -116,3 +116,8 @@ JSON 类型，另用行为断言覆盖实际值、用户隔离、纯查询、锁
   `sessions-list/projects/resolve.json` 固定 `cwd` 与 `updated_at`，目录来自 Herdr pane，
   前景目录优先；`sessions-cwd-unknown.json` 展示实时目录读不到时的 null。
   字段对旧服务仍为可选；新服务固定输出。会话与项目接口的敏感扫描覆盖目录和新摘要字段。
+
+- 票 48：`reports.json` 追加可选 `delivery`（新服务固定返回），含
+  `status/reason/pane_id/delivered_at`；旧汇报读取时补排队显示字段，不写回状态。
+  `report-delivered.json` 是成功写入 Herdr 后的 `report.delivered` 事件，
+  仅含汇报标识与送达元数据，不含正文；状态和原因键见 `docs/reports.md`。

@@ -1,4 +1,4 @@
-"""控制端汇报：消费状态事件、持久去重与按发起会话合并，不写入会话。"""
+"""控制端汇报：消费状态事件、持久去重与按发起会话合并并经 Herdr 送达。"""
 import copy
 import hashlib
 import math
@@ -10,6 +10,7 @@ import time
 from . import rd_events as events
 from . import rd_messages as messages
 from .rd_query import result_path
+from .rd_lock import JobBusy, JobLock
 from .rd_serve_history import instant
 
 
@@ -22,7 +23,10 @@ def store_path(state, user_id):
 
 def read_reports(state, user_id, owner=None):
     saved = messages.read_json(events.physical(store_path(state, user_id)), limit=None) or {}
-    return [row for row in saved.get("reports", []) if owner is None or row["initiator_session"] == owner]
+    rows = [row for row in saved.get("reports", []) if owner is None or row["initiator_session"] == owner]
+    for row in rows:
+        row.setdefault("delivery", dict(status="queued", reason=None, pane_id=None, delivered_at=None))
+    return rows
 
 
 class Reports:
@@ -63,7 +67,6 @@ class Reports:
         saved = messages.read_json(events.physical(self.path), limit=None) or dict(cursor=0, states={}, observed_at={}, progress={}, pending={}, reports=[])
         before = copy.deepcopy(saved)
         records = {rec["job"]: rec for rec in self.service.records()}
-        sessions = self.service.sessions.list()
         if self.batch is None:
             self.reader.seq = saved["cursor"]
             self.batch = self.reader.read()
@@ -80,7 +83,7 @@ class Reports:
                 else:
                     snapshot = dict(state=data.get("execution_state", "done"), exit=data.get("executor_exit"))
                     self.observe(saved, dict(rec, host=data.get("host") or rec["host"]), number,
-                                 snapshot, receipt, sessions, now, observed_at=event["time"])
+                                 snapshot, receipt, now, observed_at=event["time"])
             saved["cursor"] = event["seq"]
         if now >= saved.get("scan_due", 0):
             query = self.service.query()
@@ -99,17 +102,15 @@ class Reports:
                 progress = query.report(rec, number, "progress")
                 if progress:
                     saved["progress"][key] = self.service.redact(progress.get("summary", ""))
-                self.observe(saved, rec, number, snapshot, receipt, sessions, now, observed_at=stamp)
+                self.observe(saved, rec, number, snapshot, receipt, now, observed_at=stamp)
             saved["scan_due"] = now + 60
         created = []
         for owner, group in list(saved["pending"].items()):
-            if not any(row.get("session_id") == owner for row in sessions):
-                del saved["pending"][owner]
-                continue
             if now < group["due"]:
                 continue
             report_id = hashlib.sha256(str(group).encode()).hexdigest()
-            row = dict(id=report_id, initiator_session=owner, created_at=messages.utc_now(), entries=group["entries"])
+            row = dict(id=report_id, initiator_session=owner, created_at=messages.utc_now(), entries=group["entries"],
+                       delivery=dict(status="queued", reason=None, pane_id=None, delivered_at=None))
             saved["reports"].append(row)
             created.append(dict(report_id=report_id, user_id=self.service.user_id,
                                 initiator_session=owner, job_count=len(row["entries"])))
@@ -122,8 +123,97 @@ class Reports:
         # Retain the batch on failure, so an in-process retry cannot lose events
         # already consumed by the incremental cursor.
         self.batch = None
+        self.deliver(saved)
 
-    def observe(self, saved, rec, number, snapshot, receipt, sessions, now, *, observed_at=None):
+    def deliver(self, saved):
+        self.publish_deliveries(saved)
+        waiting = set()
+        for row in saved["reports"]:
+            if row.get("delivery", {}).get("status") == "sending":
+                row["delivery"]["status"] = "inbox_only"
+                messages.atomic_json(self.path, saved, limit=None)
+            if row.get("delivery", {}).get("status") not in (None, "queued"):
+                continue
+            owner = row["initiator_session"]
+            if owner in waiting:
+                continue
+            lock = JobLock(self.service.state, "sessions")
+            lock.path = self.service.state / "locks" / "sessions" / "input.lock"
+            try:
+                # Same ordering and lock as Sessions.write_input: text and enter
+                # must form one input operation, including across processes.
+                with self.service.writer, lock:
+                    if self.service.stop.is_set():
+                        return
+                    self.deliver_one(saved, row)
+            except JobBusy:
+                waiting.add(owner)
+                continue
+            if row.get("delivery", {}).get("status") in (None, "queued"):
+                waiting.add(owner)
+        self.publish_deliveries(saved)
+
+    def set_delivery(self, saved, row, status, reason, pane=None):
+        delivery = dict(status=status, reason=reason, pane_id=self.service.redact(pane), delivered_at=None)
+        if row.get("delivery") != delivery:
+            row["delivery"] = delivery
+            messages.atomic_json(self.path, saved, limit=None)
+
+    def deliver_one(self, saved, row):
+        if not self.service.sessions.allowed():
+            self.set_delivery(saved, row, "inbox_only", "session_access_disabled")
+            return
+        try:
+            items = self.service.sessions.discover()
+        except (OSError, ValueError, KeyError, TypeError):
+            self.set_delivery(saved, row, "inbox_only", "herdr_unavailable")
+            return
+        target = next((item["row"] for item in sorted(items, key=lambda item: item["row"]["probable"])
+                       if item["row"]["session_id"] == row["initiator_session"]), None)
+        if target is None:
+            self.set_delivery(saved, row, "inbox_only", "session_closed")
+            return
+        pane = target["pane_id"]
+        if target["probable"]:
+            self.set_delivery(saved, row, "inbox_only", "session_identity_unconfirmed", pane)
+            return
+        if target["harness"] not in {"codex", "claude"}:
+            self.set_delivery(saved, row, "inbox_only", "harness_not_verified", pane)
+            return
+        if target["status"] != "idle":
+            self.set_delivery(saved, row, "queued", "session_not_idle", pane)
+            return
+        self.set_delivery(saved, row, "sending", "delivery_result_unknown", pane)
+        text = "派单汇报\n" + "\n".join(
+            "{title} · {host} · 第{round}轮 · {state_text}\n{summary}".format(**entry)
+            for entry in row["entries"])
+        try:
+            self.service.sessions.herdr.input(pane, {"text": self.service.redact(text)})
+        except OSError:
+            self.set_delivery(saved, row, "inbox_only", "session_input_failed", pane)
+            return
+        row["delivery"].update(status="delivered", reason=None, delivered_at=messages.utc_now())
+        saved.setdefault("delivery_events", []).append(row["id"])
+        messages.atomic_json(self.path, saved, limit=None)
+        self.service.wake.set()
+
+    def publish_deliveries(self, saved):
+        pending = saved.get("delivery_events", [])
+        if not pending:
+            return
+        # Persist success before publishing. Failed event writes can then be
+        # retried without ever crossing the external input boundary again.
+        with events.write_transaction([self.path]):
+            saved["delivery_events"] = []
+            messages.atomic_json(self.path, saved, limit=None)
+            for row in saved["reports"]:
+                if row["id"] in pending:
+                    events.emit(self.service.state, "report.delivered", dict(
+                        user_id=self.service.user_id, report_id=row["id"],
+                        initiator_session=row["initiator_session"], pane_id=row["delivery"]["pane_id"],
+                        delivered_at=row["delivery"]["delivered_at"]))
+
+    def observe(self, saved, rec, number, snapshot, receipt, now, *, observed_at=None):
         report = receipt.get("report") or {}
         execution = snapshot.get("state")
         if execution == "done" and not receipt:
@@ -143,7 +233,7 @@ class Reports:
         if state == "running":
             return
         owner = rec.get("initiator_session")
-        if not owner or owner.startswith("app:") or not any(row.get("session_id") == owner for row in sessions):
+        if not owner or owner.startswith("app:"):
             return
         summary = report.get("summary") if execution == "done" else saved["progress"].get(key)
         if state == "failed" and (execution != "done" or not summary):
