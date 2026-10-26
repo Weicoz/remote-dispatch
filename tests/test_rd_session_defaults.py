@@ -28,6 +28,46 @@ class DefaultsTests(unittest.TestCase):
             cli.main(['session-default', *args])
         return json.loads(output.getvalue())
 
+    def test_get_returns_current_configuration_independent_of_session_overrides(self):
+        self.saved_session()
+        self.start(poll_interval=3600)
+        self.command('session-one', '--host', 'session-target', '--harness', 'codex')
+        path = '/v1/sessions/w1:p1/dispatch-defaults'
+        for settings, expected in (
+            ('', dict(host='auto', harness=None)),
+            ('[defaults]\nharness=claude\n', dict(host='auto', harness='claude')),
+            ('[defaults]\nhost=config-target\nharness=dsh\n', dict(host='config-target', harness='dsh')),
+        ):
+            with self.subTest(settings=settings):
+                self.config.write_text(settings)
+                self.assertEqual(self.request(path), (200, dict(
+                    host='session-target', harness='codex', config=expected)))
+
+    def test_get_scrubs_sensitive_values_added_after_service_start(self):
+        self.saved_session()
+        self.start(poll_interval=3600)
+        for number, key in enumerate(('env_file', 'ssh_opts', 'ssh', 'codex_auth_file', 'token',
+                                      'password', 'secret', 'api_key', 'private_key', 'credential', 'authorization')):
+            with self.subTest(key=key):
+                marker = 'PRIVATE_MARKER_' + str(number)
+                self.command('session-one', '--host', 'session-' + marker)
+                self.config.write_text('[defaults]\nhost=target-' + marker + '\nharness=codex\n' +
+                                       key + '=' + marker + '\n')
+                status, body = self.request('/v1/sessions/w1:p1/dispatch-defaults')
+                self.assertEqual(status, 200)
+                self.assertEqual(body['config'], dict(host='target-[redacted]', harness='codex'))
+                self.assertEqual(body['host'], 'session-[redacted]')
+                self.assertNotIn(marker, json.dumps(body))
+
+    def test_get_reports_unreadable_configuration_as_json_error(self):
+        self.saved_session()
+        self.start(poll_interval=3600)
+        self.config.write_text('[defaults\nhost=target\n')
+        status, body = self.request('/v1/sessions/w1:p1/dispatch-defaults')
+        self.assertEqual(status, 503)
+        self.assertEqual(body['error']['reason'], 'read_unavailable')
+        self.assertEqual(body['error']['message'], '无法读取当前派单默认配置。')
+
     def test_cli_sets_reads_and_clears_defaults_per_user_and_session(self):
         self.assertEqual(self.command('one', '--host', 'target', '--harness', 'codex'),
                          {'host': 'target', 'harness': 'codex'})
@@ -44,7 +84,8 @@ class DefaultsTests(unittest.TestCase):
         self.saved_session()
         self.start(poll_interval=3600)
         path = '/v1/sessions/w1:p1/dispatch-defaults'
-        self.assertEqual(self.request(path), (200, {'host': None, 'harness': None}))
+        self.assertEqual(self.request(path), (200, dict(host=None, harness=None,
+                         config=dict(host='auto', harness=None))))
         body = json.dumps({'host': 'target', 'harness': 'codex'})
         headers = {'Content-Type': 'application/json', 'Idempotency-Key': 'default-one'}
         self.assertEqual(self.request(path, 'PUT', body, {'Content-Type': 'application/json'})[0], 400)
@@ -59,7 +100,8 @@ class DefaultsTests(unittest.TestCase):
         headers['Idempotency-Key'] = 'default-clear'
         self.assertEqual(self.request(path, 'PUT', '{"host": null, "harness": null}', headers),
                          (200, {'host': None, 'harness': None}))
-        self.assertEqual(self.request(path), (200, {'host': None, 'harness': None}))
+        self.assertEqual(self.request(path), (200, dict(host=None, harness=None,
+                         config=dict(host='auto', harness=None))))
 
     def test_closed_defaults_survive_restart_until_thirty_days_after_observed_close(self):
         from remote_dispatch import rd_messages
@@ -85,6 +127,8 @@ class DefaultsTests(unittest.TestCase):
     def test_http_contracts_and_sensitive_field_projection(self):
         from remote_dispatch import rd_events
         self.saved_session()
+        self.config.write_text('[defaults]\nenv_file=PRIVATE_MARKER\n'
+                               'auth_file=PRIVATE_MARKER\nssh_opts=PRIVATE_MARKER\ntoken=PRIVATE_MARKER\n')
         service = self.start(poll_interval=3600)
         for name in ('get', 'put', 'clear'):
             example = json.loads((serve.CONTRACTS / ('session-dispatch-defaults-' + name + '.json')).read_text())
@@ -100,6 +144,8 @@ class DefaultsTests(unittest.TestCase):
                 host='target', harness='codex', token='PRIVATE_MARKER', env_file='PRIVATE_MARKER')))
         serialized = json.dumps([self.request('/v1/sessions/w1:p1/dispatch-defaults'),
                                  service.redact(rd_events.read_after(self.state, 0))])
+        self.assertEqual(self.request('/v1/sessions/w1:p1/dispatch-defaults')[1]['config'],
+                         dict(host='auto', harness=None))
         for forbidden in ('PRIVATE_MARKER', 'auth_file', 'env_file', 'token'):
             self.assertNotIn(forbidden, serialized)
         before = serve.ServeTests.snapshot(self)
@@ -124,7 +170,8 @@ class DefaultsTests(unittest.TestCase):
         for number, body in enumerate(({'harness':'unsupported'}, {'host':'../bad'}, {'token':'private'})):
             headers['Idempotency-Key'] = 'invalid-' + str(number)
             self.assertEqual(self.request(path, 'PUT', json.dumps(body), headers)[0], 400)
-        self.assertEqual(self.request(path)[1], {'host': 'target', 'harness': None})
+        self.assertEqual(self.request(path)[1], dict(host='target', harness=None,
+                         config=dict(host='auto', harness=None)))
 
     def test_discovery_failure_does_not_start_retention_and_reopening_resets_close_time(self):
         from remote_dispatch import rd_messages
@@ -189,7 +236,8 @@ class DefaultsTests(unittest.TestCase):
             return replace(source, destination)
         with patch.object(os, 'replace', side_effect=fail_events):
             self.assertEqual(self.request(path, 'PUT', '{"host":"target"}', headers)[0], 503)
-        self.assertEqual(self.request(path)[1], {'host':None, 'harness':None})
+        self.assertEqual(self.request(path)[1], dict(host=None, harness=None,
+                         config=dict(host='auto', harness=None)))
         self.assertFalse(any('dispatch_defaults' in event['data'] for event in rd_events.read_after(self.state, 0)))
         self.assertEqual(self.request(path, 'PUT', '{"host":"target"}', headers)[0], 200)
 
@@ -207,7 +255,8 @@ class DefaultsTests(unittest.TestCase):
         self.data['agents'] = []
         self.save_fixture()
         service.sessions.collect()
-        self.assertEqual(self.request(path)[1], {'host':None, 'harness':None})
+        self.assertEqual(self.request(path)[1], dict(host=None, harness=None,
+                         config=dict(host='auto', harness=None)))
         self.assertEqual(self.command('session-one')['host'], 'first')
         self.assertEqual(self.command('session-two')['host'], 'second')
 

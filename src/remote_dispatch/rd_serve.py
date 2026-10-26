@@ -242,7 +242,9 @@ class Service:
         self.generations = {}
         self.progress = {}
         self.restore_snapshots()
+        self.host_last_seen = self.restore_host_last_seen()
         self.hosts = [dict(name=host["name"], local=cli.is_local(host), reachable=False,
+                           last_seen_at=self.host_last_seen.get(host["name"]),
                            full=False, probed=False, metrics=host_metrics(host, {}),
                            **{key: None for key in ("load1", "ncpu", "cpu_pct", "memfree", "disk", "disk_total", "running", "heavy")})
                       for host in self.config.hosts()]
@@ -365,15 +367,21 @@ class Service:
             self.wake.set()
             return dict(exit_code=process.returncode, stdout=process.stdout, stderr=process.stderr)
 
-    def redact(self, value):
+    @staticmethod
+    def is_sensitive_field(key):
+        return bool(re.search(r"(?i)(?:env_?file|auth_?file|ssh|password|secret|token|private_?key|api_?key|credential|authorization)", key))
+
+    def redact(self, value, *, sensitive=None):
         """Project nested display data and scrub configured secrets in free text."""
+        if sensitive is None:
+            sensitive = self.sensitive
         if isinstance(value, dict):
-            return {key: self.redact(item) for key, item in value.items()
-                    if not re.search(r"(?i)(?:env_?file|auth_?file|ssh|password|secret|token|private_?key|api_?key|credential|authorization)", key)}
+            return {key: self.redact(item, sensitive=sensitive) for key, item in value.items()
+                    if not self.is_sensitive_field(key)}
         if isinstance(value, list):
-            return [self.redact(item) for item in value]
+            return [self.redact(item, sensitive=sensitive) for item in value]
         if isinstance(value, str):
-            for secret in sorted(self.sensitive, key=len, reverse=True):
+            for secret in sorted(sensitive, key=len, reverse=True):
                 value = value.replace(secret, "[redacted]")
             value = re.sub(r"-----BEGIN [^-]*PRIVATE KEY-----.*?-----END [^-]*PRIVATE KEY-----",
                            "[redacted]", value, flags=re.S)
@@ -422,6 +430,16 @@ class Service:
             except (OSError, ValueError, TypeError, KeyError):
                 continue
 
+    def restore_host_last_seen(self):
+        try:
+            saved = messages.read_json(self.state / "serve-host-last-seen.json")
+        except (OSError, ValueError):
+            return {}
+        if not isinstance(saved, dict):
+            return {}
+        return {name: instant(value).isoformat() for name, value in saved.items()
+                if instant(value) is not None}
+
     def query(self):
         with self.cache_lock:
             snapshots, progress = dict(self.snapshots), dict(self.progress)
@@ -455,14 +473,22 @@ class Service:
                     break
                 try:
                     info = cli.probe(host)
+                    if info.get("reachable"):
+                        self.host_last_seen[host["name"]] = messages.utc_now()
+                        try:
+                            messages.atomic_json(self.state / "serve-host-last-seen.json", self.host_last_seen)
+                        except (OSError, ValueError):
+                            print("rdispatch: 无法保存目标机最后在线时间。", file=sys.stderr)
                     full = bool(info.get("reachable") and cli.assess(host, info))
                     log.observe_host(host, info, full=full)
                     hosts.append(dict(name=host["name"], local=cli.is_local(host),
                                       reachable=bool(info.get("reachable")), full=full, probed=True,
+                                      last_seen_at=self.host_last_seen.get(host["name"]),
                                       metrics=host_metrics(host, info),
                                       **{key: info.get(key) for key in ("load1", "ncpu", "cpu_pct", "memfree", "disk", "disk_total", "running", "heavy")}))
                 except (ValueError, OSError, SystemExit, subprocess.SubprocessError):
                     hosts.append(dict(name=host["name"], local=cli.is_local(host), reachable=False, full=False, probed=True,
+                                      last_seen_at=self.host_last_seen.get(host["name"]),
                                       metrics=host_metrics(host, {}),
                                       **{key: None for key in ("load1", "ncpu", "cpu_pct", "memfree", "disk", "disk_total", "running", "heavy")}))
                     print("rdispatch: poll_unavailable: cannot probe a host", file=sys.stderr)

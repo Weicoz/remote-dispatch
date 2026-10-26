@@ -26,7 +26,7 @@ class HostMetricsTests(unittest.TestCase):
         script = "echo " + shlex.quote(" ".join(f"{key}={value}" for key, value in info.items()))
         boundary = (patch.object(cli.native, "request", return_value=dict(info, os="Windows"))
                     if windows else patch.object(cli, "PROBE", script))
-        with boundary:
+        with boundary, patch.object(cli.messages, "utc_now", return_value="2026-10-26T01:00:00+00:00"):
             service = self.start(poll_interval=3600)
             row = self.eventually(lambda: self.request("/v1/hosts")[1]["hosts"][0],
                                   lambda row: row["probed"])
@@ -67,10 +67,11 @@ class HostMetricsTests(unittest.TestCase):
     def test_new_fields_cannot_carry_secrets_from_probe_or_configuration(self):
         row = self.host_row(dict(cpu_pct="token=private-marker", disk_total="private-marker",
                                  load1="env_file=/private/fixture-env", memfree="private-marker",
-                                 disk="private-marker", token="private-marker"),
+                                 disk="private-marker", token="private-marker", last_seen_at="private-marker"),
                             "env_file=/private/fixture-env\nssh_opts=private-marker\n"
                             "agent_auth_file=private-marker\n")
         self.assertEqual(set(row["metrics"]), {"cpu", "memory", "disk"})
+        self.assertEqual(row["last_seen_at"], "2026-10-26T01:00:00+00:00")
         for key, metric in row["metrics"].items():
             self.assertEqual(set(metric), {"value", "unit", "warning", "pressure", "level"}
                              | ({"total"} if key == "disk" else set()))

@@ -32,7 +32,12 @@ harness = codex
 
 ## serve 契约
 
-- `GET /v1/sessions/{Herdr窗格ID}/dispatch-defaults` 返回 `{host, harness}`。
+- `GET /v1/sessions/{Herdr窗格ID}/dispatch-defaults` 返回 `{host, harness, config: {host, harness}}`。
+  顶层两项仍是会话覆盖值，`null` 表示读配置；`config` 每次只读当前本地配置的
+  `[defaults] host/harness`，独立于会话覆盖。未配置目标机（或空值）为 `auto`，
+  未配置 harness（或空值）为 `null`，与 CLI 没有隐含默认 harness 的行为一致。
+  配置中的其他字段不返回。服务启动后修改默认值，下次 GET 即可读到；查询不写状态。
+  返回值按本次配置的敏感值脱敏；配置格式损坏时返回 503 `read_unavailable` 与中文错误信息。
 - `PUT` 相同路径，要求 JSON 对象和 `Idempotency-Key`；完整替换两项，缺项或 `null`
   表示读配置。CLI 设置只更新指定项。
 - 会话 ID 优先；Herdr 只能给出推测匹配时按窗格保存，避免误用其他会话的默认值。
@@ -55,3 +60,5 @@ harness = codex
 Herdr 会话设置默认值、用省略目标机和 harness 的 `run --prompt-file` 验证派单；
 分别显式覆盖两项并核对派单记录。App 使用上述 GET/PUT 和事件刷新，不另存状态。
 验证已配对设备权限与真实离线目标机错误；无需 Swift/App 构建。
+票 59 还需核对配置 `host/harness` 与 GET 的 `config` 相符：清除会话覆盖后
+显示配置值；设置会话覆盖后括号中的配置当前值仍保持独立。App 文案由编排方定稿。
