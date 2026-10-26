@@ -1,0 +1,54 @@
+{
+  "request": {
+    "method": "GET",
+    "path": "/v1/hosts"
+  },
+  "response": {
+    "status": 200,
+    "body": {
+      "hosts": [
+        {
+          "name": "target",
+          "local": false,
+          "reachable": false,
+          "full": false,
+          "probed": true,
+          "load1": null,
+          "ncpu": null,
+          "memfree": null,
+          "disk": null,
+          "running": null,
+          "heavy": null,
+          "cpu_pct": null,
+          "disk_total": null,
+          "metrics": {
+            "cpu": {
+              "value": null,
+              "unit": "cpu_pct",
+              "warning": 70.0,
+              "pressure": 85.0,
+              "level": "unknown"
+            },
+            "memory": {
+              "value": null,
+              "unit": "free_pct",
+              "warning": 20.0,
+              "pressure": 10.0,
+              "level": "unknown"
+            },
+            "disk": {
+              "value": null,
+              "total": null,
+              "unit": "free_gb",
+              "warning": 20.0,
+              "pressure": 10.0,
+              "level": "unknown"
+            }
+          },
+          "last_seen_at": "2026-10-26T01:01:00+00:00"
+        }
+      ]
+    }
+  },
+  "events": []
+}

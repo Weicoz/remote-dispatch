@@ -44,7 +44,8 @@
               "pressure": 10.0,
               "level": "pressure"
             }
-          }
+          },
+          "last_seen_at": "2026-10-26T01:00:00+00:00"
         }
       ]
     }

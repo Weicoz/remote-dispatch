@@ -1,4 +1,5 @@
 """控制端按用户保存的会话派单默认值；读取不创建文件。"""
+import configparser
 from pathlib import Path
 
 from . import rd_agents as agents
@@ -138,8 +139,22 @@ class DefaultRoutes:
     def read(self, path):
         match = self.match(path)
         if match:
+            from . import cli
             session, pane = self.target(match[1])
-            return 200, SessionDefaults(self.service.state, self.service.user_id).get(session, pane)
+            values = SessionDefaults(self.service.state, self.service.user_id).get(session, pane)
+            try:
+                configured = cli.Config().cp
+            except (OSError, UnicodeError, configparser.Error):
+                return 503, {'error': {'reason': 'read_unavailable', 'message': '无法读取当前派单默认配置。'}}
+            sensitive = set(self.service.sensitive)
+            for section in configured.sections():
+                for key, value in configured[section].items():
+                    if value and (key, value) != ('ssh', 'local') and self.service.is_sensitive_field(key):
+                        sensitive.add(value)
+            values['config'] = dict(
+                host=configured.get('defaults', 'host', fallback=None) or 'auto',
+                harness=configured.get('defaults', 'harness', fallback=None) or None)
+            return 200, self.service.redact(values, sensitive=sensitive)
         return None
 
     def put(self, handler):

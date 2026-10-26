@@ -127,11 +127,14 @@ class ServeTests(unittest.TestCase):
         self.assertEqual([row["job"] for row in cards], ["fixture-job"])
         self.assertEqual((cards[0]["round"], cards[0]["delivery_state"], cards[0]["review_state"]),
                          (1, "pending", "pending"))
+        previous_snapshot_at = cards[0]["snapshot_at"]
         # Pause collection via its public lifecycle, then restart with a long poll interval.
         service.close()
         service = self.start(poll_interval=3600)
+        # Restored cards may be readable before this poller's first writes finish.
         self.eventually(lambda: self.request("/v1/jobs")[1]["jobs"],
-                        lambda rows: rows and rows[0]["outcome"] == "completed")
+                        lambda rows: rows and rows[0]["outcome"] == "completed"
+                        and rows[0]["snapshot_at"] != previous_snapshot_at)
         before = self.snapshot()
         detail = self.request("/v1/jobs/fixture-job")[1]
         receipt = self.request("/v1/jobs/fixture-job/rounds/1/receipt")[1]

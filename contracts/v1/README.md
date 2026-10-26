@@ -23,6 +23,9 @@ JSON 类型，另用行为断言覆盖实际值、用户隔离、纯查询、锁
   `hosts-warning/pressure/unknown/windows.json` 展示对应状态，`hosts-cold-start.json`
   展示首次探测前的 null/unknown；探测失败同样不把未知标为正常。
   `host.changed` 新增可选 `cpu_pct/disk_total`；客户端收到事件后重读指标。
+  票 59 追加 `last_seen_at`：后台最近一次成功探测的控制端时间（带时区 ISO 8601），
+  在线时每次成功探测刷新；离线、冷启动时保留持久记录，从未成功则为 null。
+  `hosts-offline.json` 展示离线仍保留时间。查询不探测，单纯时间刷新不发事件。
 - `jobs.json`：卡片列表，只含当前用户和没有用户字段的旧记录，跨发起会话。
   卡片与详情各轮可选 `snapshot_at` 是后台执行快照的控制端采集时间；
   冷启动回退本地回执时取 `captured_at`，未知为 null。
@@ -107,6 +110,8 @@ JSON 类型，另用行为断言覆盖实际值、用户隔离、纯查询、锁
   `session-dispatch-defaults-clear.json`：会话默认值 GET/PUT，PUT 必须带幂等键，完整替换
   `{host, harness}`，缺项或 null 读配置；变化事件携带 `dispatch_defaults`。
   清除样例先执行 `previous_request`；详情见 `docs/session-dispatch-defaults.md`。
+  票 59 的 GET 增加 `config: {host, harness}`，只读当前 `[defaults]` 配置，
+  不受会话覆盖影响；host 缺省为 auto，harness 未配置为 null。PUT 和事件结构保持不变。
 
 - 票 57：`projects-summary.json` / `projects-summary-breakdown.json` 固定
   `blocked_count/offline_count/failed_count`，总字段 `needs_attention_count` 等于三项之和。
