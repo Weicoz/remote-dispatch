@@ -550,6 +550,103 @@ class ServeTests(unittest.TestCase):
         receipt = self.request("/v1/jobs/fixture-job/rounds/1/receipt")[1]["receipt"]
         self.assertEqual(receipt["report"]["checks"], "passed")
 
+    def test_progress_between_polls_is_complete_sorted_and_survives_restart(self):
+        service = self.seed(poll_interval=3600, running=True)
+        self.eventually(lambda: self.request("/v1/jobs/fixture-job")[1],
+                        lambda row: row["rounds"][0]["progress"] is not None)
+        with patch.object(cli.messages, "utc_now", return_value="2026-10-25T00:00:03Z"):
+            cli.messages.report(self.worker, "fixture-job", 1, "progress", "checking", "检查中")
+        with patch.object(cli.messages, "utc_now", return_value="2026-10-25T00:00:02Z"):
+            cli.messages.report(self.worker, "fixture-job", 1, "progress", "building", "构建中")
+        service.wake.set()
+        path = "/v1/jobs/fixture-job/rounds/1/progress"
+        status, body = self.eventually(lambda: self.request(path),
+                                       lambda row: row[0] == 200 and len(row[1]["progress"]) == 3)
+        self.assertEqual(status, 200)
+        self.assertEqual([row["phase"] for row in body["progress"]], ["building", "checking", "implementing"])
+        example = json.loads((CONTRACTS / "progress.json").read_text())
+        self.assert_structure(body, example["response"]["body"])
+        detail = self.request("/v1/jobs/fixture-job")[1]
+        self.assertEqual([row["data"]["phase"] for row in detail["rounds"][0]["progress_events"]],
+                         ["building", "checking", "implementing"])
+        before = len(events.read_after(self.state, 0))
+        service.close()
+        self.start(poll_interval=3600)
+        self.assertEqual(self.request(path), (status, body))
+        self.assertEqual(self.request("/v1/jobs/other-job/rounds/1/progress")[0], 404)
+        self.assertEqual(self.request("/v1/jobs/fixture-job/rounds/2/progress")[0], 404)
+        self.eventually(lambda: self.request("/v1/jobs/fixture-job")[1],
+                        lambda row: row["rounds"][0]["progress"] is not None)
+        self.assertEqual(len(events.read_after(self.state, 0)), before)
+
+    def test_progress_legacy_latest_and_no_progress_are_read_without_remote_queries(self):
+        service = self.seed(poll_interval=3600)
+        self.eventually(lambda: self.request("/v1/jobs/fixture-job")[1],
+                        lambda row: row["job"]["outcome"] == "completed")
+        path = "/v1/jobs/fixture-job/rounds/1/progress"
+        self.assertEqual(self.request(path), (200, {"progress": []}))
+        latest = cli.messages.report(self.worker, "fixture-job", 1, "progress", "legacy", "旧任务最新进度")
+        (self.worker / "reports/progress.r1.jsonl").unlink()
+        service.wake.set()
+        expected = {"progress": [dict(updated_at=latest["updated_at"], phase="legacy", summary="旧任务最新进度")]}
+        self.eventually(lambda: self.request(path), lambda row: row == (200, expected))
+        service.close()
+        with patch.object(cli.native, "request", side_effect=ValueError("offline")):
+            self.start(poll_interval=3600)
+            before = self.snapshot()
+            self.assertEqual(self.request(path), (200, expected))
+            self.assertEqual(self.snapshot(), before)
+
+    def test_progress_history_new_fields_are_projected_and_sensitive_text_is_scrubbed(self):
+        service = self.seed(poll_interval=3600, running=True)
+        self.eventually(lambda: self.request("/v1/jobs/fixture-job")[1],
+                        lambda row: row["rounds"][0]["progress"] is not None)
+        secret = "token=private-marker env_file=/private/fixture-env"
+        cli.messages.report(self.worker, "fixture-job", 1, "progress", secret, secret)
+        path = self.worker / "reports/progress.r1.jsonl"
+        rows = [json.loads(line) for line in path.read_text().splitlines()]
+        rows[-1].update(auth_file="private-marker", percentage=50)
+        path.write_text("".join(json.dumps(row) + "\n" for row in rows))
+        service.wake.set()
+        body = self.eventually(lambda: self.request("/v1/jobs/fixture-job/rounds/1/progress")[1],
+                               lambda row: len(row["progress"]) == 2)
+        for row in body["progress"]:
+            self.assertEqual(set(row), {"updated_at", "phase", "summary"})
+        self.assertIn("[redacted]", body["progress"][-1]["summary"])
+        cache = self.state / "serve-progress/fixture-job/r1.json"
+        for value in (body, cli.messages.read_json(cache)):
+            for forbidden in ("token", "env_file", "auth_file", "private-marker", "/private/fixture", "percentage"):
+                self.assertNotIn(forbidden, json.dumps(value))
+
+    def test_large_history_remains_available_for_prior_round_after_resume(self):
+        service = self.seed(poll_interval=3600)
+        self.eventually(lambda: self.request("/v1/jobs/fixture-job")[1],
+                        lambda row: row["job"]["outcome"] == "completed")
+        service.close()
+        for index in range(7):
+            cli.messages.report(self.worker, "fixture-job", 1, "progress", str(index), "中" * 8000)
+        # Start collecting after a resume, with no progress yet in the new round.
+        cli.save_job(dict(self.rec, rounds=2))
+        (self.worker / "run.r2.sh").write_text("")
+        self.start(poll_interval=3600)
+        path = "/v1/jobs/fixture-job/rounds/1/progress"
+        expected = self.eventually(lambda: self.request(path),
+                                   lambda row: row[0] == 200 and len(row[1]["progress"]) == 7)
+        self.assertEqual([row["phase"] for row in expected[1]["progress"]], ["0", "1", "2", "3", "4", "5", "6"])
+        self.assertEqual(self.request("/v1/jobs/fixture-job/rounds/2/progress"), (200, {"progress": []}))
+
+    def test_resume_collects_final_progress_of_an_already_cached_prior_round(self):
+        service = self.seed(poll_interval=3600, running=True)
+        path = "/v1/jobs/fixture-job/rounds/1/progress"
+        self.eventually(lambda: self.request(path), lambda row: row[0] == 200 and len(row[1]["progress"]) == 1)
+        cli.messages.report(self.worker, "fixture-job", 1, "progress", "finished", "前轮完成")
+        cli.save_job(dict(self.rec, rounds=2))
+        (self.worker / "run.r2.sh").write_text("")
+        service.wake.set()
+        result = self.eventually(lambda: self.request(path),
+                                 lambda row: row[0] == 200 and len(row[1]["progress"]) == 2)
+        self.assertEqual([row["phase"] for row in result[1]["progress"]], ["implementing", "finished"])
+
     def test_log_endpoint_does_not_follow_a_link_to_a_private_file(self):
         self.seed(poll_interval=3600)
         private = self.root / "private-data"

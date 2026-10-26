@@ -24,8 +24,9 @@ JSON 类型，另用行为断言覆盖实际值、用户隔离、纯查询、锁
   打回产生的新轮次从上一轮验收记录读取 `review_note`。旧记录没有保存原文时为 `null`。
   `started_at` 来自回执报告或当前轮的目标机快照，未知时为 `null`。
   `progress_events` 是事件日志中本用户本派单本轮的完整 `progress.updated` 事件，
-  包含 `seq/time/type/data`，按事件时间排序，同时间按 seq 排序；包含轮转段。
-  旧事件不会补造，尚无事件时为空列表。`job-details-timeline.json` 展示有原文的运行中轮次。
+  包含 `seq/time/type/data`，按进度 `updated_at`（缺少时用事件时间）排序，
+  同时间按 seq 排序；包含轮转段。后台从追加历史补采未观察过的进度事件，
+  尚无事件时为空列表。`job-details-timeline.json` 展示有原文的运行中轮次。
   `progress` 是最新采集到的 reporter 显示字段，无进度时为 `null`。
   历史未缓存或尚未结束的轮次，其 `receipt` 为 `null`。来源字段位于 `job`。
 - `receipt.json`：回执与报告、证据、签收和验收叠加。`report` 可为 `null`；
@@ -36,6 +37,12 @@ JSON 类型，另用行为断言覆盖实际值、用户隔离、纯查询、锁
   `evidence` 等沿用 reporter 的可选字段。签收对象包含
   `receipt_id/received_at/acked_by/via`（旧记录可能只有前两个字段）。
   未验收时 `reviewed_by/reviewed_at/review_note` 为 `null`。
+- `progress.json`（票 44）：`GET /v1/jobs/{job}/rounds/{n}/progress` 返回
+  `progress: [{updated_at, phase, summary}]`，无进度为空数组。后台完整回传目标机
+  `reports/progress.rN.jsonl`，按 `updated_at` 升序，同时间保持追加顺序；不加百分比。
+  旧目标机无追加文件时只返回最新一条。详情的 `progress_events` 同时补入这些更新，
+  按进度 `updated_at`（旧事件缺字段时用事件时间）和 seq 排序；重复轮询不重复发布。
+  查询只读本地快照，首次采集前为空，断线和服务重启保留上次采集的历史。
 - `logs-out.json` / `logs-err.json`：UTF-8 日志尾部，`text` 保留换行。
   `stream` 只接受 `out/err`，`tail` 默认 40，接受 1–10000 的整数。
   请求立即返回后台缓存并触发异步刷新；可选 `snapshot_at` 为缓存采集时间，

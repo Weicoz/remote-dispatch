@@ -549,6 +549,8 @@ def handle(q, incoming):
             raise ValueError("无效回执类型。")
         path = checked_path(root, "jobs/" + messages.job_id(q["job"]) + "/reports/" + q["kind"] + ".r" + str(number) + ".json")
         data = messages.read_json(path)
+        if q["kind"] == "progress" and data is not None:
+            data["history"] = messages.progress_rows(path.parent.parent, q["job"], number)
         return messages.validate_report(data, q["job"], number, q["kind"]) if data is not None else None
     if op in ("logs", "sessions"):
         directory = checked_path(root, "jobs/" + q["job"])

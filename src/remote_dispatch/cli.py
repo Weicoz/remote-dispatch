@@ -730,7 +730,7 @@ def result_path(rec, number):
 
 def remote_report(host, rec, number, kind):
     relative = "reports/" + kind + ".r" + str(messages.round_id(number)) + ".json"
-    if host["platform"] == "windows":
+    if host["platform"] == "windows" or kind == "progress":
         return native.request(host, "report-read", dict(job=rec["job"], round=number, kind=kind))
     path = '"$ROOT/jobs/' + messages.job_id(rec["job"]) + '/' + relative + '"'
     reply = ssh(host, f'if [ -L {path} ]; then exit 4; fi; if [ -f {path} ]; then head -c {messages.MAX_BYTES + 1} {path}; fi', check=False, timeout=30)
