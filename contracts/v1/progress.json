@@ -1,0 +1,13 @@
+{
+  "request": {"method": "GET", "path": "/v1/jobs/fixture-job/rounds/1/progress"},
+  "response": {
+    "status": 200,
+    "body": {
+      "progress": [
+        {"updated_at": "2026-10-25T00:00:02Z", "phase": "building", "summary": "构建中"},
+        {"updated_at": "2026-10-25T00:00:03Z", "phase": "checking", "summary": "检查中"}
+      ]
+    }
+  },
+  "events": []
+}

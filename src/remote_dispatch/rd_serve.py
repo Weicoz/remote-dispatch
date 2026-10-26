@@ -28,6 +28,7 @@ from .rd_serve_projects import ProjectRoutes
 from . import rd_harness_stats
 from .rd_serve_sessions import Sessions
 from .rd_serve_logs import LogSnapshots
+from .rd_serve_progress import ProgressHistory
 from .rd_serve_history import instant
 
 
@@ -477,7 +478,24 @@ class Service:
                             continue
                         snapshot = dict(snapshot, round=str(number), snapshot_at=messages.utc_now())
                         progress = cli.remote_report(cli.job_host(self.config, rec), rec, number, "progress") if rec.get("handoff_version") and snapshot.get("state") in ("running", "done") else None
-                        log.observe_job(rec, snapshot, progress)
+                        log.observe_job(rec, snapshot)
+                        history = ProgressHistory(self)
+                        if progress is not None:
+                            history.collect(rec, number, progress)
+                        if rec.get("handoff_version") and snapshot.get("state") in ("running", "done"):
+                            for prior in range(1, number):
+                                saved_history = history.saved(rec, prior)
+                                if saved_history is None or not saved_history.get("final"):
+                                    source = dict(rec)
+                                    if saved_history:
+                                        _, source["host"], source["worker_root"] = saved_history["generation"]
+                                        if source["worker_root"] is None:
+                                            source.pop("worker_root")
+                                        if source["host"] != rec["host"]:
+                                            source.pop("worker_platform", None)
+                                            source.pop("worker_python", None)
+                                    history.collect(rec, prior, cli.remote_report(
+                                        cli.job_host(self.config, source), source, prior, "progress"), final=True)
                         cli.collect_result(self.config, rec, snapshot)
                         # Persist only display data, so restart can serve the last
                         # observation while the first remote collection is pending.
@@ -566,7 +584,7 @@ class Service:
         records = self.records()
         if path == "/v1/jobs":
             return 200, {"jobs": [self.card(rec, query) for rec in records]}
-        match = re.fullmatch(r"/v1/jobs/([^/]+)(?:/rounds/([1-9][0-9]*)/(receipt|logs))?", path)
+        match = re.fullmatch(r"/v1/jobs/([^/]+)(?:/rounds/([1-9][0-9]*)/(receipt|logs|progress))?", path)
         if match:
             job, number, kind = match.groups()
             messages.job_id(job)
@@ -577,6 +595,8 @@ class Service:
                 number = int(number)
                 if number > rec["rounds"]:
                     return 404, {"error": {"reason": "not_found"}}
+                if kind == "progress":
+                    return 200, {"progress": ProgressHistory(self).read(rec, number)}
                 if kind == "receipt":
                     receipt = self.receipt(rec, number, query)
                     return (200, {"receipt": receipt}) if receipt else (404, {"error": {"reason": "receipt_unavailable"}})
@@ -593,7 +613,8 @@ class Service:
                     row = dict(event, data=events.display_data(event["type"], event["data"]))
                     progress_events.setdefault(row["data"].get("round"), []).append(row)
             for history in progress_events.values():
-                history.sort(key=lambda row: (instant(row["time"]).timestamp() if instant(row["time"]) else 0,
+                history.sort(key=lambda row: (instant(row["data"].get("updated_at") or row["time"]).timestamp()
+                                               if instant(row["data"].get("updated_at") or row["time"]) else 0,
                                                row["seq"]))
             for number in range(1, rec["rounds"] + 1):
                 try:

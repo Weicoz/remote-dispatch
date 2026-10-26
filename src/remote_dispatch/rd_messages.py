@@ -1,5 +1,6 @@
 """任务进度与结果回执；只记录本轮工作，不调度下一轮。"""
 import argparse
+from contextlib import contextmanager
 import datetime
 import hashlib
 import json
@@ -200,16 +201,90 @@ def atomic_json(path, data, limit=MAX_BYTES):
             os.unlink(staging)
 
 
-def read_json(path):
+def read_json(path, limit=RECEIPT_BYTES):
     path = Path(path)
     if not path.exists():
         return None
-    if any(p.is_symlink() for p in (path, *path.parents)) or path.stat().st_size > RECEIPT_BYTES:
+    if any(p.is_symlink() for p in (path, *path.parents)) or limit is not None and path.stat().st_size > limit:
         raise ValueError("回执路径或大小无效。")
     try:
         return json.loads(path.read_text(encoding="utf-8"))
     except (UnicodeError, ValueError):
         raise ValueError("回执不是有效的UTF-8 JSON。") from None
+
+
+def progress_rows(directory, job, number):
+    """Read complete append records; old workers expose only their latest update."""
+    job, number = job_id(job), round_id(number)
+    path = Path(directory) / "reports" / ("progress.r" + str(number) + ".jsonl")
+    if any(p.is_symlink() for p in (path, *path.parents)):
+        raise ValueError("进度路径不得是符号链接。")
+    try:
+        rows = []
+        with path.open("rb") as stream:
+            while True:
+                line = stream.readline(MAX_BYTES + 1)
+                if not line:
+                    break
+                if len(line) > MAX_BYTES:
+                    raise ValueError("单条进度超过64KiB。")
+                if not line.endswith(b"\n"):
+                    break  # A concurrent writer has not finished this record yet.
+                row = json.loads(line)
+                if not isinstance(row, dict) or not {"updated_at", "phase", "summary"} <= set(row):
+                    raise ValueError("进度记录格式无效。")
+                validate_report(dict(row, schema=1, job=job, round=number, kind="progress"), job, number, "progress")
+                rows.append({key: row[key] for key in ("updated_at", "phase", "summary")})
+        return rows
+    except FileNotFoundError:
+        latest = read_json(path.with_suffix(".json"))
+        if latest is None:
+            return []
+        validate_report(latest, job, number, "progress")
+        return [{key: latest.get(key, "") for key in ("updated_at", "phase", "summary")}]
+
+
+@contextmanager
+def progress_writer(path):
+    """The reporter is uploaded standalone, so its lock must work without the package."""
+    lock = path.with_suffix(".lock")
+    if any(p.is_symlink() for p in (lock, *lock.parents)):
+        raise ValueError("进度锁路径不得是符号链接。")
+    lock.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    fd = os.open(lock, os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0), 0o600)
+    with os.fdopen(fd, "r+b") as stream:
+        if os.name == "nt":
+            import msvcrt
+            # _locking supports bytes past EOF; avoid a racy initialization write.
+            stream.seek(0)
+            msvcrt.locking(fd, msvcrt.LK_LOCK, 1)
+        else:
+            import fcntl
+            fcntl.flock(fd, fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            if os.name == "nt":
+                stream.seek(0)
+                msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
+
+
+def append_progress(path, row):
+    body = (json.dumps(row, ensure_ascii=False) + "\n").encode("utf-8")
+    fd = os.open(path, os.O_RDWR | os.O_APPEND | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0), 0o600)
+    with os.fdopen(fd, "a+b") as stream:
+        # Recover only an unfinished final record, while holding progress_writer.
+        end = stream.seek(0, 2)
+        start = max(0, end - MAX_BYTES)
+        stream.seek(start)
+        tail = stream.read()
+        if tail and not tail.endswith(b"\n"):
+            if start and b"\n" not in tail:
+                raise ValueError("进度尾行超过64KiB。")
+            stream.truncate(start + tail.rfind(b"\n") + 1)
+        stream.write(body)
+        stream.flush()
+        os.fsync(fd)
 
 
 def validate_report(data, job, number, kind):
@@ -240,7 +315,16 @@ def report(directory, job, number, kind, phase="", summary="", outcome="complete
     if evidence is not None:
         data["evidence"] = validate_evidence(evidence)
     validate_report(data, job, number, kind)
-    atomic_json(Path(directory).resolve() / "reports" / (kind + ".r" + str(number) + ".json"), data)
+    path = Path(directory).resolve() / "reports" / (kind + ".r" + str(number) + ".json")
+    history = path.with_suffix(".jsonl")
+    if kind == "progress" and any(p.is_symlink() for p in (history, *history.parents)):
+        raise ValueError("进度路径不得是符号链接。")
+    if kind == "progress":
+        with progress_writer(history):
+            atomic_json(path, data)
+            append_progress(history, {key: data[key] for key in ("updated_at", "phase", "summary")})
+    else:
+        atomic_json(path, data)
     return data
 
 

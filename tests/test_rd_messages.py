@@ -11,6 +11,7 @@ import unittest
 from unittest.mock import patch
 
 from remote_dispatch import rd_messages as messages
+from remote_dispatch import rd_native as native
 from test_rd import rd, WorkerTests
 
 
@@ -19,6 +20,54 @@ class MessageTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory(prefix="rd-messages-")
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name).resolve()
+
+    def test_progress_appends_each_update_and_keeps_latest_with_existing_summary_limit(self):
+        first = messages.report(self.root, "job-a", 1, "progress", "reading", "读取\n票据")
+        second = messages.report(self.root, "job-a", 1, "progress", "checking", "中" * 8000)
+        history = self.root / "reports/progress.r1.jsonl"
+        rows = [json.loads(line) for line in history.read_text(encoding="utf-8").splitlines()]
+        self.assertEqual(rows, [dict(updated_at=first["updated_at"], phase="reading", summary="读取\n票据"),
+                                dict(updated_at=second["updated_at"], phase="checking", summary="中" * 8000)])
+        self.assertEqual(messages.read_json(self.root / "reports/progress.r1.json"), second)
+        self.assertEqual(history.stat().st_mode & 0o777, 0o600)
+        with self.assertRaises(ValueError):
+            messages.report(self.root, "job-a", 1, "progress", summary="中" * 8001)
+        self.assertEqual(len(history.read_text(encoding="utf-8").splitlines()), 2)
+
+    def test_windows_report_transport_reads_large_append_history_and_legacy_latest(self):
+        directory = self.root / "jobs" / "job-a"
+        for index in range(5):
+            messages.report(directory, "job-a", 1, "progress", str(index), "中" * 8000)
+        query = dict(operation="report-read", workdir=str(self.root), shared_workdir=str(self.root),
+                     job="job-a", round=1, kind="progress")
+        with patch.object(native, "request", side_effect=lambda host, op, data: native.handle(
+                dict(query, **data), io.BytesIO())):
+            report = rd.remote_report({"platform": "windows"}, dict(job="job-a"), 1, "progress")
+        self.assertEqual([row["phase"] for row in report["history"]], ["0", "1", "2", "3", "4"])
+        self.assertEqual(len(report["history"][-1]["summary"]), 8000)
+        (directory / "reports/progress.r1.jsonl").unlink()
+        legacy = native.handle(query, io.BytesIO())
+        self.assertEqual([row["phase"] for row in legacy["history"]], ["4"])
+        self.assertIsNone(native.handle(dict(query, round=2), io.BytesIO()))
+
+    def test_progress_append_refuses_symlinks_and_reader_ignores_incomplete_tail(self):
+        messages.report(self.root, "job-a", 1, "progress", "first", "读取中")
+        path = self.root / "reports/progress.r1.jsonl"
+        with path.open("ab") as stream:
+            stream.write(b'{"updated_at":')
+        self.assertEqual([row["phase"] for row in messages.progress_rows(self.root, "job-a", 1)], ["first"])
+        messages.report(self.root, "job-a", 1, "progress", "recovered", "恢复追加")
+        self.assertEqual([row["phase"] for row in messages.progress_rows(self.root, "job-a", 1)],
+                         ["first", "recovered"])
+        path.unlink()
+        private = self.root / "private"
+        private.write_text("marker")
+        path.symlink_to(private)
+        with self.assertRaises(ValueError):
+            messages.report(self.root, "job-a", 1, "progress", "second", "检查中")
+        with self.assertRaises(ValueError):
+            messages.progress_rows(self.root, "job-a", 1)
+        self.assertEqual(private.read_text(), "marker")
 
     def test_progress_and_partial_result_preserve_check_evidence_and_do_not_schedule(self):
         messages.report(self.root, "job-a", 1, "progress", "checking", "等待检查")
