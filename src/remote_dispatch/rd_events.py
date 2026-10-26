@@ -26,7 +26,7 @@ FIELDS = {
     "harness.stats_changed": "user_id harness total_round_count today_round_count recent_round_limit duration_sample_count average_duration_seconds consecutive_accepted consecutive_rejected last_result last_checks last_job last_round last_finished_at date_basis",
     "host.changed": "host reachable state load1 ncpu memfree disk running heavy full",
     "project.changed": "user_id project_id name first_dispatch_at last_dispatch_at dispatch_count hidden removed host accepted_round_count",
-    "session.changed": "user_id pane_id session_id harness project project_id status status_text has_new_reply probable identity_text removed",
+    "session.changed": "user_id pane_id session_id harness project project_id status status_text has_new_reply probable identity_text removed dispatch_defaults",
     "session.message": "user_id pane_id session_id project_id harness message_id kind message_time",
 }
 DEFAULT_MAX_BYTES = 10 * 1024 * 1024
@@ -79,6 +79,8 @@ def display_data(kind, data):
         projected["candidates"] = [{"address": row["address"], "port": row["port"]}
             for row in data["candidates"] if isinstance(row, dict)
             and isinstance(row.get("address"), str) and type(row.get("port")) is int]
+    if kind == "session.changed" and isinstance(data.get("dispatch_defaults"), dict):
+        projected["dispatch_defaults"] = {key: data["dispatch_defaults"].get(key) for key in ("host", "harness")}
     if kind == "harness.stats_changed" and isinstance(data.get("host_stats"), list):
         projected["host_stats"] = [dict(host=row["host"], daily_round_counts=[
             dict(date=day["date"], round_count=day["round_count"])

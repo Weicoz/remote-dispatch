@@ -1,0 +1,14 @@
+{
+  "request": {
+    "method": "GET",
+    "path": "/v1/sessions/w1:p1/dispatch-defaults"
+  },
+  "response": {
+    "status": 200,
+    "body": {
+      "host": null,
+      "harness": null
+    }
+  },
+  "events": []
+}

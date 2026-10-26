@@ -84,3 +84,7 @@ JSON 类型，另用行为断言覆盖实际值、用户隔离、纯查询、锁
   `network-pair-replay.json`：配对码／设备令牌只在首次响应返回；相同配对或开启窗口
   请求重放返回 403 `pairing_closed`，缓存不含两类秘密明文。
 - `sessions-terminal.json`：保留帧结构和 ANSI；含敏感正文时对 Base64 解码数据脱敏后重新编码。
+- `session-dispatch-defaults-get.json` / `session-dispatch-defaults-put.json` /
+  `session-dispatch-defaults-clear.json`：会话默认值 GET/PUT，PUT 必须带幂等键，完整替换
+  `{host, harness}`，缺项或 null 读配置；变化事件携带 `dispatch_defaults`。
+  清除样例先执行 `previous_request`；详情见 `docs/session-dispatch-defaults.md`。

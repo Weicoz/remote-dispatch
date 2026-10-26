@@ -31,7 +31,7 @@ from .rd_serve_logs import LogSnapshots
 from .rd_serve_history import instant
 
 
-WRITE_COMMANDS = {"run", "resume", "ack", "review", "stop", "project", "inbox", "keep", "clean"}
+WRITE_COMMANDS = {"session-default", "run", "resume", "ack", "review", "stop", "project", "inbox", "keep", "clean"}
 MAX_REQUEST_BYTES = 8 * 1024 * 1024
 
 
@@ -156,6 +156,9 @@ class Handler(BaseHTTPRequestHandler):
             pass
         except (OSError, subprocess.SubprocessError):
             self.json(503, {"error": {"reason": "read_unavailable"}})
+
+    def do_PUT(self):
+        self.server.service.sessions.defaults.put(self)
 
     def do_POST(self):
         try:

@@ -35,6 +35,7 @@ from . import rd_review as reviews
 from . import rd_events as events
 from .rd_lock import JobBusy, JobLock
 from . import rd_initiator as initiators
+from .rd_session_defaults import SessionDefaults
 
 CONFIG = os.environ.get("RD_CONFIG") or os.path.expanduser("~/.config/remote-dispatch/config.ini")
 STATE = os.environ.get("RD_STATE") or os.path.expanduser("~/.local/state/remote-dispatch")
@@ -601,7 +602,7 @@ def pick_host(cfg, name, tags):
         why = assess(host, info)
         print(fmt_probe(host, info, why))
         if why:
-            die(f"{name} cannot take the job now ({'; '.join(why)}). Wait, or pass --force-host.", 3)
+            die(f"目标机 {name} 离线或暂时无法接单（{'; '.join(why)}）；未派出，请检查目标机状态。", 3)
         return host
     matching = [h for h in cfg.hosts() if set(tags) <= {t.strip() for t in h["tags"].split(",") if t.strip()}]
     hosts = [h for h in matching if not is_local(h)]
@@ -1050,8 +1051,37 @@ def agent_preflight(host, uid, name, agent):
     return profile
 
 
+def cmd_session_default(a, cfg):
+    values = {}
+    for key in ("host", "harness"):
+        if getattr(a, "clear_" + key) or a.clear:
+            values[key] = None
+        elif getattr(a, key) is not None:
+            values[key] = getattr(a, key)
+    store = SessionDefaults(STATE, require_user())
+    session, pane = (None, a.session) if a.pane else (a.session, None)
+    if values:
+        _, result = store.update(values, session=session, pane=pane)
+    else:
+        result = store.get(session=session, pane=pane)
+    print(json.dumps(result, ensure_ascii=False))
+
+
 def cmd_run(a, cfg):
     uid = require_user()
+    forwarded_origin = getattr(a, "_forwarded_origin", None)
+    origin_harness = forwarded_origin["initiator_harness"] if forwarded_origin else initiators.harness()
+    owner = initiator_session(a, origin_harness)
+    pane = ((forwarded_origin.get("initiator_herdr") or {}).get("pane_id") if forwarded_origin
+            else os.environ.get("HERDR_PANE_ID"))
+    defaults = SessionDefaults(STATE, uid).get(owner, pane) if owner or pane else {}
+    configured = dict(cfg.cp["defaults"]) if cfg.cp.has_section("defaults") else {}
+    a.host = a.host if a.host is not None else defaults.get("host") or configured.get("host") or "auto"
+    # A command/test dispatch remains a command even when the session has a harness default.
+    if not a.agent and not a.cmd and not a.test:
+        a.agent = defaults.get("harness") or configured.get("harness")
+    if a.host != "auto" and not cfg.cp.has_section("host:" + a.host):
+        die(f"目标机不存在：{a.host}；请修改会话派单默认值或显式指定 --host。", 4)
     repo = local_repo(get_dir(a))
     project, origin_url = project_name(repo)
     proj = cfg.project(a.project or project)
@@ -1141,8 +1171,6 @@ def cmd_run(a, cfg):
         profile = None
         if a.agent:
             profile = agent_preflight(host, uid, a.agent, agent)
-        forwarded_origin = getattr(a, "_forwarded_origin", None)
-        origin_harness = forwarded_origin["initiator_harness"] if forwarded_origin else initiators.harness()
         rec = {"job": job, "host": host["name"], "project": project, "origin": origin_url, "repo": repo, "branch": branch,
                "base": sha, "source_branch": source_branch, "include_paths": include_paths,
                "sync": host["sync"], "agent": a.agent, "cmd": a.cmd, "rounds": 1,
@@ -1152,7 +1180,7 @@ def cmd_run(a, cfg):
                "agent_kind": a.agent, "isolated": bool(a.agent), "permission_mode": permission,
                "auth_file": host[spec["auth_key"]] if a.agent else host["codex_auth_file"],
                "worker_platform": host["platform"], "worker_python": host["python"], "heavy": a.heavy,
-               "handoff_version": 1, "initiator_session": initiator_session(a, origin_harness)}
+               "handoff_version": 1, "initiator_session": owner}
         rec["round_prompts"] = {"1": prompt}
         source = dict(forwarded_origin) if forwarded_origin else initiators.origin(origin_harness, rec["created"])
         source["initiator_herdr"] = dict(source["initiator_herdr"], captured_at=rec["created"])
@@ -2139,12 +2167,12 @@ def main(argv=None, *, forwarded=None):
     p.set_defaults(fn=cmd_doctor)
 
     p = sub.add_parser("run", parents=[repo_parser], help="dispatch an agent session or a command")
-    p.add_argument("--agent", help=f"agent to run ({', '.join(agents.SPECS)}); [agent:NAME] in the config only overrides their templates")
+    p.add_argument("--agent", "--harness", help=f"agent to run ({', '.join(agents.SPECS)}); [agent:NAME] in the config only overrides their templates")
     p.add_argument("--prompt-file", help="prompt for the agent ('-' reads stdin)")
     p.add_argument("--cmd", help="shell command to run instead of an agent")
     p.add_argument("--test", action="store_true", help="run the project's configured test command")
     p.add_argument("--heavy", action="store_true", help="hold a heavy slot while the command runs")
-    p.add_argument("--host", default="auto", help="machine name, or auto (default)")
+    p.add_argument("--host", help="目标机，或 auto；默认按会话派单默认值、[defaults] host、auto 取值")
     p.add_argument("--force-host", action="store_true", help="skip the load check for --host")
     p.add_argument("--tag", action="append", default=[], help="only machines with this tag (repeatable)")
     p.add_argument("--ref", default="HEAD", help="commit to send (default HEAD)")
@@ -2161,6 +2189,16 @@ def main(argv=None, *, forwarded=None):
     p.add_argument("--timeout", type=int, help="seconds before the job is killed")
     p.add_argument("--initiator-session", help="发起方会话ID；默认 RD_INITIATOR_SESSION，再读取父进程链识别的 harness 会话变量")
     p.set_defaults(fn=cmd_run)
+
+    p = sub.add_parser("session-default", help="读取、设置或清除会话派单默认值")
+    p.add_argument("session", help="发起会话 ID；--pane 时为 Herdr 窗格 ID")
+    p.add_argument("--pane", action="store_true", help="按 Herdr 窗格保存默认值")
+    for field in ("host", "harness"):
+        group = p.add_mutually_exclusive_group()
+        group.add_argument("--" + field)
+        group.add_argument("--clear-" + field, action="store_true")
+    p.add_argument("--clear", action="store_true", help="清除目标机和 harness 默认值，改读配置")
+    p.set_defaults(fn=cmd_session_default)
 
     p = sub.add_parser("status", parents=[repo_parser], help="show jobs")
     p.add_argument("job", nargs="?")
