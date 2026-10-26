@@ -37,6 +37,7 @@ from . import rd_events as events
 from .rd_lock import JobBusy, JobLock
 from . import rd_initiator as initiators
 from .rd_session_defaults import SessionDefaults
+from .rd_reports import read_reports
 
 CONFIG = os.environ.get("RD_CONFIG") or os.path.expanduser("~/.config/remote-dispatch/config.ini")
 STATE = os.environ.get("RD_STATE") or os.path.expanduser("~/.local/state/remote-dispatch")
@@ -840,7 +841,8 @@ def cmd_inbox(a, cfg):
             elif ack.get("acked_by") and ack["acked_by"] != owner:
                 receipts.append(dict(receipt, delivery_state="received", delegated=True,
                                      acknowledgement=ack, summary=messages.result_summary(receipt)["summary"]))
-    print(json.dumps(dict(initiator_session=owner, results=receipts, unreachable=unavailable), ensure_ascii=False, indent=2))
+    print(json.dumps(dict(initiator_session=owner, results=receipts, unreachable=unavailable,
+                         reports=read_reports(STATE, uid, owner)), ensure_ascii=False, indent=2))
 
 
 @locked_job
@@ -1534,6 +1536,16 @@ def cmd_watch(a, cfg):
                 if rec.get("handoff_version"):
                     snapshot.update(initiator_session=rec.get("initiator_session"),
                                     result_ready=state.get("state") == "done", needs_initiator_review=True)
+                    try:
+                        number = int(state.get("round") or rec["rounds"])
+                        reader = queries(cfg)
+                        progress = reader.report(rec, number, "progress") if state.get("state") != "unreachable" else None
+                        receipt = reader.result(rec, number, state)
+                        snapshot.update(progress={key: progress[key] for key in ("phase", "summary", "updated_at")
+                                                  if key in progress} if progress else None,
+                                        result_summary=messages.result_summary(receipt) if receipt else None)
+                    except (ValueError, OSError, SystemExit, subprocess.SubprocessError):
+                        snapshot.update(progress=None, result_summary=None, summary_unavailable=True)
             print(json.dumps({"event": event, "finished": finished, "jobs": jobs}, ensure_ascii=False), flush=True)
             failed = bool(stalled) or (unavailable and not keep) or any(states[job].get("exit") != "0" for job in finished)
             sys.exit(1 if failed else 0 if finished else 2)

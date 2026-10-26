@@ -1,0 +1,16 @@
+{
+  "reports": [{
+    "id": "report-fixture",
+    "initiator_session": "session-one",
+    "created_at": "2026-10-26T00:00:00+00:00",
+    "entries": [{
+      "job": "fixture-job",
+      "title": "实现汇报",
+      "host": "target",
+      "round": 1,
+      "state": "completed",
+      "state_text": "已完成",
+      "summary": "检查已通过"
+    }]
+  }]
+}

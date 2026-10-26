@@ -92,7 +92,7 @@ class ProjectsStatsTests(unittest.TestCase):
         self.dispatch("offline", "unreachable", host="offline")
         self.dispatch("lost", "missing", host="lost")
         self.dispatch("private", user="other", project="private")
-        self.start(poll_interval=3600)
+        service = self.start(poll_interval=3600)
         rows = self.eventually(lambda: self.request("/v1/projects")[1].get("projects", []),
                                lambda rows: rows and rows[0].get("hosts", {}).get("offline", {}).get("state") == "offline")
         self.assertEqual([row["name"] for row in rows], ["demo"])
@@ -119,8 +119,11 @@ class ProjectsStatsTests(unittest.TestCase):
         while self.next_event(stream)[1] != "harness.stats_changed":
             pass
         stream.close()
+        # The HTTP assertions above run with collection active. Quiesce all
+        # background writers before isolating the query's no-write guarantee.
+        service.close()
         before = self.snapshot()
-        self.assertEqual(self.request("/v1/projects")[0], 200)
+        self.assertEqual(service.read("/v1/projects")[0], 200)
         self.assertEqual(self.snapshot(), before)
 
     def test_http_hide_show_replay_first_response_after_restart_and_new_dispatch_restores_project(self):

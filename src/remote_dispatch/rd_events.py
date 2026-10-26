@@ -15,6 +15,7 @@ from .rd_lock import JobLock
 
 
 FIELDS = {
+    "report.created": "user_id report_id initiator_session job_count",
     "network.addresses_changed": "user_id spki_sha256 candidates",
     "device.changed": "user_id device_id revoked session_access_enabled",
     "job.created": "job user_id project_id project host round agent model initiator_session dispatch_state",
