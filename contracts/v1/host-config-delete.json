@@ -1,0 +1,18 @@
+{
+  "request": {
+    "method": "DELETE",
+    "path": "/v1/config/hosts/target",
+    "body": {},
+    "headers": {
+      "Idempotency-Key": "host-config-example",
+      "Content-Type": "application/json"
+    }
+  },
+  "response": {
+    "status": 200,
+    "body": {
+      "deleted": "target"
+    }
+  },
+  "events": []
+}

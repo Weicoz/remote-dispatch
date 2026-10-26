@@ -24,6 +24,7 @@ from . import rd_messages as messages
 from . import rd_serve_network as network
 from .rd_query import Query, result_path
 from .rd_serve_writes import Writes
+from .rd_serve_host_config import HostConfigRoutes
 from .rd_serve_projects import ProjectRoutes
 from . import rd_harness_stats
 from .rd_serve_sessions import Sessions
@@ -147,6 +148,8 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         try:
+            if self.server.service.host_config.get(self):
+                return
             if self.server.service.sessions.handle_get(self):
                 return
             if urlsplit(self.path).path == "/v1/events":
@@ -161,10 +164,18 @@ class Handler(BaseHTTPRequestHandler):
             self.json(503, {"error": {"reason": "read_unavailable"}})
 
     def do_PUT(self):
+        if self.server.service.host_config.handle(self):
+            return
         self.server.service.sessions.defaults.put(self)
+
+    def do_DELETE(self):
+        if not self.server.service.host_config.handle(self):
+            self.json(404, {"error": {"reason": "not_found"}})
 
     def do_POST(self):
         try:
+            if self.server.service.host_config.handle(self):
+                return
             if (self.server.service.project_routes.post(self)
                     or self.server.service.sessions.handle_post(self)):
                 return
@@ -223,6 +234,7 @@ class Handler(BaseHTTPRequestHandler):
 class Service:
     def __init__(self, config, socket_path=None, *, poll_interval=15, push_sender=None):
         self.config = config
+        self.host_config = HostConfigRoutes(self)
         self.state = Path(cli.STATE).resolve()
         self.user_id = cli.require_user()
         self.path = Path(socket_path or os.environ.get("RD_SERVE_SOCKET") or self.state / "serve.sock").absolute()
@@ -262,6 +274,7 @@ class Service:
                 if value and (key in ("env_file", "ssh_opts", "ssh") or "auth_file" in key):
                     if value != "local":
                         self.sensitive.add(str(value))
+        self.host_config.remember_secrets(config.cp)
 
     def start(self):
         try:

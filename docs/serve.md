@@ -562,3 +562,73 @@ Unix socket 请求默认是本机。设备鉴权层须将可信的设备记录�
 缺省取 pane 的 `cwd`；实时目录读不到时返回 null，可用 Herdr 已保存的目录定位项目，
 不把保存值冒充实时目录。无法定位项目的 pane 继续不进入项目会话列表。
 目录正文沿用配置敏感值脱敏；`updated_at` 沿用会话事件时间，未知为 null。
+
+## 目标机配置（票 64）
+
+`/v1/config/hosts` 与指标接口 `/v1/hosts` 分开：配置读取每次重新读取控制端
+`RD_CONFIG`（默认 `config.ini`），包含禁用的 `[host:名称]`，不联系目标机。
+Unix socket 及现有配对设备的 HTTPS 均可访问；HTTPS 继续要求证书 pin 和设备令牌。
+
+| 方法 | 路径 | 请求与结果 |
+| --- | --- | --- |
+| GET | `/v1/config/hosts` | `200 {hosts: [...]}`，按配置段顺序 |
+| POST | `/v1/config/hosts` | `{name, ssh, sync?, workdir?, ...}`；新增，返回 `201 {host: ...}` |
+| PUT | `/v1/config/hosts/{name}` | 只更新提交的字段；返回 `200 {host: ...}` |
+| DELETE | `/v1/config/hosts/{name}` | 空正文或 `{}`；返回 `200 {deleted: name}` |
+
+每个 host 是 `{name, values, protected_fields}`。`values` 返回合并内置默认值、
+`[defaults]`、目标机段后的普通字段，值沿用 INI 的字符串类型，包含 ssh、sync、
+workdir、max_heavy、platform、enabled 等。platform 保留配置原值 macos/linux/posix/windows。
+`protected_fields` 每项为 `{field, is_set}`；env_file、各 auth_file、ssh_opts 及
+未列入普通字段白名单的扩展字段只返回字段名和布尔设置状态，不返回路径或凭据。
+普通字段也经过凭据和私钥文本脱敏；ssh 保留正常连接地址，移除 URL 中嵌入的认证内容。
+认证字段可在写请求中提交新值；未提交的字段保持原值，不需要 App 读回秘密。
+PUT 中 `null` 移除本段覆盖（恢复继承），空字符串显式清空；继承仍有值时 is_set=true。
+名称区分大小写，长度 1–128，只允许 ASCII 字母、数字、点、下划线和短横线。
+名称是稳定标识，PUT 不重命名；新名称通过新增配置建立。
+
+所有写请求必须带 `Idempotency-Key`，长度不超过 255；JSON 正文最多 8 MiB。
+相同用户、设备、键与方法／路径／规范 JSON 正文重放首次成功结果；同键不同请求返回
+422 `idempotency_key_reused`。持久缓存仅保存指纹和脱敏响应，不保存请求正文。
+在备份或替换阶段中断时，同键返回 503 `host_config_outcome_unknown`，先 GET 核对再用新键操作。
+校验失败和冲突不会修改配置或建立备份，可以修正后重试。
+
+必填字段按继承后的有效值校验：ssh、workdir 不得为空；sync 仅 origin/direct；
+platform 仅 macos/linux/posix/windows；本机 ssh=local 不支持 windows，workdir 须为
+绝对路径或以 ~、$HOME 开头。enabled 接受 1/0、true/false、yes/no（忽略大小写），
+launcher 为 nohup/tmux；资源数值须有限非负，百分比不超过 100，max_heavy、timeout
+须为正整数。写入值为字符串或 null，不能包含换行或 NUL；密钥内容应保存在凭据文件中。
+
+写入与现有 CLI writer 串行，并用配置旁的 `config.ini.lock` 跨进程互斥。
+先完整解析和校验候选文件，随后以 `0600` 创建独立的 `config.ini.bak.<随机标识>`，
+写入并 fsync 原始字节。备份成功后才在同目录写临时文件、fsync，再用原子 replace 替换配置，
+新文件也为 `0600`。备份失败时保留原配置；替换失败时保留原配置与备份，清除临时文件。
+保留所有无关段落的原字节、未修改配置项、整行注释及原换行类型；删除目标机后仍保留其整行注释。
+不支持配置文件或父目录的符号链接；文件管理器直接写文件不参与此互斥协议，应避免与接口同时编辑。
+备份包含原凭据配置，由管理员按现有私密配置保管方式保存，不自动清理。
+写成功立即更新 serve 的配置对象并唤醒后台采集；下一次配置 GET 立即反映变化，无需重启。
+指标 `/v1/hosts` 继续遵循原有后台采集语义。
+
+删除检查当前 RD_STATE 中全部用户的本地登记任务，只有 done/dead/missing 被视为已结束；
+starting/running/unreachable 或未知状态拒绝删除，避免离线时误判。检查只读快照／回执，
+不执行远端探测；其他用户的任务标识不出现在错误中。已结束任务的历史记录仍然保留；
+以后若要在该机续跑，需先恢复同名配置。
+
+错误结构沿用 `{error: {reason, field?}}`，不包含配置值：
+
+| 状态 | reason | 含义／建议占位文案（由编排方定稿） |
+| --- | --- | --- |
+| 400 | `idempotency_key_required` | 请提供有效的请求标识 |
+| 400 | `invalid_host_request` | 目标机配置请求格式无效 |
+| 400 | `host_field_required` | 请填写必填字段（field） |
+| 400 | `invalid_host_field` | 请检查字段取值（field） |
+| 404 | `not_found` | 目标机不存在 |
+| 405 | `method_not_allowed` | 此路径不支持该操作 |
+| 409 | `host_exists` | 目标机名称已存在 |
+| 409 | `host_has_active_dispatches` | 目标机仍有进行中或状态未确认的派单 |
+| 409 | `host_config_busy` | 配置正在写入，请稍后重试 |
+| 422 | `idempotency_key_reused` | 请求标识已用于其他操作 |
+| 503 | `host_config_unavailable` | 无法读取或保存目标机配置 |
+| 503 | `host_config_outcome_unknown` | 操作结果未确认，请刷新后核对 |
+
+合同样例见 `contracts/v1/host-config-*.json`。App 合同副本由编排方随后同步。

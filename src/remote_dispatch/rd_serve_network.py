@@ -530,6 +530,12 @@ def handler_class(base):
             if not self.authorized():
                 return
             path = urlsplit(self.path).path
+            if path.startswith("/v1/config/hosts/"):
+                try:
+                    return super().do_DELETE()
+                finally:
+                    if self.remote:
+                        self.server.service.network.untrack(self.connection)
             target = path[len("/v1/devices/"):] if path.startswith("/v1/devices/") else ""
             if not target or "/" in target:
                 return self.json(*error(404, "not_found"))

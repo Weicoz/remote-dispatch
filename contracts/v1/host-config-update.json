@@ -1,0 +1,36 @@
+{
+  "request": {
+    "method": "PUT",
+    "path": "/v1/config/hosts/target",
+    "body": {
+      "max_heavy": "3"
+    },
+    "headers": {
+      "Idempotency-Key": "host-config-example",
+      "Content-Type": "application/json"
+    }
+  },
+  "response": {
+    "status": 200,
+    "body": {
+      "host": {
+        "name": "target",
+        "values": {
+          "ssh": "local",
+          "sync": "direct",
+          "workdir": "~/remote-dispatch",
+          "max_heavy": "3",
+          "platform": "posix",
+          "enabled": "false"
+        },
+        "protected_fields": [
+          {
+            "field": "codex_auth_file",
+            "is_set": true
+          }
+        ]
+      }
+    }
+  },
+  "events": []
+}

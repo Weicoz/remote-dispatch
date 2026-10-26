@@ -1,0 +1,25 @@
+{
+  "request": {
+    "method": "POST",
+    "path": "/v1/config/hosts",
+    "body": {
+      "name": "second",
+      "ssh": "local",
+      "sync": "invalid"
+    },
+    "headers": {
+      "Idempotency-Key": "host-config-example",
+      "Content-Type": "application/json"
+    }
+  },
+  "response": {
+    "status": 400,
+    "body": {
+      "error": {
+        "reason": "invalid_host_field",
+        "field": "sync"
+      }
+    }
+  },
+  "events": []
+}

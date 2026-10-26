@@ -1,0 +1,40 @@
+{
+  "request": {
+    "method": "POST",
+    "path": "/v1/config/hosts",
+    "body": {
+      "name": "second",
+      "ssh": "worker@example.invalid",
+      "sync": "origin",
+      "workdir": "~/worker",
+      "codex_auth_file": "/example/credential-file"
+    },
+    "headers": {
+      "Idempotency-Key": "host-config-example",
+      "Content-Type": "application/json"
+    }
+  },
+  "response": {
+    "status": 201,
+    "body": {
+      "host": {
+        "name": "second",
+        "values": {
+          "ssh": "worker@example.invalid",
+          "sync": "origin",
+          "workdir": "~/worker",
+          "max_heavy": "2",
+          "platform": "posix",
+          "enabled": "true"
+        },
+        "protected_fields": [
+          {
+            "field": "codex_auth_file",
+            "is_set": true
+          }
+        ]
+      }
+    }
+  },
+  "events": []
+}

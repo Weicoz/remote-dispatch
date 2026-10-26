@@ -1,0 +1,20 @@
+{
+  "request": {
+    "method": "DELETE",
+    "path": "/v1/config/hosts/target",
+    "body": {},
+    "headers": {
+      "Idempotency-Key": "host-config-example",
+      "Content-Type": "application/json"
+    }
+  },
+  "response": {
+    "status": 409,
+    "body": {
+      "error": {
+        "reason": "host_has_active_dispatches"
+      }
+    }
+  },
+  "events": []
+}

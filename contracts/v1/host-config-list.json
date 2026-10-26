@@ -1,0 +1,31 @@
+{
+  "request": {
+    "method": "GET",
+    "path": "/v1/config/hosts"
+  },
+  "response": {
+    "status": 200,
+    "body": {
+      "hosts": [
+        {
+          "name": "target",
+          "values": {
+            "ssh": "local",
+            "sync": "direct",
+            "workdir": "~/remote-dispatch",
+            "max_heavy": "2",
+            "platform": "posix",
+            "enabled": "false"
+          },
+          "protected_fields": [
+            {
+              "field": "codex_auth_file",
+              "is_set": true
+            }
+          ]
+        }
+      ]
+    }
+  },
+  "events": []
+}

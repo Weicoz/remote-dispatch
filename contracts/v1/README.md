@@ -130,3 +130,9 @@ JSON 类型，另用行为断言覆盖实际值、用户隔离、纯查询、锁
   `delivery.status=text_delivered/reason=session_submit_failed`；保留写入时间，
   不发布 `report.delivered`、不重发。`session-dispatch-defaults-closed.json`
   展示给不存在或已关闭窗格 PUT 默认值的 404 `session_closed`，不保存默认值或发布事件。
+
+- 票 64：`host-config-list/create/update/delete/invalid/active.json` 是目标机配置 CRUD
+  合同；独立路径 `/v1/config/hosts`，保持指标接口 `/v1/hosts` 不变。values 为普通配置
+  字符串，protected_fields 只含字段名及 is_set；认证内容不回显。
+  PUT 更新提交字段，null 删除本段覆盖；名称不可改。写前私密备份、保留注释、原子替换、
+  热更新及删除任务保护的错误词表见 `docs/serve.md`，App 合同副本由编排方随后同步。
