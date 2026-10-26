@@ -1,4 +1,5 @@
 """Project summaries and project HTTP routes, separate from the serve transport."""
+import copy
 import hashlib
 import json
 import re
@@ -38,17 +39,104 @@ class ProjectRoutes:
         self.service = service
         self.pages = {}
         self.page_lock = threading.Lock()
+        self.list_lock = threading.Lock()
+        self.list_keys = {}
+        self.list_payloads = {}
+        self.event_reader = events.EventCursor(service.state)
+        self.latest_events = {}
+        self.state_events = {}
+
+    def local_view(self, include_history):
+        service = self.service
+        jobs_version, job_documents = service.local_files.snapshot("jobs")
+        current = [rec for path, rec in sorted(job_documents.items())
+                   if rec and rec.get("user_id") in (None, "", service.user_id)]
+        results_version, documents = service.local_files.snapshot("results", nested=True,
+            job_rounds=None if include_history else {rec["job"]: rec["rounds"] for rec in current})
+        documents = dict(documents)
+        documents.update(job_documents)
+        return (jobs_version, results_version), current, documents
 
     def records(self):
-        return history_records(self.service.state, self.service.records(), self.service.user_id)
+        service = self.service
+        _, current, documents = self.local_view(True)
+        return history_records(service.state, current, service.user_id, documents=documents)
+
+    def prewarm(self):
+        self.list_view(False)
+        self.list_view()
+
+    def list_view(self, include_history=True):
+        """Single-flight rebuild. No TTL: every read checks all local generations."""
+        service = self.service
+        with self.list_lock:
+            versions, current, documents = self.local_view(include_history)
+            projects_version, _ = service.local_files.snapshot("projects", filename=service.user_id + ".json")
+            for event in self.event_reader.read():
+                data = event["data"]
+                identity = (data.get("user_id"), data.get("job"), data.get("project_id"),
+                            event["type"].startswith("session."))
+                self.latest_events[identity] = event
+                if event["type"] == "job.state_changed" and data.get("execution_state") and service.visible(event):
+                    self.state_events[(data.get("job"), data.get("round"), data.get("host"))] = event
+            with service.cache_lock:
+                snapshot_version = service.snapshot_version
+            with service.sessions.cache_lock:
+                session_version = service.sessions.version
+            key = (versions, projects_version, tuple(rec["job"] for rec in current),
+                   self.event_reader.seq, snapshot_version, session_version,
+                   service.sessions.enabled,
+                   tuple((section, tuple(service.config.cp.items(section))) for section in service.config.cp.sections()),
+                   datetime.now(timezone.utc).astimezone().date())
+            if key != self.list_keys.get(include_history):
+                query = service.query(documents)
+                retained = (history_records(service.state, current, service.user_id, documents=documents)
+                            if include_history else current)
+                cards = {rec["job"]: self.card(rec, query) for rec in retained}
+                visible = sorted((event for event in self.latest_events.values() if service.visible(event)),
+                                 key=lambda event: event["seq"])
+                payload = dict(current=current, retained=retained, cards=cards)
+                if include_history:
+                    for allowed in (False, True):
+                        payload[allowed] = self.projects(
+                            None if allowed else {"session_access": False}, query=query,
+                            records=retained, cards=cards, visible_events=visible)
+                # Publish together only after a successful complete rebuild.
+                self.list_keys[include_history] = key
+                self.list_payloads[include_history] = payload
+            return self.list_payloads[include_history]
 
     def card(self, rec, query):
         card = self.service.card(rec, query)
-        receipt = messages.read_json(self.service.state / "results" / rec["job"] / f'r{rec["rounds"]}.json')
+        receipt = query.read_json(query.result_path(rec, rec["rounds"]))
         if receipt:
             card["execution_state"] = receipt.get("execution_state", card["execution_state"])
         elif rec.get("archived"):
             card["execution_state"] = "done"
+        event = self.state_events.get((rec["job"], rec["rounds"], rec.get("host")))
+        if event:
+            stamp = instant(event["time"])
+            known_stamps = [instant(value) for value in (card.get("snapshot_at"),
+                            (receipt or {}).get("captured_at")) if instant(value)]
+            # Retained receipts may lack captured_at. A newer file or a replaced
+            # record (including same-round migration) supersedes older events.
+            paths = [self.service.state / "jobs" / (rec["job"] + ".json")]
+            if receipt:
+                paths.append(query.result_path(rec, rec["rounds"]))
+            for path in paths:
+                try:
+                    known_stamps.append(datetime.fromtimestamp(path.stat().st_mtime, timezone.utc))
+                except FileNotFoundError:
+                    pass
+            known = max(known_stamps, default=None)
+            state = event["data"].get("execution_state")
+            # An unreachable target does not invalidate an already retained terminal receipt.
+            if (state and stamp and (known is None or stamp > known)
+                    and not (receipt and state == "unreachable")):
+                card["execution_state"] = state
+                card["snapshot_at"] = event["time"]
+                if event["data"].get("executor_exit") is not None:
+                    card["executor_exit"] = event["data"]["executor_exit"]
         return card
 
     @staticmethod
@@ -63,7 +151,7 @@ class ProjectRoutes:
         for number in range(1, rec["rounds"] + 1):
             if query.review(rec, number)["review_state"] != "accepted":
                 continue
-            receipt = messages.read_json(self.service.state / "results" / rec["job"] / f"r{number}.json")
+            receipt = query.read_json(query.result_path(rec, number))
             host = (receipt or {}).get("host") or rec.get("host")
             if host:
                 counts[host] = counts.get(host, 0) + 1
@@ -85,23 +173,24 @@ class ProjectRoutes:
             log.publish("project.changed", dict(projects[identity], user_id=service.user_id,
                         project_id=identity, host=host, accepted_round_count=count), only_if_changed=True)
 
-    def projects(self, device=None):
+    def projects(self, device=None, *, query=None, records=None, cards=None, visible_events=None):
         service = self.service
-        query = service.query()
+        if query is None:
+            return copy.deepcopy(self.list_view()[service.sessions.allowed(device)])
         sessions_allowed = service.sessions.allowed(device)
         rows = {row["id"]: self.summary(row)
                 for row in query.projects(service.user_id)}
         now = datetime.now(timezone.utc).astimezone()
         week = (now - timedelta(days=now.weekday())).replace(hour=0, minute=0, second=0, microsecond=0)
-        visible_events = [event for event in events.read_after(service.state, 0) if service.visible(event)
-                          and (sessions_allowed or not event["type"].startswith("session."))]
+        visible_events = [event for event in visible_events
+                          if sessions_allowed or not event["type"].startswith("session.")]
         job_updates = {}
         for event in visible_events:
             if event["data"].get("job"):
                 job_updates[event["data"]["job"]] = event["time"]
         ranked, last_dispatch, job_projects, accepted_counts = {}, {}, {}, {}
-        for rec in self.records():
-            card = self.card(rec, query)
+        for rec in records:
+            card = cards[rec["job"]]
             identity = card["project_id"]
             job_projects[rec["job"]] = identity
             row = rows.setdefault(identity, self.summary(dict(id=identity, name=card["project"], hidden=False,
@@ -199,11 +288,11 @@ class ProjectRoutes:
                 except (KeyError, ValueError):
                     raise ValueError("invalid_history_cursor") from None
             else:
-                query = service.query()
-                records = self.records() if state == "history" else service.records()
+                view = self.list_view(state == "history")
+                records = view["retained"] if state == "history" else view["current"]
                 rows = []
                 for rec in records:
-                    card = self.card(rec, query)
+                    card = view["cards"][rec["job"]]
                     if project and card["project_id"] != project:
                         continue
                     historical = bool(rec.get("archived")) or (
@@ -213,13 +302,13 @@ class ProjectRoutes:
                         continue
                     rows.append(dict(card, created_at=rec.get("created")))
                 if state != "history":
-                    return {"jobs": rows}
+                    return {"jobs": copy.deepcopy(rows)}
                 rows.sort(key=lambda row: (instant(row["created_at"]) or datetime.min.replace(tzinfo=timezone.utc), row["job"]), reverse=True)
                 identity, offset = uuid.uuid4().hex, 0
                 if len(rows) > limit:
                     self.pages[identity] = (project, rows, limit)
             end = offset + limit
-            return dict(jobs=rows[offset:end], next_cursor=f"{identity}.{end}" if end < len(rows) else None)
+            return dict(jobs=copy.deepcopy(rows[offset:end]), next_cursor=f"{identity}.{end}" if end < len(rows) else None)
 
     def post(self, handler):
         match = re.fullmatch(r"/v1/projects/([^/]+)/(hide|show)", unquote(urlsplit(handler.path).path))

@@ -1,0 +1,14 @@
+test_realistic_lists_remain_fast_with_ten_clients_and_sse (tests.test_rd_serve_list_cache.ListCacheTests.test_realistic_lists_remain_fast_with_ten_clients_and_sse) ... FAIL
+
+======================================================================
+FAIL: test_realistic_lists_remain_fast_with_ten_clients_and_sse (tests.test_rd_serve_list_cache.ListCacheTests.test_realistic_lists_remain_fast_with_ten_clients_and_sse)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/mac/remote-dispatch/users/weicoz/wt/weicoz-remote-dispatch-v4-67-20261026-235115-795015000/tests/test_rd_serve_list_cache.py", line 63, in test_realistic_lists_remain_fast_with_ten_clients_and_sse
+    self.assertLess(warm, 0.3, f"{path} warm={warm:.3f}s")
+AssertionError: 1.5046510830288753 not less than 0.3 : /v1/projects warm=1.505s
+
+----------------------------------------------------------------------
+Ran 1 test in 7.194s
+
+FAILED (failures=1)

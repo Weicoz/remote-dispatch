@@ -1,0 +1,10 @@
+test_large_project_index_and_unrelated_user_files_preserve_list_contract (tests.test_rd_serve_list_cache.ListCacheTests.test_large_project_index_and_unrelated_user_files_preserve_list_contract) ... ok
+test_realistic_lists_remain_fast_with_ten_clients_and_sse (tests.test_rd_serve_list_cache.ListCacheTests.test_realistic_lists_remain_fast_with_ten_clients_and_sse) ... /v1/projects: warm=0.0273s ten_clients=0.3032s
+/v1/jobs: warm=0.0342s ten_clients=0.3802s
+ok
+test_warm_lists_show_next_round_receipt_ack_review_event_and_deletion_immediately (tests.test_rd_serve_list_cache.ListCacheTests.test_warm_lists_show_next_round_receipt_ack_review_event_and_deletion_immediately) ... ok
+
+----------------------------------------------------------------------
+Ran 3 tests in 5.799s
+
+OK

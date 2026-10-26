@@ -1,0 +1,15 @@
+test_current_jobs_remain_readable_when_unrelated_retained_receipt_is_corrupt (tests.test_rd_serve_list_cache.ListCacheTests.test_current_jobs_remain_readable_when_unrelated_retained_receipt_is_corrupt) ... FAIL
+rdispatch: poll_unavailable: cannot update harness statistics
+
+======================================================================
+FAIL: test_current_jobs_remain_readable_when_unrelated_retained_receipt_is_corrupt (tests.test_rd_serve_list_cache.ListCacheTests.test_current_jobs_remain_readable_when_unrelated_retained_receipt_is_corrupt)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/mac/remote-dispatch/users/weicoz/wt/weicoz-remote-dispatch-v4-67-20261026-235115-795015000/tests/test_rd_serve_list_cache.py", line 48, in test_current_jobs_remain_readable_when_unrelated_retained_receipt_is_corrupt
+    self.assertEqual(status, 200)
+AssertionError: 400 != 200
+
+----------------------------------------------------------------------
+Ran 1 test in 0.538s
+
+FAILED (failures=1)

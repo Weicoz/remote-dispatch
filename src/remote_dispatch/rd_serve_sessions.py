@@ -40,6 +40,7 @@ class Sessions:
         self.latest = {}
         self.transcript_cache = {}
         self.items = []
+        self.version = 0
         for event in self.event_reader.read():
             data = event["data"]
             if data.get("user_id") != service.user_id:
@@ -80,6 +81,8 @@ class Sessions:
                     events.emit(self.service.state, "session.changed", dict(self.observed[pane], removed=True))
             self.observed, self.seen_messages = current, seen
             with self.cache_lock:
+                if self.items != items:
+                    self.version += 1
                 self.items = items
         except (OSError, ValueError, TypeError, KeyError):
             # A failed query is not evidence that panes have closed.

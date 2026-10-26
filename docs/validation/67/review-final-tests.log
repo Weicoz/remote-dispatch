@@ -1,0 +1,15 @@
+test_current_jobs_remain_readable_when_unrelated_retained_receipt_is_corrupt (tests.test_rd_serve_list_cache.ListCacheTests.test_current_jobs_remain_readable_when_unrelated_retained_receipt_is_corrupt) ... rdispatch: poll_unavailable: cannot update harness statistics
+ok
+test_idle_connections_do_not_starve_list_requests (tests.test_rd_serve_list_cache.ListCacheTests.test_idle_connections_do_not_starve_list_requests) ... ok
+test_large_project_index_and_unrelated_user_files_preserve_list_contract (tests.test_rd_serve_list_cache.ListCacheTests.test_large_project_index_and_unrelated_user_files_preserve_list_contract) ... ok
+test_realistic_lists_remain_fast_with_ten_clients_and_sse (tests.test_rd_serve_list_cache.ListCacheTests.test_realistic_lists_remain_fast_with_ten_clients_and_sse) ... /v1/projects: warm=0.0262s ten_clients=0.2797s
+/v1/jobs: warm=0.0153s ten_clients=0.1938s
+ok
+test_same_round_state_events_are_visible_before_the_receipt_arrives (tests.test_rd_serve_list_cache.ListCacheTests.test_same_round_state_events_are_visible_before_the_receipt_arrives) ... ok
+test_warm_lists_show_next_round_receipt_ack_review_event_and_deletion_immediately (tests.test_rd_serve_list_cache.ListCacheTests.test_warm_lists_show_next_round_receipt_ack_review_event_and_deletion_immediately) ... ok
+test_new_http_and_sse_contract_examples_match_requests_responses_and_events (tests.test_rd_serve_projects_stats.ProjectsStatsTests.test_new_http_and_sse_contract_examples_match_requests_responses_and_events) ... ok
+
+----------------------------------------------------------------------
+Ran 7 tests in 8.732s
+
+OK

@@ -1,0 +1,16 @@
+$ python3 -m compileall -q src tests
+exit=0
+
+$ git diff --check
+exit=0
+
+$ git diff --cached --check
+exit=0
+
+$ python3 -m mypy --version
+/Users/mac/.local/bin/python3: No module named mypy
+exit=1
+
+$ python3 -m pyright --version
+/Users/mac/.local/bin/python3: No module named pyright
+exit=1

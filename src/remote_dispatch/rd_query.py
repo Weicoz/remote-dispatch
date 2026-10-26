@@ -22,8 +22,9 @@ def receipt_id(receipt):
 
 
 class Query:
-    def __init__(self, state, *, states, report, receiver, project_names=()):
-        self.state = state
+    def __init__(self, state, *, states, report, receiver, project_names=(), read_json=None):
+        self.state = Path(state).resolve()
+        self.read_json = read_json or messages.read_json
         self.states = states
         self.report = report
         self.receiver = receiver
@@ -50,7 +51,7 @@ class Query:
                 if uid:
                     names.update(row["name"] for row in self.projects(uid))
                     for path in (Path(self.state) / "jobs").glob("*.json"):
-                        saved = messages.read_json(path)
+                        saved = self.read_json(path)
                         if saved and saved.get("project") and saved.get("user_id") in (None, "", uid):
                             names.add(saved["project"])
                 names_by_user[uid] = names
@@ -70,7 +71,7 @@ class Query:
         excluding query time so a later explicit ack can materialize the receipt.
         """
         number = messages.round_id(number if number is not None else rec["rounds"])
-        cached = messages.read_json(result_path(self.state, rec, number))
+        cached = self.read_json(self.result_path(rec, number))
         if cached is not None:
             return dict(cached, **self.review(rec, number))
         if snapshot is None:
@@ -97,12 +98,14 @@ class Query:
         return dict(receipt, **self.review(rec, number))
 
     def review(self, rec, number):
-        from . import rd_review
-        return rd_review.read(self.state, rec, number)
+        return self.read_json(self.result_path(rec, number).with_suffix(".review.json")) or dict(review_state="pending")
+
+    def result_path(self, rec, number):
+        return self.state / "results" / messages.job_id(rec["job"]) / f"r{messages.round_id(number)}.json"
 
     def acknowledgement(self, rec, receipt):
         """Read the matching acknowledgement, including legacy records."""
-        ack = messages.read_json(result_path(self.state, rec, receipt["round"]).with_suffix(".ack.json"))
+        ack = self.read_json(self.result_path(rec, receipt["round"]).with_suffix(".ack.json"))
         return ack if ack and ack.get("receipt_id") == receipt["receipt_id"] else None
 
     def delivery(self, rec, receipt):

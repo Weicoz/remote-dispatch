@@ -33,6 +33,7 @@ from .rd_serve_progress import ProgressHistory
 from .rd_serve_history import instant
 from .rd_host_metrics import host_metrics
 from .rd_reports import Reports, read_reports
+from .rd_serve_cache import LocalFiles
 
 
 WRITE_COMMANDS = {"session-default", "run", "resume", "ack", "review", "stop", "project", "inbox", "keep", "clean"}
@@ -128,6 +129,11 @@ def run_service(config, socket_path, poll_interval):
 class UnixServer(socketserver.ThreadingMixIn, socketserver.TCPServer):
     address_family = getattr(socket, "AF_UNIX", None)
     daemon_threads = True
+    request_queue_size = 128
+
+    def __init__(self, *args, **kwargs):
+        self.list_slots = threading.BoundedSemaphore(32)
+        super().__init__(*args, **kwargs)
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -154,8 +160,12 @@ class Handler(BaseHTTPRequestHandler):
                 return
             if urlsplit(self.path).path == "/v1/events":
                 return self.events()
-            status, body = self.server.service.read(self.path, getattr(self, "session_device", None))
-            self.json(status, self.server.service.redact(body))
+            # Bound completed list requests, not idle sockets or SSE lifetimes.
+            slots = getattr(self.server, "list_slots", None)
+            listing = urlsplit(self.path).path in ("/v1/projects", "/v1/jobs")
+            with slots if listing and slots is not None else nullcontext():
+                status, body = self.server.service.read(self.path, getattr(self, "session_device", None))
+                self.json(status, self.server.service.redact(body))
         except (ValueError, TypeError):
             self.json(400, {"error": {"reason": "invalid_request"}})
         except (BrokenPipeError, ConnectionResetError):
@@ -210,9 +220,11 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(b": connected\n\n")
         self.wfile.flush()
         heartbeat = time.monotonic()
+        reader = events.EventCursor(service.state)
+        reader.seq = cursor
         try:
             while not service.stop.is_set() and network.stream_allowed(self):
-                for row in events.read_after(service.state, cursor):
+                for row in reader.read():
                     cursor = row["seq"]
                     if not service.visible(row) or not service.sessions.event_allowed(self, row):
                         continue
@@ -247,6 +259,8 @@ class Service:
         self.stop = threading.Event()
         self.wake = threading.Event()
         self.cache_lock = threading.Lock()
+        self.local_files = LocalFiles(self.state)
+        self.snapshot_version = 0
         self.writer = threading.Lock()
         self.job_guards = {}
         self.writes = Writes(self)
@@ -412,7 +426,9 @@ class Service:
         return True
 
     def records(self):
-        return [rec for rec in cli.all_jobs() if rec.get("user_id") in (None, "", self.user_id)]
+        _, documents = self.local_files.snapshot("jobs")
+        return [rec for path, rec in sorted(documents.items())
+                if rec and rec.get("user_id") in (None, "", self.user_id)]
 
     @staticmethod
     def generation(rec):
@@ -453,7 +469,8 @@ class Service:
         return {name: instant(value).isoformat() for name, value in saved.items()
                 if instant(value) is not None}
 
-    def query(self):
+    def query(self, documents=None):
+        read = messages.read_json if documents is None else documents.get
         with self.cache_lock:
             snapshots, progress = dict(self.snapshots), dict(self.progress)
             generations = dict(self.generations)
@@ -463,13 +480,13 @@ class Service:
                 if generations.get(rec["job"]) == self.generation(rec):
                     rows[rec["job"]] = snapshots[rec["job"]]
                     continue
-                receipt = messages.read_json(result_path(self.state, rec, rec["rounds"])) or {}
+                receipt = read(self.state / "results" / rec["job"] / f'r{rec["rounds"]}.json') or {}
                 rows[rec["job"]] = dict(
                     state=receipt.get("execution_state") or rec.get("execution_state") or
                           ("dead" if rec.get("dispatch_state") == "preparation_failed" else "starting"),
                     round=str(rec["rounds"]), snapshot_at=receipt.get("captured_at"))
             return rows
-        return Query(self.state, states=states,
+        return Query(self.state, states=states, read_json=read,
                      report=lambda rec, number, kind: progress.get((rec["job"], number))
                      if kind == "progress" and generations.get(rec["job"]) == self.generation(rec) else None,
                      receiver=lambda rec: rec.get("receiver_session"),
@@ -561,16 +578,18 @@ class Service:
                             self.snapshots[rec["job"]] = snapshot
                             self.generations[rec["job"]] = self.generation(rec)
                             self.progress[(rec["job"], number)] = progress
+                            self.snapshot_version += 1
                 except JobBusy:
                     continue
                 except (ValueError, OSError, SystemExit, subprocess.SubprocessError):
                     print("rdispatch: poll_unavailable: cannot collect a job", file=sys.stderr)
-            self.reports.ready.set()
             try:
                 rd_harness_stats.observe(self)
                 self.project_routes.observe()
+                self.project_routes.prewarm()
             except (ValueError, OSError):
                 print("rdispatch: poll_unavailable: cannot update harness statistics", file=sys.stderr)
+            self.reports.ready.set()
             self.wake.wait(self.poll_interval)
 
     def card(self, rec, query):

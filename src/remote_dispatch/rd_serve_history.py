@@ -15,18 +15,21 @@ def instant(value):
         return None
 
 
-def records(state, current, user_id):
+def records(state, current, user_id, *, documents=None):
+    read = messages.read_json if documents is None else documents.get
+    paths_in = lambda pattern: (state.glob(pattern) if documents is None else
+                               (path for path in documents if path.match(pattern)))
     rows = {}
-    paths = [path for path in (state / "results").glob("*/r*.json") if re.fullmatch(r"r[1-9][0-9]*\.json", path.name)]
+    paths = [path for path in paths_in("results/*/r*.json") if re.fullmatch(r"r[1-9][0-9]*\.json", path.name)]
     for path in sorted(paths, key=lambda path: (path.parent.name, int(path.stem[1:]))):
-        receipt = messages.read_json(path)
+        receipt = read(path)
         if receipt and receipt.get("job") == path.parent.name:
             row = rows.setdefault(receipt["job"], {})
             row.update({key: receipt[key] for key in
                         ("job", "user_id", "project", "origin", "created", "host", "agent", "model") if key in receipt})
             row["rounds"] = max(row.get("rounds", 1), int(receipt["round"]))
-    for path in sorted((state / "results").glob("*/dispatch.json")):
-        manifest = messages.read_json(path)
+    for path in sorted(paths_in("results/*/dispatch.json")):
+        manifest = read(path)
         if manifest and manifest.get("job") == path.parent.name:
             row = rows.setdefault(manifest["job"], {})
             latest = {key: row[key] for key in ("host", "agent", "model") if row.get(key) is not None}
@@ -39,7 +42,7 @@ def records(state, current, user_id):
     result = []
     for rec in rows.values():
         messages.job_id(rec["job"])
-        registered = messages.read_json(state / "jobs" / (rec["job"] + ".json")) or {}
+        registered = read(state / "jobs" / (rec["job"] + ".json")) or {}
         owner = registered.get("user_id") or rec.get("user_id")
         if owner not in (None, "", user_id):
             continue
