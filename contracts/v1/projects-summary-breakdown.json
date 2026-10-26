@@ -1,0 +1,30 @@
+{
+  "request": {
+    "method": "GET",
+    "path": "/v1/projects"
+  },
+  "response": {
+    "status": 200,
+    "body": {
+      "projects": [
+        {
+          "blocked_count": 2,
+          "offline_count": 1,
+          "failed_count": 3,
+          "needs_attention_count": 6,
+          "in_progress_count": 1,
+          "hosts": {
+            "target": {
+              "state": "blocked",
+              "execution_state": "done",
+              "job": "blocked",
+              "updated_at": "2026-10-25T00:00:00+00:00",
+              "accepted_round_count": 0
+            }
+          }
+        }
+      ]
+    }
+  },
+  "events": []
+}

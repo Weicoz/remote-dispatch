@@ -107,3 +107,12 @@ JSON 类型，另用行为断言覆盖实际值、用户隔离、纯查询、锁
   `session-dispatch-defaults-clear.json`：会话默认值 GET/PUT，PUT 必须带幂等键，完整替换
   `{host, harness}`，缺项或 null 读配置；变化事件携带 `dispatch_defaults`。
   清除样例先执行 `previous_request`；详情见 `docs/session-dispatch-defaults.md`。
+
+- 票 57：`projects-summary.json` / `projects-summary-breakdown.json` 固定
+  `blocked_count/offline_count/failed_count`，总字段 `needs_attention_count` 等于三项之和。
+  已完成（含待会话验收）、主动停止、已通过／已作废不计入；签收不清除卡住或失败。
+  `hosts[].state` 词表为 `blocked/failed/offline/running/completed/none`，优先级依此顺序。
+  `execution_state` 保留原始状态，区分 `dead/missing/unreachable`，无派单时为 null。
+  `sessions-list/projects/resolve.json` 固定 `cwd` 与 `updated_at`，目录来自 Herdr pane，
+  前景目录优先；`sessions-cwd-unknown.json` 展示实时目录读不到时的 null。
+  字段对旧服务仍为可选；新服务固定输出。会话与项目接口的敏感扫描覆盖目录和新摘要字段。

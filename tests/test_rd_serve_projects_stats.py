@@ -49,45 +49,76 @@ class ProjectsStatsTests(unittest.TestCase):
                                          dict(review_state=review, reviewed_at=created, reviewed_by="fixture"))
         return rec
 
+    def test_attention_breakdown_counts_execution_problems_independent_of_acknowledgement(self):
+        self.prepare()
+        self.dispatch("blocked", "done", "blocked")
+        self.dispatch("blocked-acked", "done", "blocked", True)
+        self.dispatch("offline", "unreachable")
+        self.dispatch("dead", "dead")
+        self.dispatch("missing", "missing")
+        self.dispatch("failed", "done", "failed", True)
+        self.dispatch("completed", "done", "completed")
+        self.dispatch("partial", "done", "partial", True)
+        self.dispatch("running")
+        self.dispatch("voided", "done", "failed", True, "voided")
+        stopped = self.dispatch("stopped", "done", "failed", True)
+        path = cli.result_path(stopped, 1)
+        cli.messages.atomic_json(path, dict(cli.messages.read_json(path), stopped_by="fixture"))
+        self.start(poll_interval=3600)
+        self.eventually(lambda: self.request("/v1/jobs")[1]["jobs"],
+                        lambda rows: any(r["job"] == "offline" and r["execution_state"] == "unreachable" for r in rows))
+        row = self.request("/v1/projects")[1]["projects"][0]
+        self.assertEqual((row["blocked_count"], row["offline_count"], row["failed_count"]), (2, 1, 3))
+        self.assertEqual(row["needs_attention_count"], 6)
+        self.assertEqual(row["in_progress_count"], 1)
+        example = json.loads((support.CONTRACTS / "projects-summary-breakdown.json").read_text())
+        support.ServeTests.assert_structure(self, {"projects": [row]}, example["response"]["body"])
+
     def test_projects_choose_each_priority_and_newest_tie_and_expose_summary_without_writes(self):
         self.prepare()
-        cases = [("needs_reply", "done", "blocked", False),
-                 ("interrupted", "dead", None, False),
-                 ("failed_pending", "done", "failed", False),
-                 ("pending_receipt", "done", "partial", False),
-                 ("pending_review", "done", "completed", True),
+        self.config.write_text("[host:unused]\nssh=local\n")
+        cases = [("blocked", "done", "blocked", True),
+                 ("failed", "dead", None, False),
+                 ("offline", "unreachable", None, False),
                  ("running", "running", None, False),
-                 ("idle", "done", "completed", True)]
+                 ("completed", "done", "partial", False)]
         for index, (expected, state, outcome, received) in enumerate(cases):
             host = "host-" + str(index)
             for _, lower_state, lower_outcome, lower_received in cases[index:]:
-                # Each host receives all priorities from its expected winner down.
                 self.dispatch(f"job-{index}-{lower_state}-{lower_outcome}", lower_state, lower_outcome,
-                              lower_received, review="accepted" if lower_received and lower_state == "done" and _ == "idle" else None,
-                              host=host)
-            self.dispatch("newest-" + str(index), state, outcome, received,
-                          review="accepted" if expected == "idle" else None, host=host,
+                              lower_received, host=host)
+            self.dispatch("newest-" + str(index), state, outcome, received, host=host,
                           created="2026-10-25 01:00:00")
         self.dispatch("offline", "unreachable", host="offline")
         self.dispatch("lost", "missing", host="lost")
         self.dispatch("private", user="other", project="private")
         self.start(poll_interval=3600)
         rows = self.eventually(lambda: self.request("/v1/projects")[1].get("projects", []),
-                               lambda rows: rows and rows[0].get("hosts", {}).get("offline", {}).get("state") == "interrupted")
+                               lambda rows: rows and rows[0].get("hosts", {}).get("offline", {}).get("state") == "offline")
         self.assertEqual([row["name"] for row in rows], ["demo"])
         row = rows[0]
         for index, (expected, *rest) in enumerate(cases):
             with self.subTest(expected=expected):
                 self.assertEqual(row["hosts"]["host-" + str(index)]["state"], expected)
                 self.assertEqual(row["hosts"]["host-" + str(index)]["job"], "newest-" + str(index))
-        self.assertEqual(row["hosts"]["offline"]["state"], "interrupted")
-        self.assertEqual(row["hosts"]["lost"]["state"], "interrupted")
+        self.assertEqual(row["hosts"]["offline"]["state"], "offline")
+        self.assertEqual(row["hosts"]["lost"]["state"], "failed")
+        self.assertEqual(row["hosts"]["host-1"]["execution_state"], "dead")
+        self.assertEqual(row["hosts"]["lost"]["execution_state"], "missing")
+        self.assertEqual(row["hosts"]["offline"]["execution_state"], "unreachable")
+        self.assertEqual(row["hosts"]["unused"], dict(state="none", execution_state=None,
+                         job=None, updated_at=None, accepted_round_count=0))
         self.assertGreater(row["needs_attention_count"], 0)
         self.assertGreater(row["in_progress_count"], 0)
         self.assertEqual(row["last_harness"], "codex")
-        self.assertEqual(row["last_accepted_at"], "2026-10-25 01:00:00")
+        self.assertIsNone(row["last_accepted_at"])
         self.assertFalse(row["session_only"])
         self.assertEqual(row["sessions"], [])
+        # Collection publishes statistics after all job snapshots are saved.
+        stream = self.open_events()
+        while self.next_event(stream)[1] != "harness.stats_changed":
+            pass
+        stream.close()
         before = self.snapshot()
         self.assertEqual(self.request("/v1/projects")[0], 200)
         self.assertEqual(self.snapshot(), before)
@@ -307,15 +338,16 @@ class ProjectsStatsTests(unittest.TestCase):
                         self.assert_structure(event, expected)
                     stream.close()
 
-    def test_acked_blocked_receipt_becomes_pending_review_and_does_not_override_interruptions(self):
+    def test_acked_blocked_receipt_remains_blocked_and_overrides_offline(self):
         self.prepare()
         self.dispatch("blocked", "done", "blocked", True, host="blocked-only")
         self.dispatch("blocked-shared", "done", "blocked", True, host="shared")
         self.dispatch("interrupted-shared", "unreachable", host="shared")
         self.start(poll_interval=3600)
         row = self.eventually(lambda: self.request("/v1/projects")[1]["projects"][0],
-                              lambda row: row["hosts"]["shared"]["state"] == "interrupted")
-        self.assertEqual(row["hosts"]["blocked-only"]["state"], "pending_review")
+                              lambda row: row["hosts"]["shared"]["state"] == "blocked")
+        self.assertEqual(row["hosts"]["blocked-only"]["state"], "blocked")
+        self.assertEqual(row["hosts"]["shared"]["job"], "blocked-shared")
 
     def test_legacy_receipts_do_not_expose_jobs_owned_by_another_current_user(self):
         self.prepare()
@@ -335,10 +367,10 @@ class ProjectsStatsTests(unittest.TestCase):
         self.dispatch("new-dispatch", "unreachable", created="2026-10-25 00:00:00")
         self.start(poll_interval=0.05)
         self.eventually(lambda: self.request("/v1/projects")[1]["projects"][0]["hosts"]["target"],
-                        lambda row: row["job"] == "new-dispatch" and row["state"] == "interrupted")
+                        lambda row: row["job"] == "new-dispatch" and row["state"] == "offline")
         self.states["old-dispatch"] = dict(state="unreachable", round="1")
         self.eventually(lambda: self.request("/v1/projects")[1]["projects"][0]["hosts"]["target"],
-                        lambda row: row["job"] == "old-dispatch" and row["state"] == "interrupted")
+                        lambda row: row["job"] == "old-dispatch" and row["state"] == "offline")
 
     def test_harnesses_keep_independent_rejection_streaks_and_weekly_counts_ignore_resume(self):
         self.prepare()

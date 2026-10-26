@@ -184,7 +184,8 @@ class Sessions:
                                if rec.get("host") in local_hosts and rec.get("worker_root"))
         for agent in self.herdr.agents():
             harness = HARNESSES.get(agent.get("agent"))
-            cwd = agent.get("foreground_cwd") or agent.get("cwd")
+            live_cwd = agent.get("foreground_cwd") or agent.get("cwd") or None
+            cwd = live_cwd or saved.get(agent["pane_id"], {}).get("cwd")
             if not harness or not cwd:
                 continue
             if any(Path(cwd).resolve().is_relative_to(root) for root in execution_roots):
@@ -199,7 +200,7 @@ class Sessions:
                 status = "unknown"
             identity, transcript, probable = self.locate(agent, saved.get(agent["pane_id"], {}), cwd, harness)
             row = dict(id=agent["pane_id"], pane_id=agent["pane_id"], harness=harness,
-                             project=project, project_id=project_id(project, origin),
+                             project=project, project_id=project_id(project, origin), cwd=live_cwd,
                              status=status, status_text=STATUS_TEXT[status], has_new_reply=raw_status == "done",
                              session_id=identity, probable=probable,
                              identity_text="可能是这个会话" if probable else None)

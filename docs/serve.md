@@ -356,18 +356,25 @@ App 二维码、Keychain、实际握手固定校验、VPN 切换和真机推送�
 
 | 字段 | 含义 |
 | --- | --- |
-| `needs_attention_count` / `in_progress_count` | 待处理派单数／starting、running 派单数 |
+| `needs_attention_count` / `in_progress_count` | 卡住 + 离线 + 失败之和／starting、running 派单数 |
+| `blocked_count` / `offline_count` / `failed_count` | 需要用户处理的卡住数／离线数／失败数；仅会话项目均为 0 |
 | `recent_event` | 此项目最近的可见事件；没有时为 null |
-| `hosts` | 按目标机名索引，值含 `state/job/updated_at/accepted_round_count`；无派单的已配置目标机为 idle |
+| `hosts` | 按目标机名索引，值含 `state/execution_state/job/updated_at/accepted_round_count`；无派单的已配置目标机为 none |
 | `week_dispatch_count` | 控制端本地时间本周一零时以来的新派单数，续跑不重复计数 |
 | `last_accepted_at` / `last_harness` | 最近通过的时间／最近派单的执行 harness；未知为 null |
 | `session_only` / `sessions` | 本票为 false／空数组，供票 25 的仅会话项目接入 |
 
-目标机小格的 `state` 按优先级取一条：`needs_reply`（未签收的 blocked，需回话）、
-`interrupted`（异常中断／失联／丢失）、`failed_pending`（失败待签收）、
-`pending_receipt`（待签收，含 partial）、`pending_review`（待验收，含主动停止）、
-`running`、`idle`。同级按更新时间倒序，包含进度／报告、签收、验收时间；
-并纳入最近一次状态变更事件的时间；时间相同时按 job ID 升序。已通过／已作废为 idle。会话状态由票 25 补充。
+目标机小格的 `state` 使用执行状态词表：`blocked`（卡住）、`failed`（失败）、
+`offline`（离线）、`running`（执行中）、`completed`（已完成）、`none`（无）。
+注意优先级依次为卡住 > 失败 > 离线 > 执行中 > 已完成 > 无。
+`starting/running` 为执行中；`unreachable` 为离线；`dead/missing` 为失败；
+其他已结束轮次按回执 `outcome=blocked/failed/completed/partial` 映射，partial 为已完成。
+`execution_state` 保留底层值，供客户端区分 `dead`（异常中断）、`missing`（已丢失）、
+`unreachable`（离线）；无派单时为 null。非零执行退出码同样归为失败。
+签收不改变执行状态，也不改变卡住／失败计数。已完成且待会话验收不计入需要你；
+主动停止、已通过／已作废的轮次不计入三项，机器格保留其执行状态，但降到已完成的注意优先级。
+同级按更新时间倒序，包含进度／报告、签收、验收时间；并纳入最近一次状态变更事件的时间；
+时间相同时按 job ID 升序。会话等待输入是独立的会话状态，不改变派单分项计数。
 项目按名称和 ID 稳定排序，“未归属”在最后；origin URL 的 userinfo 不对外返回。
 缺少元数据的历史只返回已知内容，不推测 harness、时间或原用户。
 
@@ -537,3 +544,9 @@ Unix socket 请求默认是本机。设备鉴权层须将可信的设备记录�
 会话发现复用同样的增量事件游标；转录保存文件身份、字节与行偏移、工具调用映射，
 只解析追加的完整 JSONL 行，文件替换／截短则重建缓存；查询仍不写持久状态。
 终端帧先 Base64 解码，再按公开正文规则脱敏并编码，保留 ANSI 控制序列和无敏感内容的原帧。
+
+票 57 补充会话快照字段：`/v1/sessions`、`/v1/projects` 的 `sessions[]` 与会话反查
+使用同一行对象，固定带 `cwd` 和 `updated_at`。`cwd` 取 Herdr `foreground_cwd`，
+缺省取 pane 的 `cwd`；实时目录读不到时返回 null，可用 Herdr 已保存的目录定位项目，
+不把保存值冒充实时目录。无法定位项目的 pane 继续不进入项目会话列表。
+目录正文沿用配置敏感值脱敏；`updated_at` 沿用会话事件时间，未知为 null。
