@@ -31,6 +31,23 @@ class ReportDeliveryTests(unittest.TestCase):
     def writes_sent(self):
         return [json.loads(line) for line in self.writes.read_text().splitlines()] if self.writes.exists() else []
 
+    def test_report_text_removes_controls_flattens_lines_and_limits_whole_message(self):
+        controls = ''.join(chr(n) for n in range(32)) + ''.join(chr(n) for n in range(127, 160))
+        self.receipt(self.job(title='标题\x1b[31m\0\n下一行'),
+                     summary='摘要\r\n第二行\u2028第三行' + controls + '尾部' + '长' * 10000)
+        service = self.service()
+        service.reports.tick(now=0)
+        service.reports.tick(now=5)
+        writes = self.writes_sent()
+        self.assertEqual(len(writes), 2)
+        text = writes[0][4]
+        self.assertIn('标题[31m', text)
+        self.assertIn('摘要 | 第二行 | 第三行', text)
+        self.assertFalse(any(ord(c) < 32 or 127 <= ord(c) <= 159 for c in text))
+        self.assertNotIn('\u2028', text)
+        self.assertLessEqual(len(text), 8000)
+        self.assertEqual(self.reports(service)[0]['delivery']['status'], 'delivered')
+
     def test_idle_report_is_written_to_herdr_and_delivered_once_across_restart(self):
         self.receipt(self.job())
         service = self.service()
@@ -52,6 +69,37 @@ class ReportDeliveryTests(unittest.TestCase):
         service.reports.tick(now=60)
         self.assertEqual(self.writes_sent(), writes)
         self.assertEqual(self.reports(service)[0], report)
+
+    def test_cleaning_cannot_reassemble_a_sensitive_value_in_sent_text(self):
+        self.receipt(self.job(), summary='摘要 PRI\0VATE_MARKER')
+        service = self.service()
+        service.sensitive.add('PRIVATE_MARKER')
+        service.reports.tick(now=0)
+        service.reports.tick(now=5)
+        text = self.writes_sent()[0][4]
+        self.assertNotIn('PRIVATE_MARKER', text)
+        self.assertIn('[redacted]', text)
+
+    def test_invalid_input_does_not_abort_other_sessions_in_same_delivery_batch(self):
+        self.transcript(identity='session-two')
+        self.data['agents'].append(self.agent('w1:p2', agent_session=dict(
+            agent='codex', kind='id', value='session-two')))
+        self.save_fixture()
+        self.receipt(self.job('first'))
+        self.receipt(self.job('second', initiator_session='session-two'))
+        service = self.service()
+        service.reports.tick(now=0)
+        run = subprocess.run
+        def reject_first(command, *args, **kwargs):
+            if command[:3] == ['herdr', 'pane', 'send-text'] and command[3] == 'w1:p1':
+                raise ValueError('fixture invalid argument')
+            return run(command, *args, **kwargs)
+        with patch.object(subprocess, 'run', side_effect=reject_first):
+            service.reports.tick(now=5)
+        rows = service.read('/v1/reports')[1]['reports']
+        self.assertEqual([r['delivery']['status'] for r in rows], ['inbox_only', 'delivered'])
+        self.assertEqual(rows[0]['delivery']['reason'], 'session_input_failed')
+        self.assertEqual([a[2] for a in self.writes_sent()], ['w1:p2', 'w1:p2'])
 
     def test_working_reports_wait_and_leave_in_fifo_order_after_restart(self):
         self.data['agents'][0]['agent_status'] = 'working'
@@ -99,6 +147,40 @@ class ReportDeliveryTests(unittest.TestCase):
         self.assertIn('继续发送下一条', texts[1])
         self.assertEqual([r['delivery']['status'] for r in self.reports(service)], ['inbox_only', 'delivered'])
         self.assertEqual(sum(e['type'] == 'report.delivered' for e in events.read_after(self.state, 0)), 1)
+
+    def test_enter_failure_preserves_text_delivery_without_retry_or_success_event(self):
+        self.data['fail_enter'] = True
+        self.save_fixture()
+        self.receipt(self.job(title='token=title-marker'), summary='password=summary-marker')
+        self.data['agents'][0].update(pane_id='w1:p1 token=pane-marker', agent_session=dict(
+            agent='codex', kind='id', value='session-one'))
+        self.save_fixture()
+        service = self.service()
+        service.reports.tick(now=0)
+        service.reports.tick(now=5)
+        report = self.reports(service)[0]
+        self.assertEqual(report['delivery']['status'], 'text_delivered')
+        self.assertEqual(report['delivery']['reason'], 'session_submit_failed')
+        self.assertIsNotNone(report['delivery']['delivered_at'])
+        example = json.loads((serve_test.CONTRACTS / 'reports-unsubmitted.json').read_text())
+        self.assert_structure({'reports': [report]}, example)
+        self.assertEqual(report['delivery']['status'], example['reports'][0]['delivery']['status'])
+        self.assertEqual(report['delivery']['reason'], example['reports'][0]['delivery']['reason'])
+        serialized = json.dumps([report, service.read('/v1/reports')[1],
+                                 json.loads(service.reports.path.read_text())])
+        for forbidden in ('title-marker', 'summary-marker', 'pane-marker', 'env_file', 'private_key'):
+            self.assertNotIn(forbidden, serialized)
+        self.assertNotIn('title-marker', self.writes_sent()[0][4])
+        self.assertNotIn('summary-marker', self.writes_sent()[0][4])
+        self.assertEqual(len(self.writes_sent()), 2)
+        service.close()
+        self.data['fail_enter'] = False
+        self.save_fixture()
+        service = self.service()
+        service.reports.tick(now=60)
+        self.assertEqual(self.reports(service)[0], report)
+        self.assertEqual(len(self.writes_sent()), 2)
+        self.assertFalse(any(e['type'] == 'report.delivered' for e in events.read_after(self.state, 0)))
 
     def test_closed_or_missing_herdr_session_keeps_report_in_inbox_without_writing(self):
         self.receipt(self.job(initiator_session='closed-session'))

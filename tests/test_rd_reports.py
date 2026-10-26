@@ -14,7 +14,14 @@ from tests import test_rd_serve_sessions as sessions
 
 
 class ReportTests(unittest.TestCase):
-    setUp = sessions.SessionTests.setUp
+    def setUp(self):
+        sessions.SessionTests.setUp(self)
+        # Normal report tests start after first-use migration of an empty store.
+        service = Service(cli.Config(), self.path)
+        try:
+            service.reports.tick(now=-60)
+        finally:
+            service.close()
     agent = sessions.SessionTests.agent
     save_fixture = sessions.SessionTests.save_fixture
     saved_session = sessions.SessionTests.saved_session
@@ -47,6 +54,87 @@ class ReportTests(unittest.TestCase):
         status, body = service.read("/v1/reports?initiator_session=session-one")
         self.assertEqual(status, 200)
         return body["reports"]
+
+    def test_first_store_creation_baselines_history_without_reports_or_delivery(self):
+        (self.state / 'reports' / 'fixture.json').unlink()
+        for name, outcome in (('old-completed', 'completed'), ('old-blocked', 'blocked'),
+                              ('old-failed', 'failed')):
+            rec = self.job(name)
+            events.EventLog(self.state).observe_job(rec, dict(state='unreachable', round='1'))
+            events.EventLog(self.state).observe_job(rec, dict(state='running', round='1'))
+            self.receipt(rec, outcome=outcome)
+        offline = self.job('old-offline')
+        events.EventLog(self.state).observe_job(offline, dict(state='unreachable', round='1'))
+        cli.messages.atomic_json(self.state / 'serve-snapshots' / 'old-offline.json', dict(
+            user_id='fixture', generation=[1, 'target', None],
+            snapshot=dict(state='unreachable', round='1', snapshot_at=cli.messages.utc_now())))
+        service = self.service()
+        service.reports.tick(now=0)
+        service.reports.tick(now=5)
+        service.reports.tick(now=60)
+        self.assertEqual(self.reports(service), [])
+        self.assertFalse(self.writes.exists())
+        self.assertFalse(any(e['type'].startswith('report.') for e in events.read_after(self.state, 0)))
+        service.close()
+        service = self.service()
+        service.reports.tick(now=120)
+        service.reports.tick(now=125)
+        self.assertEqual(self.reports(service), [])
+        # A later transition on a baselined job and a new receipt must still report.
+        log = events.EventLog(self.state)
+        log.observe_job(offline, dict(state='running', round='1'))
+        log.observe_job(offline, dict(state='unreachable', round='1'))
+        self.receipt(self.job('new-job'))
+        service.reports.tick(now=126)
+        service.reports.tick(now=131)
+        self.assertEqual([e['job'] for e in self.reports(service)[0]['entries']],
+                         ['old-offline', 'new-job'])
+
+    def test_first_collection_of_existing_unknown_jobs_is_baseline_even_after_restart(self):
+        (self.state / 'reports' / 'fixture.json').unlink()
+        old = self.job('old-unknown')
+        old_offline = self.job('old-offline')
+        active = self.job('existing-active')
+        service = self.service()
+        service.reports.tick(now=0)  # No local receipt or snapshot before the first target poll.
+        service.close()
+        service = self.service()
+        log = events.EventLog(self.state)
+        log.observe_job(old, dict(state='done', round='1'))
+        service.reports.tick(now=1)  # A done event may precede receipt collection.
+        self.receipt(old)
+        log.observe_job(old_offline, dict(state='unreachable', round='1'))
+        log.observe_job(active, dict(state='running', round='1'))
+        service.reports.tick(now=2)
+        service.reports.tick(now=7)
+        self.assertEqual(self.reports(service), [])
+        self.assertFalse(self.writes.exists())
+        self.receipt(active)
+        service.reports.tick(now=8)
+        service.reports.tick(now=13)
+        self.assertEqual([e['job'] for e in self.reports(service)[0]['entries']], ['existing-active'])
+
+    def test_stale_snapshot_cannot_finish_upgrade_baseline_before_first_fresh_collection(self):
+        (self.state / 'reports' / 'fixture.json').unlink()
+        rec = self.job('old-running-cache')
+        cli.messages.atomic_json(self.state / 'serve-snapshots' / 'old-running-cache.json', dict(
+            user_id='fixture', generation=[1, 'target', None],
+            snapshot=dict(state='running', round='1', snapshot_at='2026-01-01T00:00:00+00:00')))
+        service = self.service()
+        service.reports.tick(now=0)
+        service.reports.tick(now=60)  # A skipped target poll leaves the old cache untouched.
+        service.close()
+        service = self.service()
+        service.reports.tick(now=120)
+        self.receipt(rec)  # First successful collection discovers a historical completion.
+        service.reports.tick(now=121)
+        service.reports.tick(now=126)
+        self.assertEqual(self.reports(service), [])
+        self.assertFalse(self.writes.exists())
+        self.receipt(self.job('new-completion'))
+        service.reports.tick(now=127)
+        service.reports.tick(now=132)
+        self.assertEqual([e['job'] for e in self.reports(service)[0]['entries']], ['new-completion'])
 
     def test_receipt_event_generates_summary_and_inbox_keeps_pending_receipt(self):
         rec = self.job()
@@ -92,6 +180,40 @@ class ReportTests(unittest.TestCase):
         service.reports.tick(now=200)
         service.reports.tick(now=300)
         self.assertEqual(self.reports(service), reports)
+
+    def test_report_id_uses_owner_sorted_entry_identities_and_due_time(self):
+        self.config.write_text('[monitor]\nreport_merge_window_seconds=0\n')
+        self.data['agents'][0]['agent_status'] = 'working'
+        self.save_fixture()
+        service = self.service()
+        first = self.job('first')
+        second = self.job('second')
+        self.receipt(first)
+        self.receipt(second)
+        store = service.reports.path.read_bytes()
+        service.reports.tick(now=10)
+        original = self.reports(service)[0]['id']
+        # Same semantic batch: event order, display text and dictionary order differ.
+        service.close()
+        service.reports.path.write_bytes(store)
+        log = self.state / 'events.jsonl'
+        rows = [json.loads(line) for line in log.read_text().splitlines()]
+        receipts = [row for row in rows if row['type'] == 'receipt.ready']
+        receipts[0]['data'], receipts[1]['data'] = receipts[1]['data'], receipts[0]['data']
+        log.write_text(''.join(json.dumps(row) + '\n' for row in rows if row['type'] != 'report.created'))
+        for rec in (first, second):
+            receipt = cli.messages.read_json(cli.result_path(rec, 1))
+            receipt['report']['summary'] = '换一种摘要'
+            cli.messages.atomic_json(cli.result_path(rec, 1), dict(reversed(list(receipt.items()))))
+        service = self.service()
+        service.reports.tick(now=10)
+        self.assertEqual(self.reports(service)[0]['id'], original)
+        # Same jobs and states in a distinct merge window must have a distinct ID.
+        service.close()
+        service.reports.path.write_bytes(store)
+        service = self.service()
+        service.reports.tick(now=20)
+        self.assertNotEqual(self.reports(service)[0]['id'], original)
 
     def test_state_events_include_latest_progress_and_repeat_only_after_recovery(self):
         rec = self.job()

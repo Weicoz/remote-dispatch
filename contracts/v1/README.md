@@ -126,3 +126,7 @@ JSON 类型，另用行为断言覆盖实际值、用户隔离、纯查询、锁
   `status/reason/pane_id/delivered_at`；旧汇报读取时补排队显示字段，不写回状态。
   `report-delivered.json` 是成功写入 Herdr 后的 `report.delivered` 事件，
   仅含汇报标识与送达元数据，不含正文；状态和原因键见 `docs/reports.md`。
+- 票 61：`reports-unsubmitted.json` 展示文本已写入、回车失败的
+  `delivery.status=text_delivered/reason=session_submit_failed`；保留写入时间，
+  不发布 `report.delivered`、不重发。`session-dispatch-defaults-closed.json`
+  展示给不存在或已关闭窗格 PUT 默认值的 404 `session_closed`，不保存默认值或发布事件。

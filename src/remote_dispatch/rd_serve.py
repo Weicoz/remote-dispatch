@@ -495,7 +495,6 @@ class Service:
             with self.cache_lock:
                 self.hosts = hosts
             self.sessions.collect()
-            self.reports.ready.set()
             try:
                 records = self.records()
             except (ValueError, OSError, SystemExit):
@@ -553,6 +552,7 @@ class Service:
                     continue
                 except (ValueError, OSError, SystemExit, subprocess.SubprocessError):
                     print("rdispatch: poll_unavailable: cannot collect a job", file=sys.stderr)
+            self.reports.ready.set()
             try:
                 rd_harness_stats.observe(self)
                 self.project_routes.observe()

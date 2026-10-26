@@ -9,6 +9,13 @@
 每个派单的每轮按状态变化去重；恢复执行后再次离线属于新的变化。
 游标、已观察状态、待合并内容和汇报保存在控制端
 `RD_STATE/reports/<用户>.json`，重启会延续待合并窗口，不重放已报告变化。
+首次创建此文件时，游标直接定位到事件日志末尾（含轮转段），并把现有派单的
+当前状态记为基线；历史终态不生成汇报、不发汇报事件、不写入会话。
+首次远端采集尚未完成的现有轮次会持久保留“待建立基线”标记，其第一次可信观察只建基线；
+即使中间重启也不把迟到的历史终态当新变化。第一次观察为执行中时，此后的终态正常汇报。
+汇报线程等待首轮目标机采集完成；采集失败或跳过的轮次继续等待基线之后的新鲜观察，
+旧缓存的分钟扫描不会提前消费标记。基线起始时间与标记一同持久保存。
+后续新派单或基线之后的状态变化仍照常生成汇报。
 无发起会话或 App 发起的派单仍不生成汇报；发起会话已关闭或不在 Herdr 时保留汇报供 `inbox` 读取。
 
 同一发起会话在固定窗口内的多条变化合并为一条汇报，`entries` 按发生顺序逐单列出。
@@ -21,6 +28,8 @@ report_merge_window_seconds = 5
 
 值必须为有限非负数，`0` 表示本次事件消费完成后立即生成。
 这是本地汇报合并规则，不是外部服务超时。窗口从第一条变化开始，不会因新变化无限延长。
+汇报 ID 使用发起会话、排序后的各条目 `job:round:state` 与到期时间的规范 JSON 数组
+计算 SHA-256；与字典字段顺序、条目显示文本无关，不同到期窗口生成不同 ID。
 后台另每 **60 秒** 从 serve 已采集的执行快照和本地回执扫描一次，补出未经过事件路径的变化；
 扫描不自行连接目标机，目标机采集仍沿用 serve 的轮询设置。
 
@@ -43,15 +52,18 @@ serve 通过现有 `rd_herdr.Herdr.input` 写入文本并发送 `enter`，只允
 Codex、Claude Code。每次送达前重新发现会话，按 `initiator_session` 匹配，
 不凭失效的会话列表向旧 pane 写入。按目录推测的身份只留 inbox，不自动发送。会话工作中、等待输入或状态未知时继续排队，
 空闲后按汇报生成顺序先进先出；不同会话互不阻塞。
+进入 Herdr 前，将整段文本换行替换成 ` | ` 单行分隔，删除 C0、DEL、C1
+控制字符（包括 ESC、空字符），再限制为最多 8000 个字符；限制针对整条合并汇报。
+inbox 保留完整显示摘要。单条输入的 `OSError` 或 `ValueError` 不会中止同批其他汇报。
 
 `GET /v1/reports` 与 `inbox` 的每条汇报新增 `delivery`：
 
 | 字段 | 含义 |
 | --- | --- |
-| `status` | `queued` 排队；`sending` 已保存发送意图；`delivered` 已成功写入；`inbox_only` 只留 inbox |
+| `status` | `queued` 排队；`sending` 已保存发送意图；`delivered` 已写入并提交；`text_delivered` 文本已送达、未提交；`inbox_only` 只留 inbox |
 | `reason` | 原因键，正常送达时为 null，见下表 |
 | `pane_id` | 送达目标（显示值，已脱敏），未定位时为 null |
-| `delivered_at` | 成功写入时间，未送达为 null |
+| `delivered_at` | 文本成功写入时间（包括 `text_delivered`），未确认写入为 null |
 
 | 原因键 | 含义（界面占位文字由编排方定稿） |
 | --- | --- |
@@ -62,10 +74,13 @@ Codex、Claude Code。每次送达前重新发现会话，按 `initiator_session
 | `harness_not_verified` | 此 harness 尚未验证汇报写入，只留 inbox |
 | `session_access_disabled` | 会话访问总开关已关闭，只留 inbox |
 | `session_input_failed` | 写入失败，只留 inbox |
+| `session_submit_failed` | 文本已写入，但回车未成功；保留 inbox，不重发、不自动补回车 |
 | `delivery_result_unknown` | 上次写入结果无法确认，只留 inbox |
 
 成功写入后追加一次 `report.delivered`，只含用户、汇报 ID、发起会话、pane 和送达时间，
 不携带正文；样例见 `contracts/v1/report-delivered.json`。送达不会自动签收或验收。
+仅文本写入成功、回车失败时不发布 `report.delivered`；此状态的接口样例见
+`contracts/v1/reports-unsubmitted.json`，界面占位文字为“文本已送达、未提交”。
 Kimi、AGY 等未验证 harness 和其他不可送达情况均不尝试自动重发，汇报记录仍保留。
 总开关关闭期间生成的汇报只留 inbox，重新打开不会重放这些汇报。
 
@@ -89,6 +104,10 @@ Kimi、AGY 等未验证 harness 和其他不可送达情况均不尝试自动重
 3. 在合并窗口及排队期间关闭会话，确认 inbox 保留、没有向复用 pane 误发。
 4. 用 Kimi、AGY 窗格及关闭 `[serve] session_access` 的配置验证只留 inbox，原因键正确。
 5. 重启 serve 后确认成功、失败及结果未知的汇报均不重复输入；真实写入故障后检查 inbox。
+6. 使用已有历史派单但没有汇报存储的隔离状态目录首次启动，确认历史记录不生成或发送汇报；
+   再完成一条新派单，确认能正常汇报。
+7. 通过隔离测试窗格验证多行、ESC、空字符与超长汇报；正文应为最多 8000 字符的单行。
+   注入仅回车失败，确认 `text_delivered/session_submit_failed`，重启不重发且无送达事件。
 
 本地自动化使用隔离的假 Herdr，不占 TCP 监听端口，不访问真实 harness 或外部服务。
 真实会话识别、状态切换时序、真实写入失败、测试栈部署与服务重启列为需编排方／端到端执行。

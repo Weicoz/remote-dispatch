@@ -40,6 +40,15 @@ def pane_record(rows, pane, *, include_closed=False):
     return matches[0] if len(matches) == 1 else {}
 
 
+def replay(saved, request_hash):
+    previous = messages.read_json(saved) if saved is not None else None
+    if previous is None:
+        return None
+    if previous['fingerprint'] != request_hash:
+        return 422, {'error': {'reason': 'idempotency_key_reused'}}
+    return previous['status'], previous['body']
+
+
 class SessionDefaults:
     def __init__(self, state, uid):
         self.state = Path(state)
@@ -66,12 +75,9 @@ class SessionDefaults:
         key = identity(session, pane)
         lock = self.lock()
         try:
-            if saved is not None:
-                previous = messages.read_json(saved)
-                if previous is not None:
-                    if previous['fingerprint'] != request_hash:
-                        return 422, {'error': {'reason': 'idempotency_key_reused'}}
-                    return previous['status'], previous['body']
+            previous = replay(saved, request_hash)
+            if previous is not None:
+                return previous
             rows = self.read()
             before = self.get(session, pane)
             result = dict(before, **values)
@@ -189,7 +195,15 @@ class DefaultRoutes:
             with self.service.writer:
                 if self.service.stop.is_set():
                     raise OSError('服务正在停止。')
-                session, pane = self.target(match[1])
+                previous = replay(saved, request_hash)
+                if previous is not None:
+                    return handler.json(previous[0], self.service.redact(previous[1]))
+                target = next((item['row'] for item in self.sessions.discover()
+                               if item['row']['id'] == match[1]), None)
+                if target is None:
+                    return handler.json(404, {'error': {'reason': 'session_closed', 'message': '会话已关闭。'}})
+                session = target.get('session_id') if not target.get('probable') else None
+                pane = match[1]
                 status, reply = SessionDefaults(self.service.state, self.service.user_id).update(
                     values, session, pane, saved=saved, request_hash=request_hash)
             handler.json(status, self.service.redact(reply))

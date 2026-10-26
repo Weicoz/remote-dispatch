@@ -78,7 +78,7 @@ elif a[:3] == ["terminal", "session", "observe"]:
 elif a[:2] in (["pane", "send-text"], ["pane", "send-keys"]):
     with open(os.environ["FAKE_WRITES"], "a") as f:
         f.write(json.dumps(a) + "\\n")
-    if v.get("fail_input"):
+    if v.get("fail_input") or (v.get("fail_enter") and a[:2] == ["pane", "send-keys"]):
         sys.exit(1)
     print("{}")
 else:
