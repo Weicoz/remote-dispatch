@@ -493,6 +493,15 @@ def handler_class(base):
                 if self.remote:
                     self.server.service.network.untrack(self.connection)
 
+        def do_PUT(self):
+            if not self.authorized():
+                return
+            try:
+                return super().do_PUT()
+            finally:
+                if self.remote:
+                    self.server.service.network.untrack(self.connection)
+
         def do_POST(self):
             if not self.authorized():
                 return

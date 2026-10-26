@@ -1,0 +1,35 @@
+{
+  "request": {
+    "method": "PUT",
+    "path": "/v1/sessions/w1:p1/dispatch-defaults",
+    "headers": {
+      "Content-Type": "application/json",
+      "Idempotency-Key": "session-dispatch-defaults-put"
+    },
+    "body": {
+      "host": "target",
+      "harness": "codex"
+    }
+  },
+  "response": {
+    "status": 200,
+    "body": {
+      "host": "target",
+      "harness": "codex"
+    }
+  },
+  "events": [
+    {
+      "type": "session.changed",
+      "data": {
+        "user_id": "fixture",
+        "pane_id": "w1:p1",
+        "session_id": "session-one",
+        "dispatch_defaults": {
+          "host": "target",
+          "harness": "codex"
+        }
+      }
+    }
+  ]
+}

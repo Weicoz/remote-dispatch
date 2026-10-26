@@ -14,6 +14,7 @@ from . import cli
 from . import rd_messages as messages
 from . import rd_events as events
 from .rd_herdr import Herdr
+from .rd_session_defaults import DefaultRoutes, SessionDefaults
 from .rd_projects import project_id
 from .rd_transcripts import convert_transcript
 from .rd_lock import JobBusy, JobLock
@@ -30,6 +31,7 @@ class Sessions:
     def __init__(self, service):
         self.service = service
         self.herdr = Herdr()
+        self.defaults = DefaultRoutes(self)
         self.enabled = service.config.cp.getboolean("serve", "session_access", fallback=True)
         self.observed = {}
         self.seen_messages = {}
@@ -43,7 +45,7 @@ class Sessions:
             if data.get("user_id") != service.user_id:
                 continue
             self.remember_event(event)
-            if event["type"] == "session.changed":
+            if event["type"] == "session.changed" and "dispatch_defaults" not in data:
                 if data.get("removed"):
                     self.observed.pop(data["pane_id"], None)
                 else:
@@ -52,10 +54,12 @@ class Sessions:
                 self.seen_messages.setdefault((data["pane_id"], data.get("session_id")), set()).add(data["message_id"])
 
     def collect(self):
-        if not self.enabled:
-            return
         try:
+            if not self.enabled:
+                SessionDefaults(self.service.state, self.service.user_id).observe(None)
+                return
             items = self.discover()
+            SessionDefaults(self.service.state, self.service.user_id).observe([item["row"] for item in items])
             current, seen = {}, {pane: set(ids) for pane, ids in self.seen_messages.items()}
             with events.transaction():
                 for item in items:
@@ -158,7 +162,8 @@ class Sessions:
 
     def remember_event(self, event):
         data = event["data"]
-        if data.get("user_id") != self.service.user_id or event["type"] not in ("session.changed", "session.message"):
+        if (data.get("user_id") != self.service.user_id or "dispatch_defaults" in data
+                or event["type"] not in ("session.changed", "session.message")):
             return
         if data.get("removed"):
             self.latest.pop(data["pane_id"], None)
@@ -256,6 +261,9 @@ class Sessions:
         path = unquote(urlsplit(target).path)
         if self.is_session_path(path) and not self.allowed(device):
             return DISABLED
+        defaults = self.defaults.read(path)
+        if defaults is not None:
+            return defaults
         if path == "/v1/sessions":
             return 200, {"sessions": self.list()}
         match = re.fullmatch(r"/v1/jobs/([^/]+)/session", path)

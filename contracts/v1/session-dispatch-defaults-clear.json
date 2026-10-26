@@ -1,0 +1,47 @@
+{
+  "request": {
+    "method": "PUT",
+    "path": "/v1/sessions/w1:p1/dispatch-defaults",
+    "headers": {
+      "Content-Type": "application/json",
+      "Idempotency-Key": "session-dispatch-defaults-clear"
+    },
+    "body": {
+      "host": null,
+      "harness": null
+    }
+  },
+  "response": {
+    "status": 200,
+    "body": {
+      "host": null,
+      "harness": null
+    }
+  },
+  "events": [
+    {
+      "type": "session.changed",
+      "data": {
+        "user_id": "fixture",
+        "pane_id": "w1:p1",
+        "session_id": "session-one",
+        "dispatch_defaults": {
+          "host": null,
+          "harness": null
+        }
+      }
+    }
+  ],
+  "previous_request": {
+    "method": "PUT",
+    "path": "/v1/sessions/w1:p1/dispatch-defaults",
+    "headers": {
+      "Content-Type": "application/json",
+      "Idempotency-Key": "before-clear"
+    },
+    "body": {
+      "host": "target",
+      "harness": "codex"
+    }
+  }
+}
