@@ -21,10 +21,11 @@
           "in_progress_count": 0,
           "hosts": {
             "target": {
-              "state": "idle",
+              "state": "completed",
               "job": "fixture-job",
               "updated_at": "2026-10-25T01:00:00+00:00",
-              "accepted_round_count": 1
+              "accepted_round_count": 1,
+              "execution_state": "done"
             }
           },
           "week_dispatch_count": 1,
@@ -45,7 +46,10 @@
               "dispatch_count": 1,
               "hidden": false
             }
-          }
+          },
+          "blocked_count": 0,
+          "offline_count": 0,
+          "failed_count": 0
         }
       ]
     }

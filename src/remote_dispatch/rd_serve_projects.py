@@ -15,21 +15,22 @@ from .rd_serve_history import instant, records as history_records
 
 
 def urgency(card):
-    if card["execution_state"] in ("starting", "running"):
-        return "running", 5
-    if card.get("stopped_by") and card["review_state"] == "pending":
-        return "pending_review", 4
-    if card["review_state"] in ("accepted", "voided"):
-        return "idle", 6
-    if card["outcome"] == "blocked" and card["delivery_state"] == "pending":
-        return "needs_reply", 0
-    if card["execution_state"] in ("dead", "missing", "unreachable"):
-        return "interrupted", 1
-    if card["delivery_state"] == "pending":
-        return ("failed_pending", 2) if card["outcome"] == "failed" or card.get("executor_exit") not in (None, 0) else ("pending_receipt", 3)
-    if card["delivery_state"] == "received" and card["review_state"] == "pending":
-        return "pending_review", 4
-    return "idle", 6
+    execution = card["execution_state"]
+    if execution in ("starting", "running"):
+        return "running", 3
+    if execution == "unreachable":
+        state, priority = "offline", 2
+    elif execution in ("dead", "missing") or card["outcome"] == "failed" or card.get("executor_exit") not in (None, 0):
+        state, priority = "failed", 1
+    elif card["outcome"] == "blocked":
+        state, priority = "blocked", 0
+    elif execution == "done":
+        state, priority = "completed", 4
+    else:
+        state, priority = "none", 5
+    if card.get("stopped_by") or card["review_state"] in ("accepted", "voided"):
+        priority = 4
+    return state, priority
 
 
 class ProjectRoutes:
@@ -53,6 +54,7 @@ class ProjectRoutes:
     @staticmethod
     def summary(row, session_only=False):
         return dict(row, session_only=session_only, sessions=[], needs_attention_count=0,
+                    blocked_count=0, offline_count=0, failed_count=0,
                     in_progress_count=0, hosts={}, week_dispatch_count=0,
                     last_accepted_at=None, last_harness=None, recent_event=None)
 
@@ -106,8 +108,10 @@ class ProjectRoutes:
                       origin=rec.get("origin") or "", dispatch_count=0, first_dispatch_at=None,
                       last_dispatch_at=None)))
             state, priority = urgency(card)
-            row["needs_attention_count"] += int(priority < 5)
-            row["in_progress_count"] += int(priority == 5)
+            if priority < 3:
+                row[state + "_count"] += 1
+            row["needs_attention_count"] = row["blocked_count"] + row["offline_count"] + row["failed_count"]
+            row["in_progress_count"] += int(state == "running")
             created = instant(rec.get("created"))
             if created and week <= created <= now:
                 row["week_dispatch_count"] += 1
@@ -131,7 +135,8 @@ class ProjectRoutes:
             host_key = (identity, card["host"])
             if host_key not in ranked or rank < ranked[host_key]:
                 ranked[host_key] = rank
-                row["hosts"][card["host"]] = dict(state=state, job=card["job"], updated_at=updated)
+                row["hosts"][card["host"]] = dict(state=state, execution_state=card["execution_state"],
+                                                     job=card["job"], updated_at=updated)
         if sessions_allowed:
             try:
                 sessions = service.sessions.cached()
@@ -151,10 +156,10 @@ class ProjectRoutes:
         for row in rows.values():
             row["origin"] = re.sub(r"(://)[^/@\s]+@", r"\1", row["origin"])
             for host in service.config.hosts():
-                row["hosts"].setdefault(host["name"], dict(state="idle", job=None, updated_at=None))
+                row["hosts"].setdefault(host["name"], dict(state="none", execution_state=None, job=None, updated_at=None))
             for identity, host in accepted_counts:
                 if identity == row["id"]:
-                    row["hosts"].setdefault(host, dict(state="idle", job=None, updated_at=None))
+                    row["hosts"].setdefault(host, dict(state="none", execution_state=None, job=None, updated_at=None))
             for host, cell in row["hosts"].items():
                 cell["accepted_round_count"] = accepted_counts.get((row["id"], host), 0)
         return sorted(rows.values(), key=lambda row: (row["name"] == "未归属", row["name"], row["id"]))
@@ -201,7 +206,9 @@ class ProjectRoutes:
                     card = self.card(rec, query)
                     if project and card["project_id"] != project:
                         continue
-                    historical = bool(rec.get("archived")) or urgency(card)[1] == 6
+                    historical = bool(rec.get("archived")) or (
+                        card["execution_state"] not in ("starting", "running")
+                        and card["review_state"] in ("accepted", "voided"))
                     if state == "history" and not historical or state == "active" and historical:
                         continue
                     rows.append(dict(card, created_at=rec.get("created")))

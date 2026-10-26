@@ -124,6 +124,55 @@ else:
                         "agent": "codex", "kind": kind, "value": value, "source": "hook"}}}}]}]}
         (self.herdr_config.parent / "session.json").write_text(json.dumps(snapshot), encoding="utf-8")
 
+    def test_session_rows_expose_pane_cwd_in_list_and_project_summary(self):
+        foreground = self.repo / "nested"
+        foreground.mkdir()
+        self.data["agents"][0]["foreground_cwd"] = str(foreground)
+        self.save_fixture()
+        self.start(poll_interval=3600)
+        row = self.sessions()[0]
+        self.assertEqual(row["cwd"], str(foreground))
+        self.assertIn("updated_at", row)
+        project = self.request("/v1/projects")[1]["projects"][0]
+        self.assertEqual(project["sessions"], [row])
+        self.assertEqual((project["blocked_count"], project["offline_count"], project["failed_count"],
+                          project["needs_attention_count"]), (0, 0, 0, 0))
+
+    def test_unreadable_live_cwd_is_null_and_does_not_break_other_sessions(self):
+        for live_cwd in (None, ""):
+            with self.subTest(cwd=live_cwd):
+                self.saved_session()
+                self.data["agents"] = [dict(self.agent(), cwd=live_cwd), self.agent("w1:p2")]
+                self.save_fixture()
+                service = self.start(poll_interval=3600)
+                rows = {row["id"]: row for row in self.sessions()}
+                self.assertEqual(set(rows), {"w1:p1", "w1:p2"})
+                self.assertIsNone(rows["w1:p1"]["cwd"])
+                self.assertIn("updated_at", rows["w1:p1"])
+                example = json.loads((base.CONTRACTS / "sessions-cwd-unknown.json").read_text())
+                self.assert_structure({"sessions": [rows["w1:p1"]]}, example["response"]["body"])
+                self.assertEqual(rows["w1:p2"]["cwd"], str(self.repo))
+                project = self.request("/v1/projects")[1]["projects"][0]
+                self.assertEqual(project["sessions"], list(rows.values()))
+                service.close()
+
+    def test_cwd_and_summary_fields_pass_sensitive_field_scan(self):
+        private = self.repo / "fixture-secret-cwd"
+        private.mkdir()
+        self.config.write_text("[host:target]\nssh=local\nenv_file=fixture-secret-cwd\n")
+        self.data["agents"][0].update(foreground_cwd=str(private),
+                                     password="private-marker", agent_auth_file="private-marker")
+        self.save_fixture()
+        self.start(poll_interval=3600)
+        rows = self.sessions()
+        self.assertIn("[redacted]", rows[0]["cwd"])
+        projects = self.request("/v1/projects")[1]
+        self.assertEqual(projects["projects"][0]["sessions"], rows)
+        self.assertEqual(projects["projects"][0]["hosts"]["target"]["state"], "none")
+        encoded = json.dumps([rows, projects])
+        for value in ("fixture-secret-cwd", "private-marker", "env_file", "agent_auth_file", "password"):
+            self.assertNotIn(value, encoded)
+
     def test_snapshot_keeps_latest_session_event_time_across_rotation_and_restart_without_query_writes(self):
         from remote_dispatch import rd_events, rd_messages
         from remote_dispatch.rd_projects import project_id
