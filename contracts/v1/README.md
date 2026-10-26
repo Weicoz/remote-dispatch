@@ -11,6 +11,18 @@ JSON 类型，另用行为断言覆盖实际值、用户隔离、纯查询、锁
 
 - `hosts.json` / `hosts-populated.json`：空列表与已配置目标机。配置顺序固定；
   `local/reachable/full` 是布尔值，资源值沿用探针的字符串或数字，未采集到为 `null`。
+  票 45 追加可选 `cpu_pct`、`disk_total`、`metrics`；新服务固定返回三项指标。
+  `metrics.cpu/memory/disk` 各含数值 `value`（未知为 null）、`unit`、数值
+  `warning/pressure` 和 `level=normal/warning/pressure/unknown`。
+  CPU 的 unit 为 POSIX `load_per_core` 或 Windows `cpu_pct`；内存为 `free_pct`，
+  磁盘为 `free_gb`，磁盘另有数值 `total`（旧探针或缺测为 null）。
+  两个磁盘字段沿用探针的 GB 口径（实际为 1024³ 字节，整数截断），可用总量画已用比例。
+  警告含等号；高压严格沿用 assess 的大于上限／小于下限，等于高压点仍未触发拒绝。
+  高压优先于警告。`full` 继续使用 assess 的完整拒绝结论，包括换页、网络、
+  必需指标缺测等原因，不能仅用三项级别重算；离线与未探测时 full=false。
+  `hosts-warning/pressure/unknown/windows.json` 展示对应状态，`hosts-cold-start.json`
+  展示首次探测前的 null/unknown；探测失败同样不把未知标为正常。
+  `host.changed` 新增可选 `cpu_pct/disk_total`；客户端收到事件后重读指标。
 - `jobs.json`：卡片列表，只含当前用户和没有用户字段的旧记录，跨发起会话。
   卡片与详情各轮可选 `snapshot_at` 是后台执行快照的控制端采集时间；
   冷启动回退本地回执时取 `captured_at`，未知为 null。

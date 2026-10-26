@@ -372,6 +372,22 @@ class DispatchTests(unittest.TestCase):
         self.assertEqual(record["host"], "fixture")
         probe.assert_not_called()
 
+    def test_warning_resources_allow_dispatch_and_resume_without_force(self):
+        self.cfg.cp.set("host:fixture", "ssh", "local")
+        resource_probe = 'echo "os=Darwin ncpu=8 load1=8 memfree=20 disk=20 disk_total=500"'
+        with patch.object(rd, "PROBE", resource_probe):
+            record = self.dispatch(force_host=False, initiator_session="sender")
+            record.update(agent="codex", isolated=True, receiver_session="receiver")
+            rd.save_job(record)
+            prompt = self.root / "continue.md"
+            prompt.write_text("继续")
+            args = argparse.Namespace(job=record["job"], initiator_session="sender", session=None,
+                                      prompt_file=str(prompt), model=None, effort=None,
+                                      timeout=10, force_host=False)
+            self.capture(rd.cmd_resume, args)
+        status = self.queried_job(record["job"])
+        self.assertEqual((status["rounds"], status["round"], status["state"]), (2, "2", "done"))
+
     def clean(self, record, **overrides):
         values = dict(job=record["job"], force=True, delete_branch=True, discard_reports=False, initiator_session=None)
         values.update(overrides)

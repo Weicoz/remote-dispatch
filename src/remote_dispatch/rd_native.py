@@ -174,9 +174,10 @@ def win_metrics(root, shared):
     jobs = list(shared.glob("users/*/jobs/*")) + list(shared.glob("jobs/*"))
     running = sum(1 for j in jobs if (j / "pid").exists() and not (j / "exit_code").exists() and alive((j / "pid").read_text(encoding="utf-8")))
     heavy = sum(1 for p in shared.glob("locks/heavy.*/pid") if alive(p.read_text(encoding="utf-8")))
+    disk = shutil.disk_usage(root if root.exists() else Path.home())
     return {"os": "Windows", "ncpu": str(os.cpu_count() or 1), "cpu_pct": str(round(cpu, 1)),
             "memfree": str(round(memory.available * 100 / memory.total, 1)), "swap": win_pagefile_used(),
-            "disk": str(int(shutil.disk_usage(root if root.exists() else Path.home()).free / 1024 ** 3)),
+            "disk": str(int(disk.free / 1024 ** 3)), "disk_total": str(int(disk.total / 1024 ** 3)),
             "running": str(running), "heavy": str(heavy)}
 
 

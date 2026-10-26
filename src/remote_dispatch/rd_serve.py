@@ -30,6 +30,7 @@ from .rd_serve_sessions import Sessions
 from .rd_serve_logs import LogSnapshots
 from .rd_serve_progress import ProgressHistory
 from .rd_serve_history import instant
+from .rd_host_metrics import host_metrics
 
 
 WRITE_COMMANDS = {"run", "resume", "ack", "review", "stop", "project", "inbox", "keep", "clean"}
@@ -238,8 +239,8 @@ class Service:
         self.progress = {}
         self.restore_snapshots()
         self.hosts = [dict(name=host["name"], local=cli.is_local(host), reachable=False,
-                           full=False, probed=False,
-                           **{key: None for key in ("load1", "ncpu", "memfree", "disk", "running", "heavy")})
+                           full=False, probed=False, metrics=host_metrics(host, {}),
+                           **{key: None for key in ("load1", "ncpu", "cpu_pct", "memfree", "disk", "disk_total", "running", "heavy")})
                       for host in self.config.hosts()]
         self.network = network.Network(self, push_sender=push_sender)
         self.server = None
@@ -451,10 +452,12 @@ class Service:
                     log.observe_host(host, info, full=full)
                     hosts.append(dict(name=host["name"], local=cli.is_local(host),
                                       reachable=bool(info.get("reachable")), full=full, probed=True,
-                                      **{key: info.get(key) for key in ("load1", "ncpu", "memfree", "disk", "running", "heavy")}))
+                                      metrics=host_metrics(host, info),
+                                      **{key: info.get(key) for key in ("load1", "ncpu", "cpu_pct", "memfree", "disk", "disk_total", "running", "heavy")}))
                 except (ValueError, OSError, SystemExit, subprocess.SubprocessError):
                     hosts.append(dict(name=host["name"], local=cli.is_local(host), reachable=False, full=False, probed=True,
-                                      **{key: None for key in ("load1", "ncpu", "memfree", "disk", "running", "heavy")}))
+                                      metrics=host_metrics(host, {}),
+                                      **{key: None for key in ("load1", "ncpu", "cpu_pct", "memfree", "disk", "disk_total", "running", "heavy")}))
                     print("rdispatch: poll_unavailable: cannot probe a host", file=sys.stderr)
             with self.cache_lock:
                 self.hosts = hosts
