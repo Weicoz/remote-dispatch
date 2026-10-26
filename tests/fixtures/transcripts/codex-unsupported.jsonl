@@ -1,2 +1,2 @@
 {"type":"response_item","timestamp":"2026-01-01T00:00:00Z","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"不能作为部分结果返回。"}]}}
-{"type":"response_item","timestamp":"2026-01-01T00:00:01Z","payload":{"type":"future_response","text":"不能猜测的内容"}}
+{"type":"response_item","timestamp":"2026-01-01T00:00:01Z","payload":{"type":"message","role":"assistant"}}

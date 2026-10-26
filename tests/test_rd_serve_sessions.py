@@ -278,6 +278,52 @@ else:
                          ("newer", True, "可能是这个会话"))
         self.assertEqual(self.request("/v1/sessions/w1:p1/messages")[1]["messages"][0]["text"], "新回复")
 
+    def test_missing_session_id_falls_back_to_latest_cwd_with_probable_label(self):
+        for harness in ("claude", "codex"):
+            for source in ("saved", "live"):
+                with self.subTest(harness=harness, source=source):
+                    if harness == "codex":
+                        old = self.transcript("old")
+                        current = self.transcript("current", "合成最新回复")
+                        unrelated = self.transcript("unrelated", "其他项目", self.root)
+                    else:
+                        directory = self.claude / "projects" / "synthetic-project"
+                        directory.mkdir(parents=True, exist_ok=True)
+                        paths = []
+                        for identity, cwd in (("old", self.repo), ("current", self.repo),
+                                              ("unrelated", self.root)):
+                            path = directory / (identity + ".jsonl")
+                            record = {"type": "assistant", "uuid": identity, "sessionId": identity,
+                                      "timestamp": "example-time", "cwd": str(cwd),
+                                      "message": {"role": "assistant", "content": "合成最新回复"}}
+                            path.write_text(json.dumps(record) + "\n", encoding="utf-8")
+                            paths.append(path)
+                        old, current, unrelated = paths
+                    for path, mtime in ((old, 1), (current, 2), (unrelated, 3)):
+                        os.utime(path, (mtime, mtime))
+                    reference = {"agent": harness, "kind": "id", "value": "missing-session"}
+                    self.data["agents"][0].update(agent=harness)
+                    self.data["agents"][0].pop("agent_session", None)
+                    if source == "live":
+                        self.data["agents"][0]["agent_session"] = reference
+                    else:
+                        snapshot = {"workspaces": [{"tabs": [{"panes": {"42": {
+                            "cwd": str(self.repo), "agent_session": reference}}}],
+                            "id": "w1", "public_pane_numbers": {"42": 1}}], "version": 3}
+                        (self.herdr_config.parent / "session.json").write_text(json.dumps(snapshot))
+                    self.save_fixture()
+                    service = self.start(poll_interval=3600)
+                    try:
+                        row = self.sessions()[0]
+                        self.assertEqual((row["session_id"], row["probable"], row["identity_text"]),
+                                         ("current", True, "可能是这个会话"))
+                        status, result = self.request("/v1/sessions/w1:p1/messages")
+                        self.assertEqual(status, 200)
+                        self.assertTrue(result["supported"])
+                        self.assertEqual([m["text"] for m in result["messages"]], ["合成最新回复"])
+                    finally:
+                        service.close()
+
     def test_screen_and_terminal_forward_rendered_text_and_raw_herdr_records(self):
         self.data["frames"] = ['{"type":"terminal.frame", "data":"G1szMW1oaRtbMG0=","seq":7}',
                                '{"type":"terminal.closed","reason":"closed"}']
@@ -540,14 +586,26 @@ else:
         self.start()
         self.assertEqual(self.sessions()[0]["session_id"], "session-two")
 
-    def test_unknown_transcript_format_falls_back_to_terminal_and_invalid_input_never_writes(self):
+    def test_unknown_transcript_record_preserves_chat_and_invalid_input_never_writes(self):
         path = self.transcript()
         with path.open("a") as stream:
             stream.write('{"type":"new-format"}\n')
         self.saved_session()
         self.start()
-        self.assertEqual(self.request("/v1/sessions/w1:p1/messages"),
-                         (200, {"supported": False, "messages": [], "reason": "unsupported_format", "text": "不支持"}))
+        status, result = self.request("/v1/sessions/w1:p1/messages")
+        self.assertEqual(status, 200)
+        self.assertTrue(result["supported"])
+        self.assertEqual([m["text"] for m in result["messages"]], ["你好"])
+        cursor = result["messages"][0]["id"]
+        with path.open("a") as stream:
+            stream.write('{"type":"new-format"}\n')
+            stream.write(json.dumps({"type": "response_item", "timestamp": "example-time", "payload": {
+                "type": "message", "role": "assistant", "content": [
+                    {"type": "output_text", "text": "合成追加回复"}]}}) + "\n")
+        status, result = self.request("/v1/sessions/w1:p1/messages?after=" + cursor)
+        self.assertEqual(status, 200)
+        self.assertTrue(result["supported"])
+        self.assertEqual([m["text"] for m in result["messages"]], ["合成追加回复"])
         self.assertEqual(self.request("/v1/sessions/w1:p1/screen")[0], 200)
         for index, body in enumerate(({"text": "x", "keys": ["enter"]}, {"keys": "enter"},
                                       {"keys": ["--help"]}, {"text": ""}, {"text": "\0"}, [])):
@@ -591,7 +649,7 @@ else:
             self.assertEqual(response.readline(), b"\n")
         response.close()
         with transcript.open("a") as stream:
-            stream.write('{"type":"unknown"}\n')
+            stream.write('{broken\n')
         example = json.loads((base.CONTRACTS / "sessions-unsupported.json").read_text())
         self.assertEqual(self.request(example["request"]["path"]),
                          (example["response"]["status"], example["response"]["body"]))

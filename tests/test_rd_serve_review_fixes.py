@@ -306,6 +306,8 @@ class SessionFixTests(unittest.TestCase):
             replacement = path.with_suffix(".tmp")
             replacement.write_text('{"type":"unknown"}\n')
             replacement.replace(path)
+            self.assertEqual(sessions.messages(item), dict(supported=True, messages=[]))
+            path.write_text('{broken\n')
             self.assertFalse(sessions.messages(item)["supported"])
             path.write_text('{"type":"session_meta"}\n')
             self.assertEqual(sessions.messages(item), dict(supported=True, messages=[]))

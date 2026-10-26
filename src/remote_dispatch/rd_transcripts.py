@@ -1,7 +1,8 @@
 """无 I/O 的 harness JSONL → 统一聊天消息转换。
 
 公开入口接受 JSONL 字符串行（可迭代一次），返回 supported/messages。
-任一未知或损坏的内容格式使整次转换返回 unsupported_format，不带部分正文。
+未知记录类型与额外字段跳过；损坏 JSON 或必需结构非法使整次转换返回
+unsupported_format，不带部分正文。
 已知元数据和附件跳过；正文与工具输入各保留至多 MAX_CONTENT_CHARS 个字符。
 """
 import json
@@ -14,7 +15,8 @@ _CLAUDE_IGNORED = {
     "attachment", "queue-operation", "ai-title", "last-prompt", "mode", "atis-latch",
     "custom-title", "agent-name", "cost-state", "permission-mode", "continued-in",
 }
-_CODEX_IGNORED = {"event_msg", "turn_context", "session_meta", "world_state"}
+_CODEX_IGNORED = {"event_msg", "turn_context", "session_meta", "world_state",
+                  "inter_agent_communication_metadata", "compacted"}
 
 
 def _string(value: object) -> str:
@@ -82,7 +84,9 @@ def _claude(lines: Iterable[str], tools=None) -> list:
                 or record_type.startswith("api-request")):
             continue
         if record_type not in ("user", "assistant", "system"):
-            raise ValueError("record type")
+            continue
+        if record_type == "system" and not isinstance(record.get("content"), str):
+            continue
         time = _string(record["timestamp"])
         source_id = _identifier(record["uuid"])
         if record_type == "system":
@@ -131,9 +135,13 @@ def _codex(lines: Iterable[str], tools=None, line_offset=0) -> list:
         if record["type"] in _CODEX_IGNORED or record["type"].startswith("token_"):
             continue
         if record["type"] != "response_item":
-            raise ValueError("record type")
-        time = _string(record["timestamp"])
+            continue
         item = _object(record["payload"])
+        kind = _identifier(item["type"])
+        if kind not in ("message", "reasoning", "function_call", "custom_tool_call",
+                        "function_call_output", "custom_tool_call_output"):
+            continue
+        time = _string(record["timestamp"])
         if "ordinal" in record:
             ordinal = record["ordinal"]
             if type(ordinal) is not int or ordinal < 0:
@@ -143,7 +151,6 @@ def _codex(lines: Iterable[str], tools=None, line_offset=0) -> list:
             position = f"line:{line_number}"
         source_id = position if item.get("id") is None else f"id:{_identifier(item['id'])}:{position}"
         message = {"id": f"codex:{source_id}:0", "time": time, "kind": "", "text": ""}
-        kind = _identifier(item["type"])
         if kind == "message":
             role = _identifier(item["role"])
             if role not in ("user", "assistant", "developer", "system"):
@@ -169,14 +176,12 @@ def _codex(lines: Iterable[str], tools=None, line_offset=0) -> list:
             text = _output_text(item["output"], ("input_text", "output_text"), ("input_image", "image"))
             message.update(kind="tool_result", text=text, call_id=call_id,
                            tool=tools.get(call_id), is_error=_boolean(item.get("is_error", False)))
-        else:
-            raise ValueError("response type")
         messages.append(message)
     return messages
 
 
 def convert_transcript(harness: str, lines: Iterable[str], *, tools=None, line_offset=0) -> dict:
-    """将 claude/codex JSONL 转为统一消息；未知格式整体返回“不支持”。
+    """将 claude/codex JSONL 转为统一消息；跳过未知记录，损坏格式整体返回“不支持”。
 
     不读取路径、环境、全局会话或服务。忽略空行；id 在向末尾追加记录时稳定。
     工具 input 保留原类型；超长对象序列化成 JSON 前缀字符串并标 truncated。

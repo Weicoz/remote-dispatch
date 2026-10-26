@@ -150,15 +150,18 @@ class Sessions:
             # Saved snapshots are delayed. Do not route a replaced pane to its old conversation.
             reference = live
         paths = self.transcripts(harness)
+        unmatched_id = None
         if isinstance(reference, dict) and HARNESSES.get(reference.get("agent")) == harness:
             kind, value = reference.get("kind"), reference.get("value")
             if isinstance(value, str) and value and kind in ("id", "path"):
                 match = next((p for p in paths if (p["id"] == value if kind == "id"
                               else p["path"].resolve() == Path(value).resolve())), None)
-                return value if kind == "id" else match["id"] if match else None, match, False
+                if match is not None or kind == "path":
+                    return value if kind == "id" else match["id"] if match else None, match, False
+                unmatched_id = value
         candidates = [p for p in paths if Path(p["cwd"]).resolve() == Path(cwd).resolve()]
         match = max(candidates, key=lambda p: (p["mtime"], str(p["path"])), default=None)
-        return (match["id"], match, True) if match else (None, None, False)
+        return (match["id"], match, True) if match else (unmatched_id, None, False)
 
     def remember_event(self, event):
         data = event["data"]

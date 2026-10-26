@@ -69,21 +69,77 @@ class TranscriptTests(unittest.TestCase):
             self.assertNotIn(hidden, json.dumps(result, ensure_ascii=False))
         self.assertEqual(transcripts.convert_codex(self.fixture("codex.jsonl")), result)
 
+    def test_unknown_top_level_records_and_fields_preserve_recognized_messages(self):
+        for harness in ("claude", "codex"):
+            with self.subTest(harness=harness):
+                records = [json.loads(line) for line in self.fixture(harness + ".jsonl")]
+                for record in records:
+                    record["future_field"] = {"nested": ["合成扩展字段"]}
+                lines = [json.dumps(record) for record in records]
+                lines.insert(2, json.dumps({"type": "future_record", "text": "隐藏的合成元数据"}))
+                result = transcripts.convert_transcript(harness, lines)
+                self.assertTrue(result["supported"])
+                self.assertEqual([m["kind"] for m in result["messages"]],
+                                 ["user", "thinking", "assistant", "tool_call", "tool_result", "system", "error"]
+                                 if harness == "claude" else
+                                 ["system", "user", "thinking", "tool_call", "tool_result",
+                                  "tool_call", "tool_result", "assistant"])
+                self.assertNotIn("隐藏的合成元数据", json.dumps(result, ensure_ascii=False))
+
+    def test_claude_lifecycle_system_records_do_not_hide_chat(self):
+        lines = self.fixture("claude.jsonl")
+        for content in ({}, {"content": None}, {"content": {"future": True}}):
+            for subtype in ("stop_hook_summary", "turn_duration"):
+                with self.subTest(subtype=subtype, content=content):
+                    lifecycle = {"type": "system", "subtype": subtype, **content}
+                    result = transcripts.convert_claude(lines[:2] + [json.dumps(lifecycle)] + lines[2:])
+                    self.assertTrue(result["supported"])
+                    self.assertEqual([m["text"] for m in result["messages"]], [
+                        "请检查合成示例。", "先检查示例文件。", "我会检查示例。", "",
+                        "示例内容\n+一行 diff", "合成上下文提示。", "合成命令失败。",
+                    ])
+
+    def test_codex_new_metadata_and_response_types_preserve_chat(self):
+        records = [
+            {"type": "inter_agent_communication_metadata", "sender": "synthetic-agent"},
+            {"type": "compacted", "replacement_history": [{"text": "不重复压缩历史"}]},
+            {"type": "response_item", "payload": {"type": "additional_tools", "tools": []}},
+            {"type": "response_item", "timestamp": "example-time", "payload": {
+                "type": "agent_message", "content": [
+                    {"type": "input_text", "text": "不展示合成跨代理消息"},
+                    {"type": "encrypted_content", "encrypted_content": "SYNTHETIC_CIPHERTEXT"},
+                ]}},
+            {"type": "response_item", "payload": {"type": "future_response", "future": True}},
+        ]
+        for record in records:
+            with self.subTest(record=record):
+                lines = self.fixture("codex.jsonl")
+                result = transcripts.convert_codex(lines[:3] + [json.dumps(record)] + lines[3:])
+                self.assertTrue(result["supported"])
+                self.assertEqual([m["text"] for m in result["messages"]], [
+                    "合成系统约束。", "检查合成样例。", "先核对样例。", "", "example\n+合成 diff",
+                    "", "合成失败输出\n下一行", "样例检查完成。",
+                ])
+
     def test_changed_or_malformed_formats_return_unsupported_without_partial_content(self):
         cases = [("claude", self.fixture("claude-unsupported.jsonl")),
                  ("codex", self.fixture("codex-unsupported.jsonl")),
-                 ("unknown", []), ("claude", ["{broken"]),
+                 ("unknown", []), ("agy", []), ("kimi", []), ("claude", ["{broken"]),
                  ("codex", ["[]"]), ("claude", ["null"])]
         for harness, filename in [("claude", "claude.jsonl"), ("codex", "codex.jsonl")]:
             original = json.loads(self.fixture(filename)[1])
-            for key in ("timestamp", "type"):
+            for key in (("timestamp", "type", "uuid") if harness == "claude" else ("timestamp", "type", "payload")):
                 changed = dict(original)
                 del changed[key]
                 cases.append((harness, [json.dumps(changed)]))
-            cases.append((harness, [json.dumps({"type": "future_record", "text": "不要泄漏"})]))
+            cases.extend((harness, [line]) for line in ("{}", '{"type": ""}', '7'))
+            if harness == "codex":
+                for payload in ({}, {"type": None}, {"type": []}):
+                    cases.append((harness, [json.dumps(dict(original, payload=payload))]))
         for harness, lines in cases:
             with self.subTest(harness=harness, lines=lines):
-                self.assertEqual(transcripts.convert_transcript(harness, lines), {
+                prefix = self.fixture(harness + ".jsonl") if harness in ("claude", "codex") else []
+                self.assertEqual(transcripts.convert_transcript(harness, prefix + lines), {
                     "supported": False, "messages": [], "reason": "unsupported_format", "text": "不支持",
                 })
 

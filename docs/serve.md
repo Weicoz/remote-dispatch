@@ -502,10 +502,16 @@ Herdr 的环境和命名 session 沿用服务进程；可用 `HERDR_CONFIG_PATH`
 - `GET /v1/sessions/{id}/messages?after=<消息ID>`：复用票 24 转换器，返回
   `supported/messages`；`after` 不含自身，未知游标返回 400。
   先按 Herdr v3 保存快照的 `agent_session {agent,kind,value}` 定位；支持 ID 和路径引用。
-  读不到身份时才按 cwd 与修改时间匹配。Claude 读取
+  读不到身份或 session ID 未命中文件时，按 cwd 匹配并选修改时间最新的转写，
+  此时 `probable=true/identity_text="可能是这个会话"`；没有同 cwd 候选时不借用其他项目。
+  显式路径引用未命中不回退。Claude 读取
   `$CLAUDE_CONFIG_DIR/projects/*/*.jsonl`（默认 `~/.claude`），Codex 读取
-  `$CODEX_HOME/sessions/**/rollout-*.jsonl`（默认 `~/.codex`）。不支持的格式返回
-  `supported=false/reason=unsupported_format/text="不支持"`，可继续使用终端。
+  `$CODEX_HOME/sessions/**/rollout-*.jsonl`（默认 `~/.codex`）。未知顶层记录、未知
+  Codex `response_item` 子类型及额外字段跳过，保留已识别消息；Claude 无字符串
+  `content` 的 system 生命周期记录跳过。Codex 跨代理消息、密文及压缩替换历史不进入聊天。
+  损坏 JSON、非对象、缺失或非法的 type、已识别消息缺必需字段或内容块非法时，
+  整次返回 `supported=false/messages=[]/reason=unsupported_format/text="不支持"`，不返回部分正文，
+  可继续使用终端。agy/kimi 尚无转写读取器，仍返回相同 unsupported 响应。
 - `POST /v1/sessions/{id}/input`：JSON 只接受 `{text}` 或 `{keys:[...]}`，必须带
   `Idempotency-Key`（1–256 个可打印 ASCII 非空白字符）。文本写入后发送 Enter；
   按键接受 `enter/esc/up/down/tab/ctrl+c`。本接口直接作用于原 pane。

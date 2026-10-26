@@ -6,7 +6,8 @@
 结构依据派单随附的 `claude-shapes.jsonl`、`codex-shapes.jsonl`，不依赖这些只读材料运行测试。
 `claude.jsonl` 覆盖 user、assistant、thinking、tool_call、tool_result、system、error；
 `codex.jsonl` 覆盖 message、summary、function/custom 工具调用与输出，以及空 summary。
-`*-unsupported.jsonl` 在有效消息之后加入未知格式，验证不返回部分结果。
+`*-unsupported.jsonl` 在有效消息之后加入非法内容块或缺必需字段的消息，验证不返回部分结果。
+诊断 §3.1 中的生命周期事件和新增 Codex 记录形态在测试内手工合成，不包含真实正文。
 其他元数据、附件、错误字段类型和超长内容在测试中合成，避免大文件夹具。
 
 公开接口在 `remote_dispatch.rd_transcripts`：
@@ -18,8 +19,13 @@ convert_claude(jsonl_lines)
 convert_codex(jsonl_lines)
 ```
 
-成功为 `{"supported": True, "messages": [...]}`；未知 harness、未知内容类型、
-损坏 JSON 或必需字段变化均返回：
+成功为 `{"supported": True, "messages": [...]}`。未知顶层记录类型、未知 Codex
+`response_item` 子类型和额外字段跳过，保留前后已识别消息；Claude 无字符串 `content`
+的 system 生命周期记录也跳过。Codex `additional_tools`、`agent_message`（包括密文）、
+`inter_agent_communication_metadata` 和 `compacted` 不进入聊天，不重复压缩历史。
+
+未知 harness（包括尚无读取器的 agy/kimi）、损坏 JSON、非对象、缺失或非法的 `type`、
+已识别消息缺必需字段（如 timestamp、Claude uuid）及非法内容块仍整次返回：
 
 ```json
 {"supported": false, "messages": [], "reason": "unsupported_format", "text": "不支持"}
