@@ -14,6 +14,7 @@ from . import cli
 from . import rd_messages as messages
 from . import rd_events as events
 from .rd_herdr import Herdr
+from .rd_terminal_ws import TerminalSockets
 from .rd_session_defaults import DefaultRoutes, SessionDefaults
 from .rd_projects import project_id
 from .rd_transcripts import convert_transcript
@@ -33,6 +34,7 @@ class Sessions:
     def __init__(self, service):
         self.service = service
         self.herdr = Herdr()
+        self.terminals = TerminalSockets(self)
         self.defaults = DefaultRoutes(self)
         self.enabled = service.config.cp.getboolean("serve", "session_access", fallback=True)
         self.observed = {}
@@ -95,6 +97,7 @@ class Sessions:
         return self.enabled and (device is None or device.get("session_access") is True)
 
     def close(self):
+        self.terminals.close()
         self.herdr.close()
 
     @staticmethod
@@ -103,7 +106,7 @@ class Sessions:
             re.fullmatch(r"/v1/jobs/[^/]+/session", path))
 
     def event_allowed(self, handler, event):
-        return not event["type"].startswith("session.") or self.allowed(getattr(handler, "session_device", None))
+        return not event["type"].startswith(("session.", "terminal.")) or self.allowed(getattr(handler, "session_device", None))
 
     def list(self):
         return [item["row"] for item in self.cached()]
@@ -305,6 +308,8 @@ class Sessions:
         path = unquote(urlsplit(handler.path).path)
         if self.is_session_path(path) and not self.allowed(getattr(handler, "session_device", None)):
             handler.json(*DISABLED)
+            return True
+        if self.terminals.handle_get(handler):
             return True
         match = re.fullmatch(r"/v1/sessions/([^/]+)/(terminal|screen)", path)
         if match is None:

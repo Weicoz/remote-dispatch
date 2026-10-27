@@ -1,0 +1,32 @@
+...................................................................................................................................................................rdispatch: this agent has no model flag; set the model in its own config on the worker
+..rdispatch: this agent has no model flag; set the model in its own config on the worker
+......................................................rdispatch: [host:self] 本机派发只支持 POSIX；Windows 目标必须通过 SSH。
+...rdispatch: [self] step failed (7):
+
+......................................................rdispatch: no [host:target] in /private/tmp/rd25-aow8c6sk/config.ini
+rdispatch: poll_unavailable: cannot collect a job
+........................rdispatch: no [host:target] in /private/tmp/rd25-i_memg5s/config.ini
+rdispatch: poll_unavailable: cannot collect a job
+...............................................................rdispatch: poll_unavailable: cannot probe a host
+rdispatch: poll_unavailable: cannot probe a host
+rdispatch: poll_unavailable: cannot probe a host
+rdispatch: poll_unavailable: cannot probe a host
+rdispatch: poll_unavailable: cannot probe a host
+rdispatch: poll_unavailable: cannot probe a host
+..........rdispatch: poll_unavailable: cannot update harness statistics
+...remote       load 0/1c  mem-free 50%  swap ? used/? free io ?MB/s  disk 100G  sessions 0  heavy 0/1  network [unknown]  -> ok
+/v1/projects: warm=0.0284s ten_clients=0.2988s
+/v1/jobs: warm=0.0158s ten_clients=0.1515s
+...........................................rdispatch: poll_unavailable: cannot probe a host
+rdispatch: poll_unavailable: cannot probe a host
+.........................rdispatch: no [host:none] in /private/tmp/rd25-oeh591lz/config.ini
+rdispatch: poll_unavailable: cannot collect a job
+rdispatch: no [host:none] in /private/tmp/rd25-oeh591lz/config.ini
+rdispatch: poll_unavailable: cannot collect a job
+rdispatch: no [host:none] in /private/tmp/rd25-oeh591lz/config.ini
+rdispatch: poll_unavailable: cannot collect a job
+................................................................................................................................
+----------------------------------------------------------------------
+Ran 572 tests in 338.508s
+
+OK

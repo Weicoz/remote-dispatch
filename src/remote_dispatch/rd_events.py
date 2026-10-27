@@ -29,6 +29,10 @@ FIELDS = {
     "host.changed": "host reachable state load1 ncpu cpu_pct memfree disk disk_total running heavy full",
     "project.changed": "user_id project_id name first_dispatch_at last_dispatch_at dispatch_count hidden removed host accepted_round_count",
     "session.changed": "user_id pane_id session_id harness project project_id status status_text has_new_reply probable identity_text removed dispatch_defaults",
+    "terminal.connect": "user_id pane_id device_id",
+    "terminal.takeover": "user_id pane_id device_id",
+    "terminal.resize": "user_id pane_id device_id cols rows",
+    "terminal.disconnect": "user_id pane_id device_id reason input_bytes output_bytes dropped_frames restored",
     "session.message": "user_id pane_id session_id project_id harness message_id kind message_time",
 }
 DEFAULT_MAX_BYTES = 10 * 1024 * 1024

@@ -1,0 +1,67 @@
+{
+  "request": {
+    "method": "GET",
+    "path": "/v1/sessions/w1:p1/terminal/ws",
+    "headers": {
+      "Upgrade": "websocket",
+      "Connection": "Upgrade",
+      "Sec-WebSocket-Version": "13",
+      "Sec-WebSocket-Key": "dGhlIHNhbXBsZSBub25jZQ=="
+    }
+  },
+  "response": {
+    "status": 101,
+    "headers": {
+      "Upgrade": "websocket",
+      "Connection": "Upgrade",
+      "Sec-WebSocket-Accept": "s3pPLMBiTxaQ9kYGzzhZRbK+xOo="
+    }
+  },
+  "upstream": [
+    {
+      "type": "terminal.input",
+      "bytes": "G1syMDB+cGFzdGVkIHRleHQbWzIwMX4="
+    },
+    {
+      "type": "terminal.resize",
+      "cols": 80,
+      "rows": 24
+    },
+    {
+      "type": "terminal.scroll",
+      "direction": "up",
+      "lines": 5
+    },
+    {
+      "type": "terminal.mouse",
+      "action": "down",
+      "button": "left",
+      "column": 12,
+      "row": 5
+    },
+    {
+      "type": "terminal.release"
+    }
+  ],
+  "downstream": [
+    {
+      "type": "terminal.frame",
+      "seq": 1,
+      "encoding": "ansi",
+      "width": 149,
+      "height": 45,
+      "full": true,
+      "data": "G1sySmhlbGxvG1szOzVIG1s/MjVo",
+      "cursor": {
+        "x": 4,
+        "y": 2,
+        "visible": true
+      }
+    },
+    {
+      "type": "terminal.closed",
+      "reason": "released",
+      "reconnect_full": true
+    }
+  ]
+}

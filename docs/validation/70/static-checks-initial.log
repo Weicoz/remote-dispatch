@@ -1,0 +1,9 @@
+docs/validation/70/tdd-03-red.log:8: trailing whitespace.
++test_invalid_messages_and_rfc_framing_close_without_input (tests.test_rd_terminal_ws.TerminalWSTests.test_invalid_messages_and_rfc_framing_close_without_input) ...
+Python: 3.12.13 machine: arm64
+Python 3.9 grammar: 72 files passed
+compileall src tests: passed
+mypy installed: False
+pyright installed: False
+Project pyproject.toml / CI have no configured static type checker; compile/grammar are not type checking.
+Contract JSON/base64 sample: passed

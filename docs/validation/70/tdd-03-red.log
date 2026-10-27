@@ -1,0 +1,103 @@
+test_busy_takeover_waits_for_old_cleanup_and_reconnect_starts_full (tests.test_rd_terminal_ws.TerminalWSTests.test_busy_takeover_waits_for_old_cleanup_and_reconnect_starts_full) ... ok
+test_disconnect_reaps_control_and_restores_current_layout (tests.test_rd_terminal_ws.TerminalWSTests.test_disconnect_reaps_control_and_restores_current_layout) ... ok
+test_external_busy_and_closed_reasons_are_stable_without_herdr_text (tests.test_rd_terminal_ws.TerminalWSTests.test_external_busy_and_closed_reasons_are_stable_without_herdr_text) ... FAIL
+test_fragmented_input_with_interleaved_ping_is_one_command_and_never_replayed (tests.test_rd_terminal_ws.TerminalWSTests.test_fragmented_input_with_interleaved_ping_is_one_command_and_never_replayed) ... FAIL
+test_handshake_query_mapping_and_session_access_are_checked_before_upgrade (tests.test_rd_terminal_ws.TerminalWSTests.test_handshake_query_mapping_and_session_access_are_checked_before_upgrade) ... FAIL
+test_heartbeat_timeout_and_shutdown_restore_release_and_reap (tests.test_rd_terminal_ws.TerminalWSTests.test_heartbeat_timeout_and_shutdown_restore_release_and_reap) ... FAIL
+test_input_size_limit_and_oversize_fragment_totals (tests.test_rd_terminal_ws.TerminalWSTests.test_input_size_limit_and_oversize_fragment_totals) ... ok
+test_invalid_messages_and_rfc_framing_close_without_input (tests.test_rd_terminal_ws.TerminalWSTests.test_invalid_messages_and_rfc_framing_close_without_input) ...
+  test_invalid_messages_and_rfc_framing_close_without_input (tests.test_rd_terminal_ws.TerminalWSTests.test_invalid_messages_and_rfc_framing_close_without_input) (code=1008, opcode=1) ... FAIL
+  test_invalid_messages_and_rfc_framing_close_without_input (tests.test_rd_terminal_ws.TerminalWSTests.test_invalid_messages_and_rfc_framing_close_without_input) (code=1002, opcode=1) ... FAIL
+  test_invalid_messages_and_rfc_framing_close_without_input (tests.test_rd_terminal_ws.TerminalWSTests.test_invalid_messages_and_rfc_framing_close_without_input) (code=1002, opcode=2) ... FAIL
+  test_invalid_messages_and_rfc_framing_close_without_input (tests.test_rd_terminal_ws.TerminalWSTests.test_invalid_messages_and_rfc_framing_close_without_input) (code=1002, opcode=9) ... FAIL
+  test_invalid_messages_and_rfc_framing_close_without_input (tests.test_rd_terminal_ws.TerminalWSTests.test_invalid_messages_and_rfc_framing_close_without_input) (code=1002, opcode=8) ... FAIL
+test_raw_input_paste_controls_and_restore_before_release (tests.test_rd_terminal_ws.TerminalWSTests.test_raw_input_paste_controls_and_restore_before_release) ... ok
+test_redacts_credentials_across_frames_ansi_and_split_osc_without_logging_body (tests.test_rd_terminal_ws.TerminalWSTests.test_redacts_credentials_across_frames_ansi_and_split_osc_without_logging_body) ... ok
+test_slow_client_closes_with_backpressure_and_reaps_process (tests.test_rd_terminal_ws.TerminalWSTests.test_slow_client_closes_with_backpressure_and_reaps_process) ... FAIL
+
+======================================================================
+FAIL: test_external_busy_and_closed_reasons_are_stable_without_herdr_text (tests.test_rd_terminal_ws.TerminalWSTests.test_external_busy_and_closed_reasons_are_stable_without_herdr_text)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/mac/remote-dispatch/users/weicoz/wt/weicoz-remote-dispatch-v4-70-20261027-094955-260757000/tests/test_rd_terminal_ws.py", line 303, in test_external_busy_and_closed_reasons_are_stable_without_herdr_text
+    self.assertEqual(client.status, 101)
+AssertionError: 409 != 101
+
+======================================================================
+FAIL: test_fragmented_input_with_interleaved_ping_is_one_command_and_never_replayed (tests.test_rd_terminal_ws.TerminalWSTests.test_fragmented_input_with_interleaved_ping_is_one_command_and_never_replayed)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/mac/remote-dispatch/users/weicoz/wt/weicoz-remote-dispatch-v4-70-20261027-094955-260757000/tests/test_rd_terminal_ws.py", line 209, in test_fragmented_input_with_interleaved_ping_is_one_command_and_never_replayed
+    self.assertEqual(reconnect.status, 101)
+AssertionError: 409 != 101
+
+======================================================================
+FAIL: test_handshake_query_mapping_and_session_access_are_checked_before_upgrade (tests.test_rd_terminal_ws.TerminalWSTests.test_handshake_query_mapping_and_session_access_are_checked_before_upgrade)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/mac/remote-dispatch/users/weicoz/wt/weicoz-remote-dispatch-v4-70-20261027-094955-260757000/tests/test_rd_terminal_ws.py", line 316, in test_handshake_query_mapping_and_session_access_are_checked_before_upgrade
+    self.assertEqual(self.connect("?cols=abc&rows=24").status, 400)
+AssertionError: 503 != 400
+
+======================================================================
+FAIL: test_heartbeat_timeout_and_shutdown_restore_release_and_reap (tests.test_rd_terminal_ws.TerminalWSTests.test_heartbeat_timeout_and_shutdown_restore_release_and_reap)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/mac/remote-dispatch/users/weicoz/wt/weicoz-remote-dispatch-v4-70-20261027-094955-260757000/tests/test_rd_terminal_ws.py", line 277, in test_heartbeat_timeout_and_shutdown_restore_release_and_reap
+    self.assertEqual(another.status, 101)
+AssertionError: 409 != 101
+
+======================================================================
+FAIL: test_invalid_messages_and_rfc_framing_close_without_input (tests.test_rd_terminal_ws.TerminalWSTests.test_invalid_messages_and_rfc_framing_close_without_input) (code=1008, opcode=1)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/mac/remote-dispatch/users/weicoz/wt/weicoz-remote-dispatch-v4-70-20261027-094955-260757000/tests/test_rd_terminal_ws.py", line 226, in test_invalid_messages_and_rfc_framing_close_without_input
+    self.assertEqual(client.status, 101)
+AssertionError: 409 != 101
+
+======================================================================
+FAIL: test_invalid_messages_and_rfc_framing_close_without_input (tests.test_rd_terminal_ws.TerminalWSTests.test_invalid_messages_and_rfc_framing_close_without_input) (code=1002, opcode=1)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/mac/remote-dispatch/users/weicoz/wt/weicoz-remote-dispatch-v4-70-20261027-094955-260757000/tests/test_rd_terminal_ws.py", line 226, in test_invalid_messages_and_rfc_framing_close_without_input
+    self.assertEqual(client.status, 101)
+AssertionError: 409 != 101
+
+======================================================================
+FAIL: test_invalid_messages_and_rfc_framing_close_without_input (tests.test_rd_terminal_ws.TerminalWSTests.test_invalid_messages_and_rfc_framing_close_without_input) (code=1002, opcode=2)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/mac/remote-dispatch/users/weicoz/wt/weicoz-remote-dispatch-v4-70-20261027-094955-260757000/tests/test_rd_terminal_ws.py", line 226, in test_invalid_messages_and_rfc_framing_close_without_input
+    self.assertEqual(client.status, 101)
+AssertionError: 409 != 101
+
+======================================================================
+FAIL: test_invalid_messages_and_rfc_framing_close_without_input (tests.test_rd_terminal_ws.TerminalWSTests.test_invalid_messages_and_rfc_framing_close_without_input) (code=1002, opcode=9)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/mac/remote-dispatch/users/weicoz/wt/weicoz-remote-dispatch-v4-70-20261027-094955-260757000/tests/test_rd_terminal_ws.py", line 226, in test_invalid_messages_and_rfc_framing_close_without_input
+    self.assertEqual(client.status, 101)
+AssertionError: 409 != 101
+
+======================================================================
+FAIL: test_invalid_messages_and_rfc_framing_close_without_input (tests.test_rd_terminal_ws.TerminalWSTests.test_invalid_messages_and_rfc_framing_close_without_input) (code=1002, opcode=8)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/mac/remote-dispatch/users/weicoz/wt/weicoz-remote-dispatch-v4-70-20261027-094955-260757000/tests/test_rd_terminal_ws.py", line 226, in test_invalid_messages_and_rfc_framing_close_without_input
+    self.assertEqual(client.status, 101)
+AssertionError: 409 != 101
+
+======================================================================
+FAIL: test_slow_client_closes_with_backpressure_and_reaps_process (tests.test_rd_terminal_ws.TerminalWSTests.test_slow_client_closes_with_backpressure_and_reaps_process)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/mac/remote-dispatch/users/weicoz/wt/weicoz-remote-dispatch-v4-70-20261027-094955-260757000/tests/test_rd_terminal_ws.py", line 257, in test_slow_client_closes_with_backpressure_and_reaps_process
+    self.eventually(audit, lambda data: '"backpressure"' in data and '"terminal.disconnect"' in data)
+  File "/Users/mac/remote-dispatch/users/weicoz/wt/weicoz-remote-dispatch-v4-70-20261027-094955-260757000/tests/test_rd_serve.py", line 117, in eventually
+    self.fail(f"未等到后台采集结果：{value!r}")
+AssertionError: 未等到后台采集结果：'{"seq":1,"time":"2026-10-27T02:00:20.139513+00:00","type":"session.changed","data":{"user_id":"fixture","pane_id":"w1:p1","session_id":null,"harness":"codex","project":"demo","project_id":"4c9b1599d2f904116b3a","status":"idle","status_text":"空闲","has_new_reply":false,"probable":false,"identity_text":null,"removed":false}}\n{"seq":2,"time":"2026-10-27T02:00:20.491141+00:00","type":"terminal.connect","data":{"user_id":"fixture","pane_id":"w1:p1","device_id":null}}\n{"seq":3,"time":"2026-10-27T02:00:22.573834+00:00","type":"terminal.disconnect","data":{"user_id":"fixture","pane_id":"w1:p1","device_id":null,"reason":"connection_closed","input_bytes":0,"output_bytes":163840,"dropped_frames":0,"restored":true}}\n'
+
+----------------------------------------------------------------------
+Ran 11 tests in 16.070s
+
+FAILED (failures=10)

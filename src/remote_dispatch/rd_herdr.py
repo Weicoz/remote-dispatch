@@ -75,9 +75,9 @@ class Herdr:
     def command(self, *args):
         return ["herdr", *args]
 
-    def run(self, *args):
+    def run(self, *args, timeout=None):
         process = subprocess.run(self.command(*args), capture_output=True,
-                                 env=dict(os.environ, HERDR_ENV="1"))
+                                 env=dict(os.environ, HERDR_ENV="1"), timeout=timeout)
         if process.returncode:
             raise OSError("herdr_unavailable")
         return process.stdout.decode("utf-8")
@@ -94,9 +94,9 @@ class Herdr:
             raise OSError("herdr_unavailable")
         return rows
 
-    def viewport(self, pane):
+    def viewport(self, pane, *, timeout=None):
         try:
-            result = json.loads(self.run("pane", "layout", "--pane", pane))
+            result = json.loads(self.run("pane", "layout", "--pane", pane, timeout=timeout))
             if not isinstance(result, dict):
                 raise ValueError("invalid_layout")
             layout = result.get("result", result)["layout"]
@@ -189,3 +189,110 @@ class Herdr:
                 process.stdout.close()
                 with self.observers_lock:
                     self.observers.discard((process, connection))
+
+
+class TerminalControl:
+    """Bounded NDJSON subprocess boundary. No terminal bytes reach stderr/logs."""
+    MAX_LINE = 8 * 1024 * 1024
+
+    def __init__(self, herdr, pane, cols, rows, takeover, timeout):
+        self.herdr, self.pane, self.timeout = herdr, pane, timeout
+        args = ["terminal", "session", "control", pane, "--cols", str(cols), "--rows", str(rows)]
+        if takeover:
+            args.append("--takeover")
+        self.process = subprocess.Popen(herdr.command(*args), stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, bufsize=0,
+            start_new_session=True, env=dict(os.environ, HERDR_ENV="1"))
+        os.set_blocking(self.process.stdin.fileno(), False)
+        self.pending = bytearray()
+        self.write_lock = threading.Lock()
+        self.write_broken = False
+
+    def receive(self, stop):
+        deadline = time.monotonic() + self.timeout
+        while not stop.is_set():
+            if b"\n" in self.pending:
+                line, _, rest = self.pending.partition(b"\n")
+                self.pending = bytearray(rest)
+                if len(line) > self.MAX_LINE:
+                    raise OSError("terminal_unavailable")
+                value = json.loads(line)
+                if not isinstance(value, dict):
+                    raise ValueError("terminal_unavailable")
+                return value
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return None
+            ready, _, _ = select.select([self.process.stdout], [], [], min(remaining, 0.1))
+            if not ready:
+                continue
+            chunk = os.read(self.process.stdout.fileno(), 65536)
+            if not chunk:
+                raise EOFError()
+            self.pending.extend(chunk)
+            if len(self.pending) > self.MAX_LINE and b"\n" not in self.pending:
+                raise OSError("terminal_unavailable")
+        return None
+
+    def send(self, command, stop=None):
+        # Once the first byte is sent, complete this NDJSON command before a
+        # cleanup writer may acquire the pipe. Never append to a broken record.
+        with self.write_lock:
+            if self.write_broken or (stop is not None and stop.is_set()):
+                raise OSError("terminal_closed")
+            payload = memoryview((json.dumps(command, ensure_ascii=True) + "\n").encode())
+            deadline = time.monotonic() + self.timeout
+            try:
+                while payload:
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        raise OSError("terminal_unavailable")
+                    _, ready, _ = select.select([], [self.process.stdin], [], min(remaining, 0.1))
+                    if ready:
+                        try:
+                            payload = payload[os.write(self.process.stdin.fileno(), payload):]
+                        except BlockingIOError:
+                            continue
+            except OSError:
+                self.write_broken = True
+                raise
+
+    def drain(self, stop):
+        """Keep stdout moving during restore/release, without parsing or logging."""
+        self.pending.clear()
+        try:
+            while not stop.is_set():
+                ready, _, _ = select.select([self.process.stdout], [], [], 0.1)
+                if ready and not os.read(self.process.stdout.fileno(), 65536):
+                    return
+        except (OSError, ValueError):
+            return
+
+    def close(self):
+        import signal
+        restored = graceful = False
+        try:
+            # Re-read layout at release, rather than restoring a stale connect size.
+            cols, rows = self.herdr.viewport(self.pane, timeout=self.timeout)
+            self.send(dict(type="terminal.resize", cols=cols, rows=rows))
+            restored = True
+        except (OSError, ValueError, subprocess.SubprocessError):
+            pass
+        try:
+            self.send(dict(type="terminal.release"))
+        except (OSError, ValueError):
+            pass
+        self.process.stdin.close()
+        try:
+            graceful = self.process.wait(timeout=self.timeout) == 0
+        except subprocess.TimeoutExpired:
+            pass
+        finally:
+            # Also reap helpers forked by the controller, even if its leader exited.
+            try:
+                os.killpg(self.process.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            self.process.wait()
+            self.process.stdout.close()
+        return restored and graceful

@@ -1,0 +1,50 @@
+test_shutdown_finishes_partial_input_before_restore_and_release (tests.test_rd_terminal_ws.TerminalWSTests.test_shutdown_finishes_partial_input_before_restore_and_release) ... FAIL
+test_slow_client_closes_with_backpressure_and_reaps_process (tests.test_rd_terminal_ws.TerminalWSTests.test_slow_client_closes_with_backpressure_and_reaps_process) ... FAIL
+test_json_credential_field_name_split_across_frames_is_scrubbed (tests.test_rd_terminal_ws.TerminalWSTests.test_json_credential_field_name_split_across_frames_is_scrubbed) ... FAIL
+
+======================================================================
+FAIL: test_shutdown_finishes_partial_input_before_restore_and_release (tests.test_rd_terminal_ws.TerminalWSTests.test_shutdown_finishes_partial_input_before_restore_and_release)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/mac/remote-dispatch/users/weicoz/wt/weicoz-remote-dispatch-v4-70-20261027-094955-260757000/tests/test_rd_terminal_ws.py", line 405, in test_shutdown_finishes_partial_input_before_restore_and_release
+    self.assertEqual(rows, [payload, dict(type="terminal.resize", cols=149, rows=45),
+AssertionError: Lists differ: [] != [{'type': 'terminal.input', 'bytes': 'eHh4[1398182 chars]se'}]
+
+Second list contains 3 additional elements.
+First extra element 0:
+{'type': 'terminal.input', 'bytes': 'eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh [假夹具 Base64 长行已截断]
+
+Diff is 1398247 characters long. Set self.maxDiff to None to see it.
+
+======================================================================
+FAIL: test_slow_client_closes_with_backpressure_and_reaps_process (tests.test_rd_terminal_ws.TerminalWSTests.test_slow_client_closes_with_backpressure_and_reaps_process)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/mac/remote-dispatch/users/weicoz/wt/weicoz-remote-dispatch-v4-70-20261027-094955-260757000/tests/test_rd_terminal_ws.py", line 270, in test_slow_client_closes_with_backpressure_and_reaps_process
+    self.assertEqual(self.commands()[-2:], [dict(type="terminal.resize", cols=149, rows=45),
+AssertionError: Lists differ: [{'start': True, 'cols': 149, 'rows': 45, 'takeover': False}] != [{'type': 'terminal.resize', 'cols': 149, 'r[35 chars]se'}]
+
+First differing element 0:
+{'start': True, 'cols': 149, 'rows': 45, 'takeover': False}
+{'type': 'terminal.resize', 'cols': 149, 'rows': 45}
+
+Second list contains 1 additional elements.
+First extra element 1:
+{'type': 'terminal.release'}
+
+- [{'cols': 149, 'rows': 45, 'start': True, 'takeover': False}]
++ [{'cols': 149, 'rows': 45, 'type': 'terminal.resize'},
++  {'type': 'terminal.release'}]
+
+======================================================================
+FAIL: test_json_credential_field_name_split_across_frames_is_scrubbed (tests.test_rd_terminal_ws.TerminalWSTests.test_json_credential_field_name_split_across_frames_is_scrubbed)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/mac/remote-dispatch/users/weicoz/wt/weicoz-remote-dispatch-v4-70-20261027-094955-260757000/tests/test_rd_terminal_ws.py", line 416, in test_json_credential_field_name_split_across_frames_is_scrubbed
+    self.assertNotIn(b"unconfigured-", text)
+AssertionError: b'unconfigured-' unexpectedly found in b'{"token":"unconfigured-value"} public'
+
+----------------------------------------------------------------------
+Ran 3 tests in 5.594s
+
+FAILED (failures=3)

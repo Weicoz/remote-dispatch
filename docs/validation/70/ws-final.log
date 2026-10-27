@@ -1,0 +1,19 @@
+test_busy_takeover_waits_for_old_cleanup_and_reconnect_starts_full (tests.test_rd_terminal_ws.TerminalWSTests.test_busy_takeover_waits_for_old_cleanup_and_reconnect_starts_full) ... ok
+test_credential_whitespace_and_escaped_quotes_do_not_expose_value (tests.test_rd_terminal_ws.TerminalWSTests.test_credential_whitespace_and_escaped_quotes_do_not_expose_value) ... ok
+test_disconnect_reaps_control_and_restores_current_layout (tests.test_rd_terminal_ws.TerminalWSTests.test_disconnect_reaps_control_and_restores_current_layout) ... ok
+test_external_busy_and_closed_reasons_are_stable_without_herdr_text (tests.test_rd_terminal_ws.TerminalWSTests.test_external_busy_and_closed_reasons_are_stable_without_herdr_text) ... ok
+test_fragmented_input_with_interleaved_ping_is_one_command_and_never_replayed (tests.test_rd_terminal_ws.TerminalWSTests.test_fragmented_input_with_interleaved_ping_is_one_command_and_never_replayed) ... ok
+test_handshake_query_mapping_and_session_access_are_checked_before_upgrade (tests.test_rd_terminal_ws.TerminalWSTests.test_handshake_query_mapping_and_session_access_are_checked_before_upgrade) ... ok
+test_heartbeat_timeout_and_shutdown_restore_release_and_reap (tests.test_rd_terminal_ws.TerminalWSTests.test_heartbeat_timeout_and_shutdown_restore_release_and_reap) ... ok
+test_input_size_limit_and_oversize_fragment_totals (tests.test_rd_terminal_ws.TerminalWSTests.test_input_size_limit_and_oversize_fragment_totals) ... ok
+test_invalid_messages_and_rfc_framing_close_without_input (tests.test_rd_terminal_ws.TerminalWSTests.test_invalid_messages_and_rfc_framing_close_without_input) ... ok
+test_pem_and_quoted_credentials_remain_masked_across_many_paints (tests.test_rd_terminal_ws.TerminalWSTests.test_pem_and_quoted_credentials_remain_masked_across_many_paints) ... ok
+test_raw_input_paste_controls_and_restore_before_release (tests.test_rd_terminal_ws.TerminalWSTests.test_raw_input_paste_controls_and_restore_before_release) ... ok
+test_redacts_credentials_across_frames_ansi_and_split_osc_without_logging_body (tests.test_rd_terminal_ws.TerminalWSTests.test_redacts_credentials_across_frames_ansi_and_split_osc_without_logging_body) ... ok
+test_slow_client_closes_with_backpressure_and_reaps_process (tests.test_rd_terminal_ws.TerminalWSTests.test_slow_client_closes_with_backpressure_and_reaps_process) ... ok
+test_tls_device_auth_session_grant_and_live_revocation (tests.test_rd_terminal_ws.TerminalWSTests.test_tls_device_auth_session_grant_and_live_revocation) ... ok
+
+----------------------------------------------------------------------
+Ran 14 tests in 16.677s
+
+OK

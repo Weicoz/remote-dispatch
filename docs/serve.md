@@ -666,3 +666,9 @@ starting/running/unreachable 或未知状态拒绝删除，避免离线时误判
 | 503 | `host_config_outcome_unknown` | 操作结果未确认，请刷新后核对 |
 
 合同样例见 `contracts/v1/host-config-*.json`。App 合同副本由编排方随后同步。
+
+### 双向真实终端（票 70）
+
+`GET /v1/sessions/{id}/terminal/ws` 提供标准库 WebSocket → Herdr session control 桥接。
+鉴权、消息、lease、脱敏、错误码和 App 接入见 [终端 WebSocket](terminal-websocket.md)。
+现有 terminal SSE 与 HTTP input 保持兼容。

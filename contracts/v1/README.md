@@ -146,3 +146,7 @@ JSON 类型，另用行为断言覆盖实际值、用户隔离、纯查询、锁
   `delete/home/end/pageup/pagedown` 不支持。App 每次输入仍须带新的 `Idempotency-Key`。
   从旧服务升级时，新响应字段在客户端解码应作为可选字段；旧请求行为保持不变。
   接入与 resize 检查间隔见 `docs/serve.md`，本票未增加滚动历史／alt-screen 状态字段。
+
+- 票 70：`sessions-terminal-ws.json` 是双向终端 Upgrade／输入／帧／关闭合同。
+  上行原始字节为 `bytes`，下行沿用票 68 的 `data`，每次连接首帧 full。
+  busy 默认拒绝，只有 `takeover=true` 显式接管；详见 `docs/terminal-websocket.md`。

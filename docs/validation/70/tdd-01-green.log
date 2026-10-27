@@ -1,0 +1,6 @@
+test_raw_input_paste_controls_and_restore_before_release (tests.test_rd_terminal_ws.TerminalWSTests.test_raw_input_paste_controls_and_restore_before_release) ... ok
+
+----------------------------------------------------------------------
+Ran 1 test in 0.697s
+
+OK

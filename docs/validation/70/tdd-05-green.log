@@ -1,0 +1,6 @@
+test_credential_whitespace_and_escaped_quotes_do_not_expose_value (tests.test_rd_terminal_ws.TerminalWSTests.test_credential_whitespace_and_escaped_quotes_do_not_expose_value) ... ok
+
+----------------------------------------------------------------------
+Ran 1 test in 0.705s
+
+OK

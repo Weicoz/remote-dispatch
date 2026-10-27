@@ -1,0 +1,15 @@
+Python: 3.12.13 machine: arm64
+Python 3.9 grammar: 72 files passed
+compileall src tests: passed
+mypy installed: False
+pyright installed: False
+Project pyproject.toml / CI have no configured static type checker; compile/grammar are not type checking.
+Contract JSON/base64 sample: passed
+git diff --check HEAD: passed
+core.hooksPath: (not configured)
+pre-commit hook exists: False executable: False
+pre-commit hook invocations: 0; full unittest suite independent invocations: 1; no hook bypassed or modified.
+RD_RUN_SOCKET_TESTS=1: set for related and full tests; actual Unix/TLS sockets executed.
+Fixture .inc rename after full suite: text unchanged; latest 16 WS seam tests passed in 17.534s.
+Current branch: rd/weicoz/v4-70-20261027-094955-260757000
+No local origin/main ref; no fetch performed; remote baseline freshness not verified.

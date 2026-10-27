@@ -1,0 +1,18 @@
+test_busy_takeover_waits_for_old_cleanup_and_reconnect_starts_full (tests.test_rd_terminal_ws.TerminalWSTests.test_busy_takeover_waits_for_old_cleanup_and_reconnect_starts_full) ... ok
+test_disconnect_reaps_control_and_restores_current_layout (tests.test_rd_terminal_ws.TerminalWSTests.test_disconnect_reaps_control_and_restores_current_layout) ... ok
+test_fragmented_input_with_interleaved_ping_is_one_command_and_never_replayed (tests.test_rd_terminal_ws.TerminalWSTests.test_fragmented_input_with_interleaved_ping_is_one_command_and_never_replayed) ... FAIL
+test_raw_input_paste_controls_and_restore_before_release (tests.test_rd_terminal_ws.TerminalWSTests.test_raw_input_paste_controls_and_restore_before_release) ... ok
+test_redacts_credentials_across_frames_ansi_and_split_osc_without_logging_body (tests.test_rd_terminal_ws.TerminalWSTests.test_redacts_credentials_across_frames_ansi_and_split_osc_without_logging_body) ... ok
+
+======================================================================
+FAIL: test_fragmented_input_with_interleaved_ping_is_one_command_and_never_replayed (tests.test_rd_terminal_ws.TerminalWSTests.test_fragmented_input_with_interleaved_ping_is_one_command_and_never_replayed)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/mac/remote-dispatch/users/weicoz/wt/weicoz-remote-dispatch-v4-70-20261027-094955-260757000/tests/test_rd_terminal_ws.py", line 209, in test_fragmented_input_with_interleaved_ping_is_one_command_and_never_replayed
+    self.assertEqual(reconnect.status, 101)
+AssertionError: 409 != 101
+
+----------------------------------------------------------------------
+Ran 5 tests in 5.479s
+
+FAILED (failures=1)

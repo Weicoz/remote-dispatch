@@ -1,0 +1,8 @@
+test_shutdown_finishes_partial_input_before_restore_and_release (tests.test_rd_terminal_ws.TerminalWSTests.test_shutdown_finishes_partial_input_before_restore_and_release) ... ok
+test_slow_client_closes_with_backpressure_and_reaps_process (tests.test_rd_terminal_ws.TerminalWSTests.test_slow_client_closes_with_backpressure_and_reaps_process) ... ok
+test_json_credential_field_name_split_across_frames_is_scrubbed (tests.test_rd_terminal_ws.TerminalWSTests.test_json_credential_field_name_split_across_frames_is_scrubbed) ... ok
+
+----------------------------------------------------------------------
+Ran 3 tests in 3.161s
+
+OK

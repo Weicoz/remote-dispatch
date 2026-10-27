@@ -1,0 +1,14 @@
+test_credential_whitespace_and_escaped_quotes_do_not_expose_value (tests.test_rd_terminal_ws.TerminalWSTests.test_credential_whitespace_and_escaped_quotes_do_not_expose_value) ... FAIL
+
+======================================================================
+FAIL: test_credential_whitespace_and_escaped_quotes_do_not_expose_value (tests.test_rd_terminal_ws.TerminalWSTests.test_credential_whitespace_and_escaped_quotes_do_not_expose_value)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/mac/remote-dispatch/users/weicoz/wt/weicoz-remote-dispatch-v4-70-20261027-094955-260757000/tests/test_rd_terminal_ws.py", line 377, in test_credential_whitespace_and_escaped_quotes_do_not_expose_value
+    self.assertNotIn(b"one", text)
+AssertionError: b'one' unexpectedly found in b'password                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                ="one\\"two" public'
+
+----------------------------------------------------------------------
+Ran 1 test in 0.956s
+
+FAILED (failures=1)

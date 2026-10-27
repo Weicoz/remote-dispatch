@@ -1,0 +1,7 @@
+test_tls_device_auth_session_grant_and_live_revocation (tests.test_rd_terminal_ws.TerminalWSTests.test_tls_device_auth_session_grant_and_live_revocation) ... ok
+test_pem_and_quoted_credentials_remain_masked_across_many_paints (tests.test_rd_terminal_ws.TerminalWSTests.test_pem_and_quoted_credentials_remain_masked_across_many_paints) ... ok
+
+----------------------------------------------------------------------
+Ran 2 tests in 2.007s
+
+OK
