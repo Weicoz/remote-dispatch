@@ -37,7 +37,6 @@ class Sessions:
         self.herdr = Herdr()
         self.terminals = TerminalSockets(self)
         self.defaults = DefaultRoutes(self)
-        self.enabled = service.config.cp.getboolean("serve", "session_access", fallback=True)
         self.observed = {}
         self.seen_messages = {}
         self.cache_lock = threading.RLock()
@@ -60,6 +59,10 @@ class Sessions:
                     self.observed[data["pane_id"]] = data
             elif event["type"] == "session.message":
                 self.seen_messages.setdefault((data["pane_id"], data.get("session_id")), set()).add(data["message_id"])
+
+    @property
+    def enabled(self):
+        return self.service.config.cp.getboolean("serve", "session_access", fallback=True)
 
     def collect(self):
         try:
@@ -344,6 +347,9 @@ class Sessions:
             frames = self.herdr.frames(match[1], self.service.stop, handler.connection, self.service.poll_interval)
             try:
                 for line in frames:
+                    if not self.allowed(getattr(handler, "session_device", None)):
+                        handler.json(*DISABLED)
+                        return True
                     frame = json.loads(line)
                     if frame.get("type") == "terminal.frame" and frame.get("full") is True:
                         text = base64.b64decode(frame["data"], validate=True).decode("utf-8", "surrogateescape")
@@ -365,6 +371,8 @@ class Sessions:
         frames = self.herdr.frames(match[1], self.service.stop, handler.connection, self.service.poll_interval)
         try:
             for line in frames:
+                if not self.allowed(getattr(handler, "session_device", None)):
+                    break
                 frame = json.loads(line)
                 kind = frame.get("type")
                 if kind not in ("terminal.frame", "terminal.closed"):

@@ -324,7 +324,8 @@ class TerminalWSTests(unittest.TestCase):
         self.assertEqual(self.connect("?takeover=1").status, 400)
         self.assertEqual(self.connect("?cols=abc&rows=24").status, 400)
         self.assertEqual(self.connect(pane="w1:unmapped").status, 404)
-        service.sessions.enabled = False
+        self.assertEqual(self.request("/v1/config/session-access", "PUT", json.dumps({"enabled": False}),
+                         {"Content-Type": "application/json", "Idempotency-Key": "disable-sessions"})[0], 200)
         self.assertEqual(self.connect().status, 403)
         self.assertEqual(self.commands(), [])
 

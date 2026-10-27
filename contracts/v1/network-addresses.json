@@ -10,7 +10,8 @@
       "candidates": [
         {
           "address": "127.0.0.1",
-          "port": 8443
+          "port": 8443,
+          "kind": "other"
         }
       ]
     }
@@ -26,7 +27,8 @@
         "candidates": [
           {
             "address": "127.0.0.1",
-            "port": 8443
+            "port": 8443,
+            "kind": "other"
           }
         ]
       }

@@ -15,7 +15,7 @@ import tempfile
 import threading
 import time
 from time import monotonic
-from urllib.parse import urlsplit
+from urllib.parse import unquote, urlsplit
 
 from . import rd_events as events
 from . import rd_messages as messages
@@ -41,6 +41,19 @@ def error(status, reason):
     return status, {"error": {"reason": reason}}
 
 
+# First match wins; VPN subnets take precedence over private LAN ranges.
+ADDRESS_KINDS = [(kind, ipaddress.ip_network(cidr)) for kind, cidrs in (
+    ("tailscale", ("100.64.0.0/10", "fd7a:115c:a1e0::/48")),
+    ("easytier", ("10.144.144.0/24", "10.126.126.0/24")),
+    ("lan", ("10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "169.254.0.0/16",
+             "fc00::/7", "fe80::/10"))) for cidr in cidrs]
+
+
+def address_kind(address):
+    ip = ipaddress.ip_address(address)
+    return next((kind for kind, net in ADDRESS_KINDS if ip in net), "other")
+
+
 class Network:
     def __init__(self, service, *, push_sender=None):
         self.service = service
@@ -51,6 +64,9 @@ class Network:
         self.connections = {}
         self.fingerprint = None
         self.candidates = []
+        self.seen_lock = threading.Lock()
+        self.last_seen = {}
+        self.seen_thread = None
         self.listen_addresses = self.configured_listeners()
         self.push = PushDispatcher(service.state, service.user_id, push_sender,
                                    stop=service.stop, is_active=self.push_active) if push_sender is not None else None
@@ -88,7 +104,8 @@ class Network:
                 if item in seen:
                     raise ValueError()
                 seen.add(item)
-                result.append(dict(address=str(address), port=port, enabled=row.get("enabled", True)))
+                result.append(dict(address=str(address), port=port, enabled=row.get("enabled", True),
+                                   kind=address_kind(address)))
             return result
         except (ValueError, TypeError, KeyError):
             raise ValueError("invalid_listen_address: select explicit LAN or VPN IP addresses and valid ports") from None
@@ -150,7 +167,7 @@ class Network:
                     thread.start()
                     created[-1] = current = server, thread
                 selected.append(current)
-                candidates.append(dict(address=address, port=current[0].server_address[1]))
+                candidates.append(dict(address=address, port=current[0].server_address[1], kind=address_kind(address)))
             return selected, created, candidates
         except BaseException:
             self.close_listeners(created)
@@ -170,7 +187,7 @@ class Network:
         if shutil.which("openssl"):
             self.certificate()
         # Scrub caches written by older versions before serving any request.
-        with self.lock, NetworkLock(self.service.state):
+        with NetworkLock(self.service.state), self.lock:
             if self.path.exists():
                 messages.atomic_json(self.path, self.read(), limit=None)
         self.handler = handler
@@ -179,6 +196,8 @@ class Network:
         data = dict(user_id=self.service.user_id, spki_sha256=self.fingerprint, candidates=self.candidates)
         if self.candidates or log.latest("network.addresses_changed", data) is not None:
             log.publish("network.addresses_changed", data, only_if_changed=True)
+        self.seen_thread = threading.Thread(target=self.seen_loop, daemon=True)
+        self.seen_thread.start()
         if self.push is not None:
             self.push_thread = threading.Thread(target=self.push_loop, daemon=True)
             self.push_thread.start()
@@ -214,6 +233,28 @@ class Network:
         self.servers, self.candidates, self.listen_addresses = selected, candidates, rows
         self.close_listeners(retired)
         return reply
+
+    def seen_loop(self):
+        while not self.service.stop.wait(60):
+            self.flush_last_seen()
+
+    def flush_last_seen(self):
+        # Never hold the foreground network lock across fsync/replace. All
+        # device writers serialize on NetworkLock and merge pending timestamps.
+        with self.seen_lock:
+            pending = dict(self.last_seen)
+        if not pending:
+            return
+        try:
+            with NetworkLock(self.service.state):
+                data = self.read()
+                messages.atomic_json(self.path, data, limit=None)
+            with self.seen_lock:
+                for device, stamp in pending.items():
+                    if self.last_seen.get(device) == stamp:
+                        self.last_seen.pop(device)
+        except (OSError, ValueError):
+            print("rdispatch: device_last_seen_unavailable", file=sys.stderr)
 
     def push_loop(self):
         reader = events.EventCursor(self.service.state)
@@ -265,9 +306,15 @@ class Network:
             return None
         token = handler.headers.get("Authorization", "")
         with self.lock:
+            if self.service.stop.is_set():
+                return error(503, "serve_stopping")
             for row in self.read()["devices"].values():
                 if (token.startswith("Bearer ") and not row["revoked"]
                         and secrets.compare_digest(row["token_hash"], digest(token[7:]))):
+                    with self.seen_lock:
+                        stamp = messages.utc_now()
+                        self.last_seen[row["device_id"]] = max(stamp, row.get("last_seen_at") or stamp,
+                                                             self.last_seen.get(row["device_id"], stamp))
                     handler.device_id = row["device_id"]
                     handler.session_access_enabled = row["session_access_enabled"]
                     handler.session_device = dict(id=row["device_id"], session_access=row["session_access_enabled"])
@@ -282,6 +329,11 @@ class Network:
                 if not isinstance(entry, dict):
                     # Legacy caches have no request binding and may contain secrets.
                     data["requests"][identity] = dict(fingerprint=None, reply=error(403, "pairing_closed"))
+            with self.seen_lock:
+                for device, stamp in self.last_seen.items():
+                    row = data["devices"].get(device)
+                    if row is not None:
+                        row["last_seen_at"] = max(stamp, row.get("last_seen_at") or stamp)
             return data
         except FileNotFoundError:
             return {"devices": {}, "requests": {}}
@@ -289,8 +341,8 @@ class Network:
     def devices(self):
         with self.lock:
             data = self.read()
-            return {"devices": [{key: row[key] for key in
-                     ("device_id", "name", "revoked", "session_access_enabled")}
+            return {"devices": [{key: row.get(key) for key in
+                     ("device_id", "name", "revoked", "session_access_enabled", "paired_at", "last_seen_at")}
                     for row in data["devices"].values()]}
 
     def write(self, path, body, key, *, device_id=None, method="POST"):
@@ -298,7 +350,7 @@ class Network:
             return error(400, "idempotency_key_required")
         if not isinstance(body, dict):
             return error(400, "invalid_request")
-        with self.lock, NetworkLock(self.service.state):
+        with NetworkLock(self.service.state), self.lock:
             if self.service.stop.is_set():
                 return error(503, "serve_stopping")
             data = self.read()
@@ -315,7 +367,10 @@ class Network:
                 return self.write_listeners(data, identity, body)
             changed = None
             next_window = self.window
-            if path == "/v1/pairing-window":
+            if path == "/v1/pairing-window" and method == "DELETE":
+                next_window = None
+                reply = 200, dict(open=False)
+            elif path == "/v1/pairing-window":
                 if self.fingerprint is None:
                     self.certificate()
                 next_window = (secrets.token_urlsafe(32), monotonic() + 300)
@@ -327,7 +382,8 @@ class Network:
                 else:
                     device_id, token = secrets.token_hex(16), secrets.token_urlsafe(32)
                     data["devices"][device_id] = dict(device_id=device_id, name=str(body.get("name", "Device"))[:128],
-                        token_hash=digest(token), revoked=False, session_access_enabled=False)
+                        token_hash=digest(token), revoked=False, session_access_enabled=False,
+                        paired_at=messages.utc_now(), last_seen_at=None)
                     reply = 200, dict(device_id=device_id, device_token=token, session_access_enabled=False)
                     changed = data["devices"][device_id]
                     next_window = None
@@ -364,7 +420,7 @@ class Network:
                 return error(404, "not_found")
             # Pairing secrets are returned once, and only live in process memory.
             data["requests"][identity]["reply"] = (error(403, "pairing_closed")
-                if path in ("/v1/pair", "/v1/pairing-window") else reply)
+                if path == "/v1/pair" or path == "/v1/pairing-window" and method == "POST" else reply)
             with events.write_transaction([self.path]):
                 messages.atomic_json(self.path, data, limit=None)
                 if changed is not None:
@@ -379,6 +435,9 @@ class Network:
             return reply
 
     def close(self):
+        if self.seen_thread is not None:
+            self.seen_thread.join()
+            self.seen_thread = None
         if self.push_thread is not None:
             self.push_thread.join()
             self.push_thread = None
@@ -388,6 +447,9 @@ class Network:
             for connection in list(self.connections):
                 disconnect(connection)
             self.connections.clear()
+        # stop is already set; the foreground lock above drained any auth that
+        # entered before it, and new auth is refused before recording timestamps.
+        self.flush_last_seen()
 
 
 def positive_setting(cp, name, default):
@@ -467,8 +529,8 @@ def handler_class(base):
                 result = network.authorize(self)
             except (OSError, ValueError, TypeError, KeyError):
                 result = error(503, "network_unavailable")
-            path = urlsplit(self.path).path
-            if result is None and (path.startswith("/_") or path in ("/v1/pairing-window", "/v1/devices", "/v1/network")
+            path = unquote(urlsplit(self.path).path)
+            if result is None and (path.startswith("/_") or path in ("/v1/pairing-window", "/v1/devices", "/v1/network", "/v1/config/session-access")
                     or path.startswith("/v1/devices/")):
                 result = error(403, "local_only")
             if result is None and (path == "/v1/sessions" or path.startswith("/v1/sessions/")):
@@ -537,7 +599,7 @@ def handler_class(base):
                     if self.remote:
                         self.server.service.network.untrack(self.connection)
             target = path[len("/v1/devices/"):] if path.startswith("/v1/devices/") else ""
-            if not target or "/" in target:
+            if path != "/v1/pairing-window" and (not target or "/" in target):
                 return self.json(*error(404, "not_found"))
             try:
                 self.json(*self.server.service.network.write(path, {}, self.headers.get("Idempotency-Key"), method="DELETE"))

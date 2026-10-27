@@ -138,7 +138,7 @@ class NetworkTests(unittest.TestCase):
         first = self.request("/v1/network", "POST", body, key="select")
         self.assertEqual(first[0], 200)
         info = self.network_info()
-        self.assertEqual(info["listen_addresses"], [dict(address="127.0.0.1", port=0, enabled=True)])
+        self.assertEqual(info["listen_addresses"], [dict(address="127.0.0.1", port=0, enabled=True, kind="other")])
         self.assertEqual(info["spki_sha256"], pin)
         self.assertEqual(info, first[1])
         self.assertEqual(self.request("/v1/jobs", connection=self.tls(info))[0], 403)
@@ -173,7 +173,8 @@ class NetworkTests(unittest.TestCase):
         self.addCleanup(stream.close)
         disabled = {"listen_addresses": [dict(address="127.0.0.1", port=0, enabled=False)]}
         result = self.request("/v1/network", "POST", disabled, key="disable")
-        self.assertEqual(result, (200, dict(spki_sha256=before["spki_sha256"], candidates=[], **disabled)))
+        self.assertEqual(result, (200, dict(spki_sha256=before["spki_sha256"], candidates=[],
+            listen_addresses=[dict(disabled["listen_addresses"][0], kind="other")])))
         with self.assertRaises(OSError):
             socket.create_connection(("127.0.0.1", before["candidates"][0]["port"]), timeout=3)
         changes = []

@@ -82,7 +82,8 @@ def display_data(kind, data):
     projected = {key: data[key] for key in FIELDS[kind].split() if key in data
                  and (data[key] is None or type(data[key]) in (str, int, float, bool))}
     if kind == "network.addresses_changed" and isinstance(data.get("candidates"), list):
-        projected["candidates"] = [{"address": row["address"], "port": row["port"]}
+        projected["candidates"] = [{"address": row["address"], "port": row["port"],
+            **({"kind": row["kind"]} if row.get("kind") in ("lan", "tailscale", "easytier", "other") else {})}
             for row in data["candidates"] if isinstance(row, dict)
             and isinstance(row.get("address"), str) and type(row.get("port")) is int]
     if kind == "session.changed" and isinstance(data.get("dispatch_defaults"), dict):

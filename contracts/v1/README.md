@@ -155,3 +155,22 @@ JSON 类型，另用行为断言覆盖实际值、用户隔离、纯查询、锁
   用 `last_attempt_succeeded` 区分失败沿用旧列表和成功空列表；连续失败达到 3 次时
   `stale=true`，成功重置。`reason` 仅异常类别，`last_success_at` 可为空。
   `sessions` 及原有行字段含义不变，旧客户端忽略新增字段；新客户端兼容旧服务缺少此字段。
+
+
+票 73 设置补充（只增加字段，原有含义不变）：
+
+- `session-access-get/put/invalid.json`：仅 Unix socket 的总开关读写。PUT 的 enabled
+  必须是 JSON 布尔值，成功返回新值并持久保存；设备级权限独立。
+- `network-pairing-window-close.json`：DELETE 立即关闭当前配对窗口，已配对设备不受影响。
+- `network-devices.json`：每个设备新增 paired_at / last_seen_at，带时区 ISO 字符串，
+  未知为 null；旧设备 paired_at 不补造。最近访问取成功鉴权时间，查询含内存新值，
+  后台每 60 秒合并落盘，正常停服补刷；鉴权失败不更新，心跳不重计。
+- `network-addresses*.json` / `network-pairing-window.json`：候选和配置项新增 kind；
+  新地址事件也带 kind，旧事件可省略。按顺序判断：tailscale = 100.64.0.0/10 或
+  fd7a:115c:a1e0::/48；easytier = 10.144.144.0/24 或 10.126.126.0/24；
+  lan = 10/8、172.16/12、192.168/16、169.254/16、fc00::/7、fe80::/10；
+  其余 other（包含回环）。规则按网段，不保证识别用户自定义 VPN 网段。
+- `host-config-active.json`：409 原 reason 不变，error.running_count 是跨用户完整计数，
+  error.running_job_ids 排序且最多 20 项，未知执行状态仍阻止删除。
+- `host-config-max-heavy-invalid.json`：max_heavy 为 >=1 的整数字符串，无 8 的上限，
+  非整数或小于 1 返回原 reason、field 和新增可读 text；null 沿用清除覆盖含义。

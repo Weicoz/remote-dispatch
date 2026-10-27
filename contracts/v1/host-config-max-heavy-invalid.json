@@ -1,0 +1,24 @@
+{
+  "request": {
+    "method": "PUT",
+    "path": "/v1/config/hosts/target",
+    "body": {
+      "max_heavy": "0"
+    },
+    "headers": {
+      "Idempotency-Key": "host-config-max-heavy-invalid",
+      "Content-Type": "application/json"
+    }
+  },
+  "response": {
+    "status": 400,
+    "body": {
+      "error": {
+        "reason": "invalid_host_field",
+        "field": "max_heavy",
+        "text": "并发上限必须是大于等于 1 的整数。"
+      }
+    }
+  },
+  "events": []
+}

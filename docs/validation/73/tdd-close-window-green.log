@@ -1,0 +1,6 @@
+test_closing_pairing_window_invalidates_code_and_preserves_paired_device (tests.test_rd_serve_admin.AdminNetworkTests.test_closing_pairing_window_invalidates_code_and_preserves_paired_device) ... ok
+
+----------------------------------------------------------------------
+Ran 1 test in 0.557s
+
+OK

@@ -1,0 +1,17 @@
+{
+  "request": {
+    "method": "DELETE",
+    "path": "/v1/pairing-window",
+    "headers": {
+      "Idempotency-Key": "network-pairing-window-close",
+      "Content-Type": "application/json"
+    }
+  },
+  "response": {
+    "status": 200,
+    "body": {
+      "open": false
+    }
+  },
+  "events": []
+}

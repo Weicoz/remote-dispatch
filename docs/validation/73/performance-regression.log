@@ -1,0 +1,30 @@
+test_current_jobs_remain_readable_when_unrelated_retained_receipt_is_corrupt (tests.test_rd_serve_list_cache.ListCacheTests.test_current_jobs_remain_readable_when_unrelated_retained_receipt_is_corrupt) ... rdispatch: no [host:removed] in /private/var/folders/03/jkr683mx1ysbj4q0ljlzqk100000gn/T/rd-serve-e_mikfra/config.ini
+rdispatch: poll_unavailable: cannot collect host jobs
+rdispatch: poll_unavailable: cannot update harness statistics
+ok
+test_idle_connections_do_not_starve_list_requests (tests.test_rd_serve_list_cache.ListCacheTests.test_idle_connections_do_not_starve_list_requests) ... ok
+test_large_project_index_and_unrelated_user_files_preserve_list_contract (tests.test_rd_serve_list_cache.ListCacheTests.test_large_project_index_and_unrelated_user_files_preserve_list_contract) ... ok
+test_realistic_lists_remain_fast_with_ten_clients_and_sse (tests.test_rd_serve_list_cache.ListCacheTests.test_realistic_lists_remain_fast_with_ten_clients_and_sse) ... /v1/projects: warm=0.0270s ten_clients=0.2772s
+/v1/jobs: warm=0.0154s ten_clients=0.1466s
+ok
+test_same_round_state_events_are_visible_before_the_receipt_arrives (tests.test_rd_serve_list_cache.ListCacheTests.test_same_round_state_events_are_visible_before_the_receipt_arrives) ... ok
+test_warm_lists_show_next_round_receipt_ack_review_event_and_deletion_immediately (tests.test_rd_serve_list_cache.ListCacheTests.test_warm_lists_show_next_round_receipt_ack_review_event_and_deletion_immediately) ... ok
+test_background_refresh_is_visible_emits_events_and_survives_restart_without_old_rounds (tests.test_rd_serve_read_latency.ReadLatencyTests.test_background_refresh_is_visible_emits_events_and_survives_restart_without_old_rounds) ... ok
+test_bad_persisted_snapshots_do_not_prevent_cold_start_from_local_records (tests.test_rd_serve_read_latency.ReadLatencyTests.test_bad_persisted_snapshots_do_not_prevent_cold_start_from_local_records) ... rdispatch: no [host:removed] in /private/var/folders/03/jkr683mx1ysbj4q0ljlzqk100000gn/T/rd-serve-tf68e2rn/config.ini
+rdispatch: poll_unavailable: cannot collect host jobs
+ok
+test_cold_start_returns_saved_receipt_state_and_unknown_snapshot_time_without_waiting (tests.test_rd_serve_read_latency.ReadLatencyTests.test_cold_start_returns_saved_receipt_state_and_unknown_snapshot_time_without_waiting) ... ok
+test_first_hosts_response_lists_all_enabled_targets_before_probe_finishes (tests.test_rd_serve_read_latency.ReadLatencyTests.test_first_hosts_response_lists_all_enabled_targets_before_probe_finishes) ... rdispatch: poll_unavailable: cannot probe a host
+rdispatch: poll_unavailable: cannot probe a host
+ok
+test_host_probe_results_are_visible_while_job_collection_is_delayed (tests.test_rd_serve_read_latency.ReadLatencyTests.test_host_probe_results_are_visible_while_job_collection_is_delayed) ... ok
+test_log_reads_return_immediately_and_background_refresh_supplies_the_tail (tests.test_rd_serve_read_latency.ReadLatencyTests.test_log_reads_return_immediately_and_background_refresh_supplies_the_tail) ... ok
+test_old_target_round_is_not_published_as_the_resumed_round (tests.test_rd_serve_read_latency.ReadLatencyTests.test_old_target_round_is_not_published_as_the_resumed_round) ... ok
+test_same_round_migration_does_not_return_the_old_target_progress (tests.test_rd_serve_read_latency.ReadLatencyTests.test_same_round_migration_does_not_return_the_old_target_progress) ... ok
+test_session_lists_and_projects_read_last_background_snapshot_without_running_herdr (tests.test_rd_serve_read_latency.ReadLatencyTests.test_session_lists_and_projects_read_last_background_snapshot_without_running_herdr) ... ok
+test_two_hundred_jobs_and_thirty_projects_return_while_target_is_slow (tests.test_rd_serve_read_latency.ReadLatencyTests.test_two_hundred_jobs_and_thirty_projects_return_while_target_is_slow) ... ok
+
+----------------------------------------------------------------------
+Ran 16 tests in 19.284s
+
+OK

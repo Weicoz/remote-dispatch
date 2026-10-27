@@ -1,0 +1,8 @@
+test_background_timestamp_flush_does_not_block_reads_and_merges_concurrent_auth (tests.test_rd_serve_admin.AdminNetworkTests.test_background_timestamp_flush_does_not_block_reads_and_merges_concurrent_auth) ... ok
+test_stopping_rejects_new_device_authentication_before_final_flush (tests.test_rd_serve_admin.AdminNetworkTests.test_stopping_rejects_new_device_authentication_before_final_flush) ... ok
+
+----------------------------------------------------------------------
+Ran 2 tests in 1.676s
+
+OK
+blocked flush foreground milliseconds: [1.26, 1.09, 1.0, 0.94, 0.89, 0.94, 0.9, 0.99, 0.93, 0.95, 0.19]

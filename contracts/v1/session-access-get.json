@@ -1,0 +1,13 @@
+{
+  "request": {
+    "method": "GET",
+    "path": "/v1/config/session-access"
+  },
+  "response": {
+    "status": 200,
+    "body": {
+      "enabled": true
+    }
+  },
+  "events": []
+}

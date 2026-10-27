@@ -1,0 +1,35 @@
+test_disabling_global_access_denies_screen_already_waiting_for_a_frame (tests.test_rd_serve_admin.AdminSessionTests.test_disabling_global_access_denies_screen_already_waiting_for_a_frame) ... FAIL
+test_disabling_global_access_stops_existing_terminal_stream_before_next_frame (tests.test_rd_serve_admin.AdminSessionTests.test_disabling_global_access_stops_existing_terminal_stream_before_next_frame) ... FAIL
+
+======================================================================
+FAIL: test_disabling_global_access_denies_screen_already_waiting_for_a_frame (tests.test_rd_serve_admin.AdminSessionTests.test_disabling_global_access_denies_screen_already_waiting_for_a_frame)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/mac/remote-dispatch/users/weicoz/wt/weicoz-remote-dispatch-v4-73-20261027-225655-383823000/tests/test_rd_serve_admin.py", line 314, in test_disabling_global_access_denies_screen_already_waiting_for_a_frame
+    self.assertEqual(reading.result(5), (403, {'error': {'reason': 'session_access_disabled'}}))
+AssertionError: Tuples differ: (200, {'pane_id': 'w1:p1', 'text': 'secret[72 chars]se}}) != (403, {'error': {'reason': 'session_access_disabled'}})
+
+First differing element 0:
+200
+403
+
++ (403, {'error': {'reason': 'session_access_disabled'}})
+- (200,
+-  {'cursor': {'visible': False, 'x': 0, 'y': 0},
+-   'height': 45,
+-   'pane_id': 'w1:p1',
+-   'text': 'secret',
+-   'width': 149})
+
+======================================================================
+FAIL: test_disabling_global_access_stops_existing_terminal_stream_before_next_frame (tests.test_rd_serve_admin.AdminSessionTests.test_disabling_global_access_stops_existing_terminal_stream_before_next_frame)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/mac/remote-dispatch/users/weicoz/wt/weicoz-remote-dispatch-v4-73-20261027-225655-383823000/tests/test_rd_serve_admin.py", line 301, in test_disabling_global_access_stops_existing_terminal_stream_before_next_frame
+    self.assertEqual(stream.read(), b'')
+AssertionError: b'event: terminal.frame\ndata: {"type": "te[152 chars]\n\n' != b''
+
+----------------------------------------------------------------------
+Ran 2 tests in 1.541s
+
+FAILED (failures=2)

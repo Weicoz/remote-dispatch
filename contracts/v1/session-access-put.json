@@ -1,0 +1,20 @@
+{
+  "request": {
+    "method": "PUT",
+    "path": "/v1/config/session-access",
+    "body": {
+      "enabled": false
+    },
+    "headers": {
+      "Idempotency-Key": "session-access-put",
+      "Content-Type": "application/json"
+    }
+  },
+  "response": {
+    "status": 200,
+    "body": {
+      "enabled": false
+    }
+  },
+  "events": []
+}

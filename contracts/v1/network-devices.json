@@ -1,0 +1,22 @@
+{
+  "request": {
+    "method": "GET",
+    "path": "/v1/devices"
+  },
+  "response": {
+    "status": 200,
+    "body": {
+      "devices": [
+        {
+          "device_id": "DEVICE_ID",
+          "name": "Phone",
+          "revoked": false,
+          "session_access_enabled": false,
+          "paired_at": "2026-10-27T10:00:00+00:00",
+          "last_seen_at": "2026-10-27T10:01:00+00:00"
+        }
+      ]
+    }
+  },
+  "events": []
+}

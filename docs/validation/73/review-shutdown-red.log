@@ -1,0 +1,21 @@
+test_stopping_rejects_new_device_authentication_before_final_flush (tests.test_rd_serve_admin.AdminNetworkTests.test_stopping_rejects_new_device_authentication_before_final_flush) ... FAIL
+
+======================================================================
+FAIL: test_stopping_rejects_new_device_authentication_before_final_flush (tests.test_rd_serve_admin.AdminNetworkTests.test_stopping_rejects_new_device_authentication_before_final_flush)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/mac/remote-dispatch/users/weicoz/wt/weicoz-remote-dispatch-v4-73-20261027-225655-383823000/tests/test_rd_serve_admin.py", line 118, in test_stopping_rejects_new_device_authentication_before_final_flush
+    self.assertEqual(self.request('/v1/jobs', connection=connection, headers=headers),
+AssertionError: Tuples differ: (200, {'jobs': []}) != (503, {'error': {'reason': 'serve_stopping'}})
+
+First differing element 0:
+200
+503
+
+- (200, {'jobs': []})
++ (503, {'error': {'reason': 'serve_stopping'}})
+
+----------------------------------------------------------------------
+Ran 1 test in 1.034s
+
+FAILED (failures=1)

@@ -12,7 +12,12 @@
     "status": 409,
     "body": {
       "error": {
-        "reason": "host_has_active_dispatches"
+        "reason": "host_has_active_dispatches",
+        "running_count": 2,
+        "running_job_ids": [
+          "fixture-job",
+          "other-job"
+        ]
       }
     }
   },

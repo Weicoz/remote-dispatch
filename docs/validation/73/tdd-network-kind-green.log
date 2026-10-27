@@ -1,0 +1,6 @@
+test_network_classifies_selected_addresses_including_disabled_rows (tests.test_rd_serve_admin.AdminNetworkTests.test_network_classifies_selected_addresses_including_disabled_rows) ... ok
+
+----------------------------------------------------------------------
+Ran 1 test in 0.522s
+
+OK

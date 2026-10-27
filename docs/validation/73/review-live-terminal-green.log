@@ -1,0 +1,7 @@
+test_disabling_global_access_denies_screen_already_waiting_for_a_frame (tests.test_rd_serve_admin.AdminSessionTests.test_disabling_global_access_denies_screen_already_waiting_for_a_frame) ... ok
+test_disabling_global_access_stops_existing_terminal_stream_before_next_frame (tests.test_rd_serve_admin.AdminSessionTests.test_disabling_global_access_stops_existing_terminal_stream_before_next_frame) ... ok
+
+----------------------------------------------------------------------
+Ran 2 tests in 1.534s
+
+OK

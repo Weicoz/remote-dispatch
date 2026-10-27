@@ -84,6 +84,10 @@ elif a[:3] == ["terminal", "session", "observe"]:
         text = "\\x1b[2J\\x1b[H" + v["screen"] + v.get("cursor_ansi", "\\x1b[3;5H\\x1b[?25h")
         print(json.dumps({"type": "terminal.frame", "seq": 1, "width": cols, "height": rows,
                          "full": True, "bytes": base64.b64encode(text.encode()).decode()}), flush=True)
+    if v.get("frame_gate"):
+        import time
+        while not Path(v["frame_gate"]).exists():
+            time.sleep(0.01)
     for line in v["frames"]:
         print(line, flush=True)
     if v.get("hold"):

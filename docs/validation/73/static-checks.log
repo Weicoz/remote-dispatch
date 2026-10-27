@@ -1,0 +1,15 @@
+Python 3.12.13; arm64; cpus=10
+COMMAND: python3 -m compileall -q src tests
+EXIT: 0
+
+COMMAND: git diff --cached --check
+EXIT: 0
+
+Python 3.9 AST syntax: passed (74 files); this is not a type check
+Contract JSON parse: passed (87 files)
+mypy installed: False
+pyright installed: False
+git config --get core.hooksPath exit: 1; output: <unset>
+default pre-commit exists: False; hook execution count: 0; no hook disabled or modified
+Full-suite executions: 1; 595 tests, passed, 354.559 seconds; RD_RUN_SOCKET_TESTS=1
+Initial staged whitespace check found one trailing space in unittest red-log heading; removed whitespace only, then passed.

@@ -718,3 +718,61 @@ SSH、结果／进度收取不会占用这个线程。本地写操作仍会唤�
 减少，恢复后首次成功探测的同轮刷新派单。合成 Herdr 失败三次，确认旧列表、过期字段
 与脱敏日志；恢复为零 pane 后确认空列表且 `stale=false`。确认终态且已确认收取的派单
 不再被探测，resume 后重新刷新。最后检查 App 对新增字段兼容及过期文案展示。
+
+
+## 设置接口补充（票 73）
+
+这些管理操作只通过当前用户的 Unix socket 暴露；HTTPS 即使已配对也返回
+403 `local_only`。设备级会话权限保持原接口和默认关闭行为。
+
+| 接口 | 请求与响应 |
+| --- | --- |
+| `GET /v1/config/session-access` | 返回 `{"enabled":true}`，读取运行时 `[serve] session_access`，缺省 true |
+| `PUT /v1/config/session-access` | JSON `{"enabled":false}`，必须是布尔值且无其他字段；成功返回新值 |
+| `DELETE /v1/pairing-window` | 无 body 或 `{}`；返回 `{"open":false}`，立即使当前码失效；不吊销已有设备 |
+
+写操作要求 `Idempotency-Key`。总开关沿用目标机配置的锁、幂等缓存、0600 备份及
+fsync 后原子替换，保留配置注释、换行与其他段。持久化成功后替换运行时配置，
+无需重启；所有会话读写、终端与会话事件立即服从新开关，设备级权限仍须单独允许。
+请求验证失败不写配置；备份或替换失败返回 503 `host_config_unavailable`，保留原配置
+及运行时开关。同键异请求为 422 `idempotency_key_reused`；写入结果无法确认时沿用
+503 `host_config_outcome_unknown`，先 GET 确认实际值再用新键重试。
+关闭窗口幂等重放只返回首次结果，不影响后来新开的窗口。服务重启不恢复配对窗口。
+
+`GET /v1/devices` 每项新增 `paired_at`、`last_seen_at`：带时区 ISO 8601 字符串，
+新配对时记录配对时间；尚未收到认证请求时最近时间为 null。旧设备未知的配对时间
+返回 null，不根据文件修改时间推测。`last_seen_at` 取设备最近一次成功通过指纹和
+令牌鉴权的请求时间，包含随后因业务权限被拒绝的请求；鉴权失败和未鉴权的配对请求
+不刷新时间，持续 SSE/WS 连接只计最初鉴权，不计心跳。查询立即合并内存最新值。
+后台每 60 秒合并写盘，无更新不写；正常停服也合并一次。异常退出最多丢失最近一个
+刷盘周期尚未保存的更新，写盘失败保留内存值并在下周期重试。更新不发设备变更事件，
+后台 fsync/replace 不占前台鉴权／查询锁，与设备写操作通过既有 NetworkLock 串行，
+避免覆盖吊销、权限或幂等记录。
+
+`GET /v1/network` 的 `candidates` 与 `listen_addresses` 每项新增 `kind`；写监听地址
+的响应、配对窗口候选及新的 `network.addresses_changed` 事件也返回该字段。
+不以接口名、DNS 或外部服务识别，按下表顺序首次匹配；自定义 VPN 网段可能归入 lan。
+输入中传入 kind 不影响服务端判断。旧事件可无 kind，客户端收到事件后可重读网络接口。
+
+| kind | 网段／规则 |
+| --- | --- |
+| `tailscale` | `100.64.0.0/10`、`fd7a:115c:a1e0::/48` |
+| `easytier` | `10.144.144.0/24`、`10.126.126.0/24` |
+| `lan` | `10.0.0.0/8`、`172.16.0.0/12`、`192.168.0.0/16`、`169.254.0.0/16`、`fc00::/7`、`fe80::/10` |
+| `other` | 其余地址，包括回环；原有监听地址安全校验不变 |
+
+删除目标机返回的 409 `error.reason=host_has_active_dispatches` 不变，新增
+`error.running_count`（该目标机所有用户进行中／未知状态派单总数）、
+`error.running_job_ids`（按 ID 排序，最多 20 个）。这是管理接口的全局阻止信息，
+不使用当前用户的派单列表推算；done/dead/missing 沿用原规则不阻止删除。
+
+目标机 `max_heavy` 沿用字符串配置字段，整数且 >=1 即可，不设 8 的上限；
+JSON 数字、布尔值、小数串及小于 1 的值拒绝，400 `invalid_host_field`，
+`field=max_heavy`，新增可读 `text`。null 沿用原有清除覆盖、继承默认值的含义。
+待编排方定稿的文案键：`error.invalid_host_field.max_heavy`，占位文字
+“并发上限必须是大于等于 1 的整数。”
+
+合同样例见 `session-access-*.json`、`network-pairing-window-close.json`、
+`network-devices.json`、`network-addresses*.json`、`host-config-active.json` 和
+`host-config-max-heavy-invalid.json`。实现检查及编排方复测步骤见
+[票 73 验证记录](validation/73-serve-admin-gaps.md)。

@@ -308,7 +308,8 @@ class DefaultsTests(unittest.TestCase):
         self.save_fixture()
         with patch.object(rd_messages, 'utc_now', return_value='2026-10-26T00:00:00+00:00'):
             service.sessions.collect()
-        service.sessions.enabled = False
+        self.assertEqual(self.request("/v1/config/session-access", "PUT", json.dumps({"enabled": False}),
+                         {"Content-Type": "application/json", "Idempotency-Key": "disable-sessions"})[0], 200)
         with patch.object(rd_messages, 'utc_now', return_value='2026-11-25T00:00:00+00:00'):
             service.sessions.collect()
         self.assertEqual(self.command('session-one')['host'], None)

@@ -82,7 +82,10 @@ class HostConfigTests(unittest.TestCase):
         for index, (body, status, reason, field) in enumerate(cases):
             with self.subTest(field=field, body=body):
                 reply = self.write("/v1/config/hosts", body, key=f"invalid-{index}")
-                self.assertEqual(reply, (status, {"error": {"reason": reason, "field": field}}))
+                detail = dict(reason=reason, field=field)
+                if field == "max_heavy":
+                    detail["text"] = "并发上限必须是大于等于 1 的整数。"
+                self.assertEqual(reply, (status, {"error": detail}))
                 if field == "sync":
                     self.assert_contract("invalid", reply)
         self.assertEqual(self.config.read_bytes(), before)
@@ -112,7 +115,8 @@ class HostConfigTests(unittest.TestCase):
                         lambda reply: any(row["execution_state"] == "running" for row in reply[1]["jobs"]))
         before = self.config.read_bytes()
         reply = self.write("/v1/config/hosts/target", method="DELETE", key="delete-running")
-        self.assertEqual(reply, (409, {"error": {"reason": "host_has_active_dispatches"}}))
+        self.assertEqual(reply, (409, {"error": {"reason": "host_has_active_dispatches",
+                                                    "running_count": 2, "running_job_ids": ["fixture-job", "other-job"]}}))
         self.assert_contract("active", reply)
         self.assertEqual(self.config.read_bytes(), before)
         self.assertEqual(list(self.root.glob("config.ini.bak.*")), [])
@@ -120,7 +124,9 @@ class HostConfigTests(unittest.TestCase):
         cli.save_job(dict(cli.load_job("other-job"), execution_state="done"))
         self.eventually(lambda: self.request("/v1/jobs"),
                         lambda reply: reply[1]["jobs"][0]["execution_state"] == "done")
-        reply = self.write("/v1/config/hosts/target", method="DELETE", key="delete-done")
+        reply = self.eventually(
+            lambda: self.write("/v1/config/hosts/target", method="DELETE", key="delete-done"),
+            lambda reply: reply[0] == 200)
         self.assertEqual(reply, (200, {"deleted": "target"}))
         self.assert_contract("delete", reply)
         self.assertEqual(self.request("/v1/config/hosts"), (200, {"hosts": []}))
@@ -132,7 +138,8 @@ class HostConfigTests(unittest.TestCase):
         cli.save_job(dict(job="another-user-job", user_id="other", host="target", rounds=1))
         reply = self.write("/v1/config/hosts/target", method="DELETE")
         self.assertEqual(reply[0], 409, reply)
-        self.assertNotIn("another-user-job", json.dumps(reply))
+        self.assertEqual(reply[1]["error"]["running_count"], 1)
+        self.assertEqual(reply[1]["error"]["running_job_ids"], ["another-user-job"])
         self.assertEqual(self.config.read_bytes(), before)
         (self.state / "jobs" / "another-user-job.json").unlink()
         reply = self.write("/v1/config/hosts/target", method="DELETE", key="delete-safe")
@@ -203,7 +210,10 @@ class HostConfigTests(unittest.TestCase):
         before = self.config.read_bytes()
         for field, value in (("max_heavy", "1.0"), ("timeout", "1e3"), ("timeout", "1" + "0" * 400)):
             reply = self.write("/v1/config/hosts/target", {field: value}, method="PUT", key=field + value[:4])
-            self.assertEqual(reply, (400, {"error": {"reason": "invalid_host_field", "field": field}}))
+            detail = dict(reason="invalid_host_field", field=field)
+            if field == "max_heavy":
+                detail["text"] = "并发上限必须是大于等于 1 的整数。"
+            self.assertEqual(reply, (400, {"error": detail}))
         self.assertEqual(self.config.read_bytes(), before)
 
     def test_edit_does_not_treat_unchanged_multiline_credential_content_as_options(self):

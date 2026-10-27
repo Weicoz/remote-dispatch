@@ -1,0 +1,139 @@
+test_max_heavy_accepts_above_eight_and_explains_invalid_values (tests.test_rd_serve_admin.AdminConfigTests.test_max_heavy_accepts_above_eight_and_explains_invalid_values) ...
+  test_max_heavy_accepts_above_eight_and_explains_invalid_values (tests.test_rd_serve_admin.AdminConfigTests.test_max_heavy_accepts_above_eight_and_explains_invalid_values) (value='0') ... FAIL
+  test_max_heavy_accepts_above_eight_and_explains_invalid_values (tests.test_rd_serve_admin.AdminConfigTests.test_max_heavy_accepts_above_eight_and_explains_invalid_values) (value='-1') ... FAIL
+  test_max_heavy_accepts_above_eight_and_explains_invalid_values (tests.test_rd_serve_admin.AdminConfigTests.test_max_heavy_accepts_above_eight_and_explains_invalid_values) (value='1.5') ... FAIL
+  test_max_heavy_accepts_above_eight_and_explains_invalid_values (tests.test_rd_serve_admin.AdminConfigTests.test_max_heavy_accepts_above_eight_and_explains_invalid_values) (value='NaN') ... FAIL
+  test_max_heavy_accepts_above_eight_and_explains_invalid_values (tests.test_rd_serve_admin.AdminConfigTests.test_max_heavy_accepts_above_eight_and_explains_invalid_values) (value='abc') ... FAIL
+  test_max_heavy_accepts_above_eight_and_explains_invalid_values (tests.test_rd_serve_admin.AdminConfigTests.test_max_heavy_accepts_above_eight_and_explains_invalid_values) (value=2.5) ... FAIL
+  test_max_heavy_accepts_above_eight_and_explains_invalid_values (tests.test_rd_serve_admin.AdminConfigTests.test_max_heavy_accepts_above_eight_and_explains_invalid_values) (value=True) ... FAIL
+
+======================================================================
+FAIL: test_max_heavy_accepts_above_eight_and_explains_invalid_values (tests.test_rd_serve_admin.AdminConfigTests.test_max_heavy_accepts_above_eight_and_explains_invalid_values) (value='0')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/mac/remote-dispatch/users/weicoz/wt/weicoz-remote-dispatch-v4-73-20261027-225655-383823000/tests/test_rd_serve_admin.py", line 26, in test_max_heavy_accepts_above_eight_and_explains_invalid_values
+    self.assertEqual(reply, (400, {'error': {'reason': 'invalid_host_field', 'field': 'max_heavy',
+AssertionError: Tuples differ: (400,[34 chars]t_field', 'field': 'max_heavy'}}) != (400,[34 chars]t_field', 'field': 'max_heavy', 'text': '并发上限必须是大于等于 1 的整数。'}})
+
+First differing element 1:
+{'err[27 chars]st_field', 'field': 'max_heavy'}}
+{'err[27 chars]st_field', 'field': 'max_heavy', 'text': '并发上限必须是大于等于 1 的整数。'}}
+
+- (400, {'error': {'field': 'max_heavy', 'reason': 'invalid_host_field'}})
++ (400,
++  {'error': {'field': 'max_heavy',
++             'reason': 'invalid_host_field',
++             'text': '并发上限必须是大于等于 1 的整数。'}})
+
+======================================================================
+FAIL: test_max_heavy_accepts_above_eight_and_explains_invalid_values (tests.test_rd_serve_admin.AdminConfigTests.test_max_heavy_accepts_above_eight_and_explains_invalid_values) (value='-1')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/mac/remote-dispatch/users/weicoz/wt/weicoz-remote-dispatch-v4-73-20261027-225655-383823000/tests/test_rd_serve_admin.py", line 26, in test_max_heavy_accepts_above_eight_and_explains_invalid_values
+    self.assertEqual(reply, (400, {'error': {'reason': 'invalid_host_field', 'field': 'max_heavy',
+AssertionError: Tuples differ: (400,[34 chars]t_field', 'field': 'max_heavy'}}) != (400,[34 chars]t_field', 'field': 'max_heavy', 'text': '并发上限必须是大于等于 1 的整数。'}})
+
+First differing element 1:
+{'err[27 chars]st_field', 'field': 'max_heavy'}}
+{'err[27 chars]st_field', 'field': 'max_heavy', 'text': '并发上限必须是大于等于 1 的整数。'}}
+
+- (400, {'error': {'field': 'max_heavy', 'reason': 'invalid_host_field'}})
++ (400,
++  {'error': {'field': 'max_heavy',
++             'reason': 'invalid_host_field',
++             'text': '并发上限必须是大于等于 1 的整数。'}})
+
+======================================================================
+FAIL: test_max_heavy_accepts_above_eight_and_explains_invalid_values (tests.test_rd_serve_admin.AdminConfigTests.test_max_heavy_accepts_above_eight_and_explains_invalid_values) (value='1.5')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/mac/remote-dispatch/users/weicoz/wt/weicoz-remote-dispatch-v4-73-20261027-225655-383823000/tests/test_rd_serve_admin.py", line 26, in test_max_heavy_accepts_above_eight_and_explains_invalid_values
+    self.assertEqual(reply, (400, {'error': {'reason': 'invalid_host_field', 'field': 'max_heavy',
+AssertionError: Tuples differ: (400,[34 chars]t_field', 'field': 'max_heavy'}}) != (400,[34 chars]t_field', 'field': 'max_heavy', 'text': '并发上限必须是大于等于 1 的整数。'}})
+
+First differing element 1:
+{'err[27 chars]st_field', 'field': 'max_heavy'}}
+{'err[27 chars]st_field', 'field': 'max_heavy', 'text': '并发上限必须是大于等于 1 的整数。'}}
+
+- (400, {'error': {'field': 'max_heavy', 'reason': 'invalid_host_field'}})
++ (400,
++  {'error': {'field': 'max_heavy',
++             'reason': 'invalid_host_field',
++             'text': '并发上限必须是大于等于 1 的整数。'}})
+
+======================================================================
+FAIL: test_max_heavy_accepts_above_eight_and_explains_invalid_values (tests.test_rd_serve_admin.AdminConfigTests.test_max_heavy_accepts_above_eight_and_explains_invalid_values) (value='NaN')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/mac/remote-dispatch/users/weicoz/wt/weicoz-remote-dispatch-v4-73-20261027-225655-383823000/tests/test_rd_serve_admin.py", line 26, in test_max_heavy_accepts_above_eight_and_explains_invalid_values
+    self.assertEqual(reply, (400, {'error': {'reason': 'invalid_host_field', 'field': 'max_heavy',
+AssertionError: Tuples differ: (400,[34 chars]t_field', 'field': 'max_heavy'}}) != (400,[34 chars]t_field', 'field': 'max_heavy', 'text': '并发上限必须是大于等于 1 的整数。'}})
+
+First differing element 1:
+{'err[27 chars]st_field', 'field': 'max_heavy'}}
+{'err[27 chars]st_field', 'field': 'max_heavy', 'text': '并发上限必须是大于等于 1 的整数。'}}
+
+- (400, {'error': {'field': 'max_heavy', 'reason': 'invalid_host_field'}})
++ (400,
++  {'error': {'field': 'max_heavy',
++             'reason': 'invalid_host_field',
++             'text': '并发上限必须是大于等于 1 的整数。'}})
+
+======================================================================
+FAIL: test_max_heavy_accepts_above_eight_and_explains_invalid_values (tests.test_rd_serve_admin.AdminConfigTests.test_max_heavy_accepts_above_eight_and_explains_invalid_values) (value='abc')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/mac/remote-dispatch/users/weicoz/wt/weicoz-remote-dispatch-v4-73-20261027-225655-383823000/tests/test_rd_serve_admin.py", line 26, in test_max_heavy_accepts_above_eight_and_explains_invalid_values
+    self.assertEqual(reply, (400, {'error': {'reason': 'invalid_host_field', 'field': 'max_heavy',
+AssertionError: Tuples differ: (400,[34 chars]t_field', 'field': 'max_heavy'}}) != (400,[34 chars]t_field', 'field': 'max_heavy', 'text': '并发上限必须是大于等于 1 的整数。'}})
+
+First differing element 1:
+{'err[27 chars]st_field', 'field': 'max_heavy'}}
+{'err[27 chars]st_field', 'field': 'max_heavy', 'text': '并发上限必须是大于等于 1 的整数。'}}
+
+- (400, {'error': {'field': 'max_heavy', 'reason': 'invalid_host_field'}})
++ (400,
++  {'error': {'field': 'max_heavy',
++             'reason': 'invalid_host_field',
++             'text': '并发上限必须是大于等于 1 的整数。'}})
+
+======================================================================
+FAIL: test_max_heavy_accepts_above_eight_and_explains_invalid_values (tests.test_rd_serve_admin.AdminConfigTests.test_max_heavy_accepts_above_eight_and_explains_invalid_values) (value=2.5)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/mac/remote-dispatch/users/weicoz/wt/weicoz-remote-dispatch-v4-73-20261027-225655-383823000/tests/test_rd_serve_admin.py", line 26, in test_max_heavy_accepts_above_eight_and_explains_invalid_values
+    self.assertEqual(reply, (400, {'error': {'reason': 'invalid_host_field', 'field': 'max_heavy',
+AssertionError: Tuples differ: (400,[34 chars]t_field', 'field': 'max_heavy'}}) != (400,[34 chars]t_field', 'field': 'max_heavy', 'text': '并发上限必须是大于等于 1 的整数。'}})
+
+First differing element 1:
+{'err[27 chars]st_field', 'field': 'max_heavy'}}
+{'err[27 chars]st_field', 'field': 'max_heavy', 'text': '并发上限必须是大于等于 1 的整数。'}}
+
+- (400, {'error': {'field': 'max_heavy', 'reason': 'invalid_host_field'}})
++ (400,
++  {'error': {'field': 'max_heavy',
++             'reason': 'invalid_host_field',
++             'text': '并发上限必须是大于等于 1 的整数。'}})
+
+======================================================================
+FAIL: test_max_heavy_accepts_above_eight_and_explains_invalid_values (tests.test_rd_serve_admin.AdminConfigTests.test_max_heavy_accepts_above_eight_and_explains_invalid_values) (value=True)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/mac/remote-dispatch/users/weicoz/wt/weicoz-remote-dispatch-v4-73-20261027-225655-383823000/tests/test_rd_serve_admin.py", line 26, in test_max_heavy_accepts_above_eight_and_explains_invalid_values
+    self.assertEqual(reply, (400, {'error': {'reason': 'invalid_host_field', 'field': 'max_heavy',
+AssertionError: Tuples differ: (400,[34 chars]t_field', 'field': 'max_heavy'}}) != (400,[34 chars]t_field', 'field': 'max_heavy', 'text': '并发上限必须是大于等于 1 的整数。'}})
+
+First differing element 1:
+{'err[27 chars]st_field', 'field': 'max_heavy'}}
+{'err[27 chars]st_field', 'field': 'max_heavy', 'text': '并发上限必须是大于等于 1 的整数。'}}
+
+- (400, {'error': {'field': 'max_heavy', 'reason': 'invalid_host_field'}})
++ (400,
++  {'error': {'field': 'max_heavy',
++             'reason': 'invalid_host_field',
++             'text': '并发上限必须是大于等于 1 的整数。'}})
+
+----------------------------------------------------------------------
+Ran 1 test in 0.548s
+
+FAILED (failures=7)

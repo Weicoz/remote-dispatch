@@ -1,0 +1,6 @@
+test_encoded_global_setting_path_remains_local_only (tests.test_rd_serve_admin.AdminNetworkTests.test_encoded_global_setting_path_remains_local_only) ... ok
+
+----------------------------------------------------------------------
+Ran 1 test in 0.554s
+
+OK

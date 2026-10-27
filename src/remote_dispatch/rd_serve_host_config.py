@@ -17,6 +17,7 @@ from .rd_idempotency import fingerprint
 from .rd_lock import JobBusy, JobLock
 
 
+SESSION_ACCESS = "/v1/config/session-access"
 COLLECTION = "/v1/config/hosts"
 ROUTE = re.compile(r"/v1/config/hosts(?:/([A-Za-z0-9._-]+))?")
 PUBLIC_FIELDS = set(cli.DEFAULTS) - {"env_file", "codex_auth_file", "dsh_auth_file", "agy_auth_file", "ssh_opts"}
@@ -72,10 +73,10 @@ def effective(cp, name):
     return values
 
 
-def edit(text, name, fields, *, delete=False):
+def edit(text, name, fields, *, delete=False, section_name=None):
     """Follow ConfigParser's indentation rules, retaining untouched raw lines."""
     newline = "\r\n" if "\r\n" in text else "\n"
-    target = "host:" + name
+    target = section_name or "host:" + name
     section, option_indent = None, None
     found, dropping = False, False
     result, pending = [], dict(fields)
@@ -166,7 +167,11 @@ class HostConfigRoutes:
         self.service.sensitive = self.service.sensitive | secrets
 
     def get(self, handler):
-        if unquote(urlsplit(handler.path).path) != COLLECTION:
+        path = unquote(urlsplit(handler.path).path)
+        if path == SESSION_ACCESS:
+            handler.json(200, {"enabled": self.service.sessions.enabled})
+            return True
+        if path != COLLECTION:
             return False
         try:
             _, cp = self.load()
@@ -179,7 +184,7 @@ class HostConfigRoutes:
     def handle(self, handler):
         path = unquote(urlsplit(handler.path).path)
         match = ROUTE.fullmatch(path)
-        if not match:
+        if not match and path != SESSION_ACCESS:
             return False
         try:
             key = handler.headers.get("Idempotency-Key", "")
@@ -194,10 +199,13 @@ class HostConfigRoutes:
             body = {} if bare_delete else json.loads(handler.rfile.read(length))
             if not isinstance(body, dict):
                 raise ValueError("invalid_request")
-            handler.json(*self.write(handler.command, path, match.group(1), body, key,
+            handler.json(*self.write(handler.command, path, match.group(1) if match else None, body, key,
                                      getattr(handler, "device_id", None)))
         except InvalidField as error:
-            handler.json(400, {"error": {"reason": error.reason, "field": error.field}})
+            detail = dict(reason=error.reason, field=error.field)
+            if error.field == "max_heavy":
+                detail["text"] = "并发上限必须是大于等于 1 的整数。"
+            handler.json(400, {"error": detail})
         except (ValueError, TypeError, UnicodeError):
             handler.json(400, {"error": {"reason": "invalid_host_request"}})
         except (OSError, configparser.Error):
@@ -222,38 +230,52 @@ class HostConfigRoutes:
             if service.stop.is_set():
                 raise OSError("serve_stopping")
             raw, cp = self.load()
-            create = method == "POST" and name is None
-            delete = method == "DELETE" and name is not None
-            if not create and not delete and not (method == "PUT" and name is not None):
-                return 405, {"error": {"reason": "method_not_allowed"}}
-            name = body.get("name") if create else name
-            if not isinstance(name, str) or not re.fullmatch(r"[A-Za-z0-9._-]{1,128}", name):
-                raise InvalidField("name")
-            if create and cp.has_section("host:" + name):
-                return 409, {"error": {"reason": "host_exists", "field": "name"}}
-            if not create and not cp.has_section("host:" + name):
-                return 404, {"error": {"reason": "not_found"}}
-            if not create and "name" in body and body["name"] != name:
-                raise InvalidField("name")
-            if delete:
-                if body:
-                    raise ValueError("invalid_delete_body")
-                # Include every local registry record, not just the current
-                # user's display list. Unknown/offline execution is unsafe.
-                records = [rec for rec in cli.all_jobs() if rec.get("host") == name]
-                states = service.query().states(records)
-                if any(states.get(rec["job"], {}).get("state") not in ("done", "dead", "missing") for rec in records):
-                    return 409, {"error": {"reason": "host_has_active_dispatches"}}
-            fields = {key: value for key, value in body.items() if key != "name"}
-            for field, value in fields.items():
-                if not re.fullmatch(r"[a-z][a-z0-9_]*", field):
-                    raise ValueError("invalid_field")
-                if value is not None and (not isinstance(value, str) or any(c in value for c in "\n\r\x00")):
-                    raise InvalidField(field)
-            text = edit(raw.decode("utf-8"), name, fields, delete=delete)
-            updated = parse(text)
-            if not delete:
-                validate(effective(updated, name))
+            setting = path == SESSION_ACCESS
+            if setting:
+                if method != "PUT":
+                    return 405, {"error": {"reason": "method_not_allowed"}}
+                if set(body) != {"enabled"} or type(body["enabled"]) is not bool:
+                    return 400, {"error": {"reason": "invalid_request"}}
+                text = edit(raw.decode("utf-8"), "", {"session_access": str(body["enabled"]).lower()},
+                            section_name="serve")
+                updated = parse(text)
+                create = delete = False
+            else:
+                create = method == "POST" and name is None
+                delete = method == "DELETE" and name is not None
+                if not create and not delete and not (method == "PUT" and name is not None):
+                    return 405, {"error": {"reason": "method_not_allowed"}}
+                name = body.get("name") if create else name
+                if not isinstance(name, str) or not re.fullmatch(r"[A-Za-z0-9._-]{1,128}", name):
+                    raise InvalidField("name")
+                if create and cp.has_section("host:" + name):
+                    return 409, {"error": {"reason": "host_exists", "field": "name"}}
+                if not create and not cp.has_section("host:" + name):
+                    return 404, {"error": {"reason": "not_found"}}
+                if not create and "name" in body and body["name"] != name:
+                    raise InvalidField("name")
+                if delete:
+                    if body:
+                        raise ValueError("invalid_delete_body")
+                    # Include every local registry record, not just the current
+                    # user's display list. Unknown/offline execution is unsafe.
+                    records = [rec for rec in cli.all_jobs() if rec.get("host") == name]
+                    states = service.query().states(records)
+                    running = sorted({rec["job"] for rec in records
+                                      if states.get(rec["job"], {}).get("state") not in ("done", "dead", "missing")})
+                    if running:
+                        return 409, {"error": {"reason": "host_has_active_dispatches",
+                                               "running_count": len(running), "running_job_ids": running[:20]}}
+                fields = {key: value for key, value in body.items() if key != "name"}
+                for field, value in fields.items():
+                    if not re.fullmatch(r"[a-z][a-z0-9_]*", field):
+                        raise ValueError("invalid_field")
+                    if value is not None and (not isinstance(value, str) or any(c in value for c in "\n\r\x00")):
+                        raise InvalidField(field)
+                text = edit(raw.decode("utf-8"), name, fields, delete=delete)
+                updated = parse(text)
+                if not delete:
+                    validate(effective(updated, name))
             pending = dict(status=503, body={"error": {"reason": "host_config_outcome_unknown"}}, fingerprint=request_hash)
             messages.atomic_json(saved, pending)
             self.remember_secrets(updated)
@@ -264,7 +286,8 @@ class HostConfigRoutes:
             refreshed.cp = updated
             service.config = refreshed
             service.wake.set()
-            reply = dict(deleted=name) if delete else dict(host=self.project(updated, name))
+            reply = (dict(enabled=body["enabled"]) if setting else
+                     dict(deleted=name) if delete else dict(host=self.project(updated, name)))
             status = 201 if create else 200
             messages.atomic_json(saved, dict(status=status, body=reply, fingerprint=request_hash))
             return status, reply

@@ -1,0 +1,6 @@
+test_device_times_track_only_authenticated_requests_and_survive_restart (tests.test_rd_serve_admin.AdminNetworkTests.test_device_times_track_only_authenticated_requests_and_survive_restart) ... ok
+
+----------------------------------------------------------------------
+Ran 1 test in 1.595s
+
+OK

@@ -1,0 +1,6 @@
+test_max_heavy_accepts_above_eight_and_explains_invalid_values (tests.test_rd_serve_admin.AdminConfigTests.test_max_heavy_accepts_above_eight_and_explains_invalid_values) ... ok
+
+----------------------------------------------------------------------
+Ran 1 test in 0.536s
+
+OK

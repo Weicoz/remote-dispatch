@@ -1,0 +1,15 @@
+test_delete_reports_total_and_caps_active_ids_across_users (tests.test_rd_serve_admin.AdminConfigTests.test_delete_reports_total_and_caps_active_ids_across_users) ... FAIL
+
+======================================================================
+FAIL: test_delete_reports_total_and_caps_active_ids_across_users (tests.test_rd_serve_admin.AdminConfigTests.test_delete_reports_total_and_caps_active_ids_across_users)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/mac/remote-dispatch/users/weicoz/wt/weicoz-remote-dispatch-v4-73-20261027-225655-383823000/tests/test_rd_serve_admin.py", line 24, in test_delete_reports_total_and_caps_active_ids_across_users
+    self.assertEqual(reply[1]['error'], {'reason': 'host_has_active_dispatches', 'running_count': 25,
+AssertionError: {'rea[29 chars]ches'} != {'rea[29 chars]ches', 'running_count': 25, 'running_job_ids':[257 chars]19']}
+Diff is 919 characters long. Set self.maxDiff to None to see it.
+
+----------------------------------------------------------------------
+Ran 1 test in 3.061s
+
+FAILED (failures=1)

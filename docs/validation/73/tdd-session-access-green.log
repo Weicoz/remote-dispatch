@@ -1,0 +1,6 @@
+test_global_session_access_is_persisted_and_takes_effect_without_restart (tests.test_rd_serve_admin.AdminConfigTests.test_global_session_access_is_persisted_and_takes_effect_without_restart) ... ok
+
+----------------------------------------------------------------------
+Ran 1 test in 1.075s
+
+OK

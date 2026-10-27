@@ -1,0 +1,21 @@
+test_global_session_access_is_persisted_and_takes_effect_without_restart (tests.test_rd_serve_admin.AdminConfigTests.test_global_session_access_is_persisted_and_takes_effect_without_restart) ... FAIL
+
+======================================================================
+FAIL: test_global_session_access_is_persisted_and_takes_effect_without_restart (tests.test_rd_serve_admin.AdminConfigTests.test_global_session_access_is_persisted_and_takes_effect_without_restart)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/mac/remote-dispatch/users/weicoz/wt/weicoz-remote-dispatch-v4-73-20261027-225655-383823000/tests/test_rd_serve_admin.py", line 12, in test_global_session_access_is_persisted_and_takes_effect_without_restart
+    self.assertEqual(self.request('/v1/config/session-access'), (200, {'enabled': True}))
+AssertionError: Tuples differ: (404, {'error': {'reason': 'not_found'}}) != (200, {'enabled': True})
+
+First differing element 0:
+404
+200
+
+- (404, {'error': {'reason': 'not_found'}})
++ (200, {'enabled': True})
+
+----------------------------------------------------------------------
+Ran 1 test in 1.031s
+
+FAILED (failures=1)

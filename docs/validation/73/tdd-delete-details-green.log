@@ -1,0 +1,6 @@
+test_delete_reports_total_and_caps_active_ids_across_users (tests.test_rd_serve_admin.AdminConfigTests.test_delete_reports_total_and_caps_active_ids_across_users) ... ok
+
+----------------------------------------------------------------------
+Ran 1 test in 0.549s
+
+OK
