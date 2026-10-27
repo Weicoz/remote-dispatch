@@ -204,27 +204,19 @@ class WriteFixTests(unittest.TestCase):
         slow = dict(self.rec, job="slow-job")
         cli.save_job(slow)
         entered, release = threading.Event(), threading.Event()
-        states = cli.job_states
-        def slow_states(config, records):
-            if records[0]["job"] == "slow-job":
+        transport = cli.ssh
+        def slow_transport(host, script, **kwargs):
+            if "sample_code=" in script and "slow-job" in script:
                 entered.set()
                 if not release.wait(5):
                     raise AssertionError("slow probe was not released")
-                return {"slow-job": {"state": "unreachable"}}
-            return states(config, records)
-        with patch.object(cli, "job_states", side_effect=slow_states):
+            return transport(host, script, **kwargs)
+        with patch.object(cli, "ssh", side_effect=slow_transport):
             service = self.start(poll_interval=3600)
             try:
                 self.assertTrue(entered.wait(3))
                 payload = dict(argv=["ack", "fixture-job", "--round", "1", "--receipt-id", receipt["receipt_id"]],
                     user_id="fixture", config=str(self.config), cwd=str(self.root), origin={}, stdin="")
-                from concurrent.futures import ThreadPoolExecutor
-                pool = ThreadPoolExecutor(max_workers=1)
-                pending = pool.submit(self.request, "/v1/jobs/slow-job/rounds/1/ack", "POST",
-                    json.dumps(dict(receipt_id="not-ready", acked_by="App")),
-                    {"Content-Type": "application/json", "Idempotency-Key": "slow-write"})
-                time.sleep(0.05)
-                self.assertFalse(pending.done())
                 before = time.monotonic()
                 status, response = self.request("/_cli/v1", "POST", json.dumps(payload), {"Content-Type": "application/json"})
                 self.assertEqual((status, response["exit_code"]), (200, 0), response)
@@ -232,8 +224,6 @@ class WriteFixTests(unittest.TestCase):
                 self.assertFalse(release.is_set())
             finally:
                 release.set()
-                if "pool" in locals():
-                    pool.shutdown(wait=True)
             service.close()
 
 

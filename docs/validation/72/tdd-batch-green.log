@@ -1,0 +1,6 @@
+test_jobs_are_batched_by_target_without_holding_job_lock_during_rpc (tests.test_rd_session_poll_isolation.SessionPollIsolationTests.test_jobs_are_batched_by_target_without_holding_job_lock_during_rpc) ... ok
+
+----------------------------------------------------------------------
+Ran 1 test in 0.702s
+
+OK

@@ -1,0 +1,6 @@
+test_disabled_host_existing_jobs_continue_refreshing (tests.test_rd_session_poll_isolation.SessionPollIsolationTests.test_disabled_host_existing_jobs_continue_refreshing) ... ok
+
+----------------------------------------------------------------------
+Ran 1 test in 0.699s
+
+OK

@@ -1,0 +1,21 @@
+test_offline_host_backs_off_and_recovery_refreshes_jobs_in_same_cycle (tests.test_rd_session_poll_isolation.SessionPollIsolationTests.test_offline_host_backs_off_and_recovery_refreshes_jobs_in_same_cycle) ... rdispatch: poll_unavailable: cannot probe a host
+rdispatch: poll_unavailable: cannot probe a host
+rdispatch: poll_unavailable: cannot probe a host
+rdispatch: poll_unavailable: cannot probe a host
+rdispatch: poll_unavailable: cannot probe a host
+rdispatch: poll_unavailable: cannot probe a host
+rdispatch: poll_unavailable: cannot probe a host
+FAIL
+
+======================================================================
+FAIL: test_offline_host_backs_off_and_recovery_refreshes_jobs_in_same_cycle (tests.test_rd_session_poll_isolation.SessionPollIsolationTests.test_offline_host_backs_off_and_recovery_refreshes_jobs_in_same_cycle)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/mac/remote-dispatch/users/weicoz/wt/weicoz-remote-dispatch-v4-72-20261027-104926-774223000/tests/test_rd_session_poll_isolation.py", line 119, in test_offline_host_backs_off_and_recovery_refreshes_jobs_in_same_cycle
+    self.assertEqual(len(attempts), before)
+AssertionError: 7 != 3
+
+----------------------------------------------------------------------
+Ran 1 test in 0.686s
+
+FAILED (failures=1)

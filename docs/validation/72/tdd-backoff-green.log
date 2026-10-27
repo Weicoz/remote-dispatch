@@ -1,0 +1,9 @@
+test_offline_host_backs_off_and_recovery_refreshes_jobs_in_same_cycle (tests.test_rd_session_poll_isolation.SessionPollIsolationTests.test_offline_host_backs_off_and_recovery_refreshes_jobs_in_same_cycle) ... rdispatch: poll_unavailable: cannot probe a host
+rdispatch: poll_unavailable: cannot probe a host
+rdispatch: poll_unavailable: cannot probe a host
+ok
+
+----------------------------------------------------------------------
+Ran 1 test in 1.346s
+
+OK

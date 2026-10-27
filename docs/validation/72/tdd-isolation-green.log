@@ -1,0 +1,6 @@
+test_new_pane_appears_within_two_cycles_while_200_jobs_target_hangs (tests.test_rd_session_poll_isolation.SessionPollIsolationTests.test_new_pane_appears_within_two_cycles_while_200_jobs_target_hangs) ... ok
+
+----------------------------------------------------------------------
+Ran 1 test in 1.415s
+
+OK

@@ -1,0 +1,37 @@
+test_bad_transcript_conversion_does_not_freeze_other_panes_or_leak_errors (tests.test_rd_session_poll_isolation.SessionPollIsolationTests.test_bad_transcript_conversion_does_not_freeze_other_panes_or_leak_errors) ...
+  test_bad_transcript_conversion_does_not_freeze_other_panes_or_leak_errors (tests.test_rd_session_poll_isolation.SessionPollIsolationTests.test_bad_transcript_conversion_does_not_freeze_other_panes_or_leak_errors) (error='KeyError') ... FAIL
+  test_bad_transcript_conversion_does_not_freeze_other_panes_or_leak_errors (tests.test_rd_session_poll_isolation.SessionPollIsolationTests.test_bad_transcript_conversion_does_not_freeze_other_panes_or_leak_errors) (error='TypeError') ... ERROR
+
+======================================================================
+ERROR: test_bad_transcript_conversion_does_not_freeze_other_panes_or_leak_errors (tests.test_rd_session_poll_isolation.SessionPollIsolationTests.test_bad_transcript_conversion_does_not_freeze_other_panes_or_leak_errors) (error='TypeError')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/mac/remote-dispatch/users/weicoz/wt/weicoz-remote-dispatch-v4-72-20261027-104926-774223000/tests/test_rd_session_poll_isolation.py", line 190, in test_bad_transcript_conversion_does_not_freeze_other_panes_or_leak_errors
+    service = self.start(poll_interval=3600)
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/mac/remote-dispatch/users/weicoz/wt/weicoz-remote-dispatch-v4-72-20261027-104926-774223000/tests/test_rd_serve_sessions.py", line 25, in start
+    service = base.ServeTests.start(self, **options)
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/mac/remote-dispatch/users/weicoz/wt/weicoz-remote-dispatch-v4-72-20261027-104926-774223000/tests/test_rd_serve.py", line 64, in start
+    service.start()
+  File "/Users/mac/remote-dispatch/users/weicoz/wt/weicoz-remote-dispatch-v4-72-20261027-104926-774223000/src/remote_dispatch/rd_serve.py", line 312, in start
+    raise ValueError("serve_already_running: a service already owns this state directory") from None
+ValueError: serve_already_running: a service already owns this state directory
+
+======================================================================
+FAIL: test_bad_transcript_conversion_does_not_freeze_other_panes_or_leak_errors (tests.test_rd_session_poll_isolation.SessionPollIsolationTests.test_bad_transcript_conversion_does_not_freeze_other_panes_or_leak_errors) (error='KeyError')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/mac/remote-dispatch/users/weicoz/wt/weicoz-remote-dispatch-v4-72-20261027-104926-774223000/tests/test_rd_session_poll_isolation.py", line 190, in test_bad_transcript_conversion_does_not_freeze_other_panes_or_leak_errors
+    service = self.start(poll_interval=3600)
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/mac/remote-dispatch/users/weicoz/wt/weicoz-remote-dispatch-v4-72-20261027-104926-774223000/tests/test_rd_serve_sessions.py", line 27, in start
+    self.eventually(lambda: self.request("/v1/sessions"),
+  File "/Users/mac/remote-dispatch/users/weicoz/wt/weicoz-remote-dispatch-v4-72-20261027-104926-774223000/tests/test_rd_serve.py", line 117, in eventually
+    self.fail(f"未等到后台采集结果：{value!r}")
+AssertionError: 未等到后台采集结果：(200, {'sessions': [], 'collection': {'stale': False, 'consecutive_failures': 1, 'last_attempt_succeeded': False, 'reason': 'KeyError', 'last_success_at': None}})
+
+----------------------------------------------------------------------
+Ran 1 test in 5.544s
+
+FAILED (failures=1, errors=1)

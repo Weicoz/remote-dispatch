@@ -1,0 +1,6 @@
+test_each_discovery_scans_a_harness_once_for_multiple_panes (tests.test_rd_session_poll_isolation.SessionPollIsolationTests.test_each_discovery_scans_a_harness_once_for_multiple_panes) ... ok
+
+----------------------------------------------------------------------
+Ran 1 test in 0.770s
+
+OK

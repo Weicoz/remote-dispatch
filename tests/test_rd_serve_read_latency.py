@@ -100,7 +100,7 @@ class ReadLatencyTests(unittest.TestCase):
         def slow_target(*args, **kwargs):
             calls.append(args[1])
             if args[1] == "probe":
-                raise ValueError("synthetic unreachable target")
+                return dict(os="Windows")
             entered.set()
             time.sleep(5)
             raise ValueError("synthetic unreachable target")

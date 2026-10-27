@@ -688,7 +688,9 @@ else:
         self.data["unavailable"] = True
         self.save_fixture()
         self.start()
-        self.assertEqual(self.request("/v1/sessions"), (200, {"sessions": []}))
+        status, body = self.request("/v1/sessions")
+        self.assertEqual(status, 200)
+        self.assertEqual(body["sessions"], [])
         status, body = self.request("/v1/projects")
         self.assertEqual(status, 200)
         self.assertEqual([(p["name"], p["session_only"]) for p in body["projects"]], [("history", False)])

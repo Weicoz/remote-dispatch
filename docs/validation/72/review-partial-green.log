@@ -1,0 +1,6 @@
+test_partial_host_response_marks_missing_job_unreachable (tests.test_rd_session_poll_isolation.SessionPollIsolationTests.test_partial_host_response_marks_missing_job_unreachable) ... ok
+
+----------------------------------------------------------------------
+Ran 1 test in 0.732s
+
+OK

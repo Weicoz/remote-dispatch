@@ -1,0 +1,17 @@
+test_collection_failure_is_visible_and_successful_empty_list_recovers (tests.test_rd_session_poll_isolation.SessionPollIsolationTests.test_collection_failure_is_visible_and_successful_empty_list_recovers) ... FAIL
+
+======================================================================
+FAIL: test_collection_failure_is_visible_and_successful_empty_list_recovers (tests.test_rd_session_poll_isolation.SessionPollIsolationTests.test_collection_failure_is_visible_and_successful_empty_list_recovers)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/mac/remote-dispatch/users/weicoz/wt/weicoz-remote-dispatch-v4-72-20261027-104926-774223000/tests/test_rd_session_poll_isolation.py", line 59, in test_collection_failure_is_visible_and_successful_empty_list_recovers
+    body = self.eventually(lambda: self.request("/v1/sessions")[1],
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/mac/remote-dispatch/users/weicoz/wt/weicoz-remote-dispatch-v4-72-20261027-104926-774223000/tests/test_rd_serve.py", line 117, in eventually
+    self.fail(f"未等到后台采集结果：{value!r}")
+AssertionError: 未等到后台采集结果：{'sessions': [{'id': 'w1:p1', 'pane_id': 'w1:p1', 'harness': 'codex', 'project': 'demo', 'project_id': '4c9b1599d2f904116b3a', 'cwd': '/private/tmp/rd25-3se4d4k0/repo', 'status': 'idle', 'status_text': '空闲', 'has_new_reply': False, 'session_id': None, 'probable': False, 'identity_text': None, 'updated_at': '2026-10-27T02:57:00.241604+00:00'}]}
+
+----------------------------------------------------------------------
+Ran 1 test in 5.707s
+
+FAILED (failures=1)

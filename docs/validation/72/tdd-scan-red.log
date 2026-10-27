@@ -1,0 +1,21 @@
+test_each_discovery_scans_a_harness_once_for_multiple_panes (tests.test_rd_session_poll_isolation.SessionPollIsolationTests.test_each_discovery_scans_a_harness_once_for_multiple_panes) ... FAIL
+
+======================================================================
+FAIL: test_each_discovery_scans_a_harness_once_for_multiple_panes (tests.test_rd_session_poll_isolation.SessionPollIsolationTests.test_each_discovery_scans_a_harness_once_for_multiple_panes)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/mac/remote-dispatch/users/weicoz/wt/weicoz-remote-dispatch-v4-72-20261027-104926-774223000/tests/test_rd_session_poll_isolation.py", line 171, in test_each_discovery_scans_a_harness_once_for_multiple_panes
+    self.assertEqual(scans, ["rollout-*.jsonl"])
+AssertionError: Lists differ: ['rollout-*.jsonl', 'rollout-*.jsonl'] != ['rollout-*.jsonl']
+
+First list contains 1 additional elements.
+First extra element 1:
+'rollout-*.jsonl'
+
+- ['rollout-*.jsonl', 'rollout-*.jsonl']
++ ['rollout-*.jsonl']
+
+----------------------------------------------------------------------
+Ran 1 test in 0.712s
+
+FAILED (failures=1)

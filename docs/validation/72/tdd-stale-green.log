@@ -1,0 +1,9 @@
+test_collection_failure_is_visible_and_successful_empty_list_recovers (tests.test_rd_session_poll_isolation.SessionPollIsolationTests.test_collection_failure_is_visible_and_successful_empty_list_recovers) ... rdispatch: session_collect_failed reason=OSError consecutive_failures=1; retaining previous list
+rdispatch: session_collect_failed reason=OSError consecutive_failures=2; retaining previous list
+rdispatch: session_collect_failed reason=OSError consecutive_failures=3; retaining previous list
+ok
+
+----------------------------------------------------------------------
+Ran 1 test in 0.793s
+
+OK

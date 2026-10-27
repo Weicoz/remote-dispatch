@@ -1,0 +1,17 @@
+Python: 3.12.13 (main, Apr 14 2026, 14:33:40) [Clang 22.1.3 ]
+mypy installed: False
+pyright installed: False
+No static typing command/config in pyproject.toml, Makefile or CI; type checking not run.
+src/remote_dispatch/rd_serve.py: Python 3.9 syntax PASS
+src/remote_dispatch/rd_serve_sessions.py: Python 3.9 syntax PASS
+tests/test_rd_serve.py: Python 3.9 syntax PASS
+tests/test_rd_serve_network.py: Python 3.9 syntax PASS
+tests/test_rd_serve_read_latency.py: Python 3.9 syntax PASS
+tests/test_rd_serve_review_fixes.py: Python 3.9 syntax PASS
+tests/test_rd_serve_sessions.py: Python 3.9 syntax PASS
+tests/test_rd_session_poll_isolation.py: Python 3.9 syntax PASS
+compileall PASS (syntax only; not type checking)
+pre-commit exists: False; core.hooksPath unset
+hook actual invocations: 0; no hook bypassed or modified.
+full test suite actual invocations: 2 (initial failures fixed, final 581 tests passed with no skips)
+git diff --check: PASS

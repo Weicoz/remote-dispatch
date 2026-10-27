@@ -243,6 +243,17 @@ class Handler(BaseHTTPRequestHandler):
             return
 
 
+class PollWake(threading.Event):
+    """Wake both independent collectors for local writes."""
+    def __init__(self):
+        super().__init__()
+        self.sessions = threading.Event()
+
+    def set(self):
+        self.sessions.set()
+        super().set()
+
+
 class Service:
     def __init__(self, config, socket_path=None, *, poll_interval=15, push_sender=None):
         self.config = config
@@ -255,9 +266,12 @@ class Service:
         if not math.isfinite(poll_interval) or poll_interval <= 0:
             raise ValueError("invalid_poll_interval: poll interval must be positive seconds")
         self.poll_interval = poll_interval
+        self.host_failures = {}
+        self.host_retry_at = {}
+        self.host_connections = {}
         self.execute_timeout = network.positive_setting(config.cp, "execute_timeout", 120)
         self.stop = threading.Event()
-        self.wake = threading.Event()
+        self.wake = PollWake()
         self.cache_lock = threading.Lock()
         self.local_files = LocalFiles(self.state)
         self.snapshot_version = 0
@@ -278,6 +292,7 @@ class Service:
         self.server = None
         self.thread = None
         self.poller = None
+        self.session_poller = None
         self.project_routes = ProjectRoutes(self)
         self.sensitive = set()
         self.sessions = Sessions(self)
@@ -321,6 +336,8 @@ class Service:
             self.thread.start()
             self.network.start(network.handler_class(Handler))
             self.log_snapshots.start()
+            self.session_poller = threading.Thread(target=self.poll_sessions, daemon=True)
+            self.session_poller.start()
             self.poller = threading.Thread(target=self.poll, daemon=True)
             self.poller.start()
             self.reports.start()
@@ -333,6 +350,9 @@ class Service:
         self.stop.set()
         self.wake.set()
         self.network.close()
+        if self.session_poller is not None:
+            self.session_poller.join()
+            self.session_poller = None
         self.sessions.close()
         self.log_snapshots.close()
         if self.thread is not None:
@@ -493,22 +513,70 @@ class Service:
                      project_names=[section.split(":", 1)[1] for section in self.config.cp.sections()
                                     if section.startswith("project:")])
 
+    def job_refresh_complete(self, rec):
+        with self.cache_lock:
+            if (self.generations.get(rec["job"]) != self.generation(rec)
+                    or self.snapshots.get(rec["job"], {}).get("state") not in ("done", "dead", "missing")):
+                return False
+        query = self.query()
+        receipt = messages.read_json(query.result_path(rec, rec["rounds"]))
+        return bool(receipt and receipt.get("execution_state") in ("done", "dead", "missing")
+                    and receipt.get("round") == rec["rounds"] and receipt.get("host") == rec["host"]
+                    and query.acknowledgement(rec, receipt))
+
+    def host_poll_due(self, host):
+        # A connection edit is new evidence: do not retain the old circuit.
+        connection = tuple(sorted(host.items()))
+        name = host["name"]
+        if self.host_connections.get(name) != connection:
+            self.host_connections[name] = connection
+            self.host_failures.pop(name, None)
+            self.host_retry_at.pop(name, None)
+        return time.monotonic() >= self.host_retry_at.get(name, 0)
+
+    def host_poll_failed(self, name):
+        failures = self.host_failures.get(name, 0) + 1
+        self.host_failures[name] = failures
+        # Policy in existing poll cycles, not a new guessed transport timeout.
+        # After three failures the circuit opens; a due probe is half-open.
+        self.host_retry_at[name] = time.monotonic() + self.poll_interval * 2 ** min(failures - 1, 4)
+
+    def host_poll_recovered(self, name):
+        self.host_failures.pop(name, None)
+        self.host_retry_at.pop(name, None)
+
+    def poll_sessions(self):
+        while not self.stop.is_set():
+            self.wake.sessions.clear()
+            self.sessions.collect()
+            self.wake.sessions.wait(self.poll_interval)
+
     def poll(self):
         log = events.EventLog(self.state)
         while not self.stop.is_set():
             self.wake.clear()
             hosts = []
-            for host in self.config.hosts():
+            available, attempted = set(), set()
+            enabled_hosts = self.config.hosts()
+            enabled_names = {host["name"] for host in enabled_hosts}
+            for host in enabled_hosts:
                 if self.stop.is_set():
                     break
+                if not self.host_poll_due(host):
+                    hosts.extend(row for row in self.hosts if row["name"] == host["name"])
+                    continue
+                attempted.add(host["name"])
                 try:
                     info = cli.probe(host)
                     if info.get("reachable"):
+                        available.add(host["name"])
                         self.host_last_seen[host["name"]] = messages.utc_now()
                         try:
                             messages.atomic_json(self.state / "serve-host-last-seen.json", self.host_last_seen)
                         except (OSError, ValueError):
                             print("rdispatch: 无法保存目标机最后在线时间。", file=sys.stderr)
+                    else:
+                        self.host_poll_failed(host["name"])
                     full = bool(info.get("reachable") and cli.assess(host, info))
                     log.observe_host(host, info, full=full)
                     hosts.append(dict(name=host["name"], local=cli.is_local(host),
@@ -517,6 +585,7 @@ class Service:
                                       metrics=host_metrics(host, info),
                                       **{key: info.get(key) for key in ("load1", "ncpu", "cpu_pct", "memfree", "disk", "disk_total", "running", "heavy")}))
                 except (ValueError, OSError, SystemExit, subprocess.SubprocessError):
+                    self.host_poll_failed(host["name"])
                     hosts.append(dict(name=host["name"], local=cli.is_local(host), reachable=False, full=False, probed=True,
                                       last_seen_at=self.host_last_seen.get(host["name"]),
                                       metrics=host_metrics(host, {}),
@@ -524,20 +593,54 @@ class Service:
                     print("rdispatch: poll_unavailable: cannot probe a host", file=sys.stderr)
             with self.cache_lock:
                 self.hosts = hosts
-            self.sessions.collect()
             try:
-                records = self.records()
+                records = [rec for rec in self.records() if not self.job_refresh_complete(rec)]
             except (ValueError, OSError, SystemExit):
                 records = []
                 print("rdispatch: poll_unavailable: cannot read jobs", file=sys.stderr)
+            # Remote collection is batched, outside per-job locks. Validate the
+            # generation again under lock before publishing any returned data.
+            states = {}
+            by_host = {}
+            for rec in records:
+                by_host.setdefault(rec["host"], []).append(rec)
+            for name in available - by_host.keys():
+                self.host_poll_recovered(name)
+            for name, group in by_host.items():
+                if self.stop.is_set():
+                    break
+                if name in enabled_names and name not in available:
+                    if name in attempted:
+                        states.update({rec["job"]: {"state": "unreachable"} for rec in group})
+                    continue
+                try:
+                    # Disabling new dispatches must not freeze existing jobs.
+                    if (name not in enabled_names and self.config.cp.has_section("host:" + name)
+                            and not self.host_poll_due(self.config.host(name))):
+                        continue
+                    batch = cli.job_states(self.config, group)
+                    states.update({rec["job"]: batch.get(rec["job"], {"state": "unreachable"})
+                                   for rec in group})
+                    if any(batch.get(rec["job"], {}).get("state", "unreachable") == "unreachable" for rec in group):
+                        self.host_poll_failed(name)
+                    else:
+                        self.host_poll_recovered(name)
+                except (ValueError, OSError, SystemExit, subprocess.SubprocessError):
+                    self.host_poll_failed(name)
+                    states.update({rec["job"]: {"state": "unreachable"} for rec in group})
+                    print("rdispatch: poll_unavailable: cannot collect host jobs", file=sys.stderr)
             for saved in records:
+                if saved["job"] not in states:
+                    continue
                 if self.stop.is_set():
                     break
                 try:
                     # Lock before reloading: a resume must not mix old and new round data.
                     with self.job_guard(saved["job"]), JobLock(self.state, saved["job"]):
                         rec = cli.load_job(saved["job"])
-                        snapshot = cli.job_states(self.config, [rec]).get(rec["job"], {"state": "unreachable"})
+                        if self.generation(rec) != self.generation(saved):
+                            continue
+                        snapshot = states.get(rec["job"], {"state": "unreachable"})
                         number = int(snapshot.get("round") or 0) or rec["rounds"]
                         if number != rec["rounds"]:
                             # A delayed target may still expose the previous launch.

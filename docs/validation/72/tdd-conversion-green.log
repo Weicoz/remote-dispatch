@@ -1,0 +1,6 @@
+test_bad_transcript_conversion_does_not_freeze_other_panes_or_leak_errors (tests.test_rd_session_poll_isolation.SessionPollIsolationTests.test_bad_transcript_conversion_does_not_freeze_other_panes_or_leak_errors) ... ok
+
+----------------------------------------------------------------------
+Ran 1 test in 1.314s
+
+OK

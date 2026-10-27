@@ -150,3 +150,8 @@ JSON 类型，另用行为断言覆盖实际值、用户隔离、纯查询、锁
 - 票 70：`sessions-terminal-ws.json` 是双向终端 Upgrade／输入／帧／关闭合同。
   上行原始字节为 `bytes`，下行沿用票 68 的 `data`，每次连接首帧 full。
   busy 默认拒绝，只有 `takeover=true` 显式接管；详见 `docs/terminal-websocket.md`。
+
+- 票 72：`sessions-list.json` / `sessions-stale.json` 在顶层新增 `collection`，
+  用 `last_attempt_succeeded` 区分失败沿用旧列表和成功空列表；连续失败达到 3 次时
+  `stale=true`，成功重置。`reason` 仅异常类别，`last_success_at` 可为空。
+  `sessions` 及原有行字段含义不变，旧客户端忽略新增字段；新客户端兼容旧服务缺少此字段。

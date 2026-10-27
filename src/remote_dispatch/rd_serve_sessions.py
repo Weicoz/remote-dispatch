@@ -7,6 +7,7 @@ import json
 import os
 from pathlib import Path
 import re
+import sys
 import threading
 from urllib.parse import parse_qs, unquote, urlsplit
 
@@ -45,6 +46,8 @@ class Sessions:
         self.transcript_cache = {}
         self.items = []
         self.version = 0
+        self.collection = dict(stale=False, consecutive_failures=0,
+                               last_attempt_succeeded=None, reason=None, last_success_at=None)
         for event in self.event_reader.read():
             data = event["data"]
             if data.get("user_id") != service.user_id:
@@ -88,9 +91,18 @@ class Sessions:
                 if self.items != items:
                     self.version += 1
                 self.items = items
-        except (OSError, ValueError, TypeError, KeyError):
-            # A failed query is not evidence that panes have closed.
-            return
+                self.collection = dict(stale=False, consecutive_failures=0,
+                    last_attempt_succeeded=True, reason=None, last_success_at=messages.utc_now())
+        except (OSError, ValueError, TypeError, KeyError) as error:
+            # Exception text can contain terminal content or credentials. Log only
+            # the exception category and failure count, never its message/traceback.
+            with self.cache_lock:
+                failures = self.collection["consecutive_failures"] + 1
+                self.collection = dict(self.collection, stale=failures >= 3,
+                    consecutive_failures=failures, last_attempt_succeeded=False,
+                    reason=type(error).__name__)
+            print(f"rdispatch: session_collect_failed reason={type(error).__name__} "
+                  f"consecutive_failures={failures}; retaining previous list", file=sys.stderr)
 
     def allowed(self, device=None):
         """device is trusted authentication context, never request headers."""
@@ -150,14 +162,15 @@ class Sessions:
                 continue
         return found
 
-    def locate(self, agent, saved, cwd, harness):
+    def locate(self, agent, saved, cwd, harness, paths=None):
         reference = saved.get("agent_session") if saved.get("cwd") == (agent.get("cwd") or cwd) else None
         live = agent.get("agent_session")
         if (isinstance(live, dict) and HARNESSES.get(live.get("agent")) == harness
                 and live.get("kind") in ("id", "path") and isinstance(live.get("value"), str) and live["value"]):
             # Saved snapshots are delayed. Do not route a replaced pane to its old conversation.
             reference = live
-        paths = self.transcripts(harness)
+        if paths is None:
+            paths = self.transcripts(harness)
         unmatched_id = None
         if isinstance(reference, dict) and HARNESSES.get(reference.get("agent")) == harness:
             kind, value = reference.get("kind"), reference.get("value")
@@ -182,7 +195,7 @@ class Sessions:
             self.latest[data["pane_id"]] = event
 
     def discover(self):
-        rows = []
+        rows, transcripts = [], {}
         with self.cache_lock:
             for event in self.event_reader.read():
                 self.remember_event(event)
@@ -209,7 +222,10 @@ class Sessions:
             status = "idle" if raw_status == "done" else raw_status
             if status not in STATUS_TEXT:
                 status = "unknown"
-            identity, transcript, probable = self.locate(agent, saved.get(agent["pane_id"], {}), cwd, harness)
+            if harness not in transcripts:
+                transcripts[harness] = self.transcripts(harness)
+            identity, transcript, probable = self.locate(
+                agent, saved.get(agent["pane_id"], {}), cwd, harness, transcripts[harness])
             row = dict(id=agent["pane_id"], pane_id=agent["pane_id"], harness=harness,
                              project=project, project_id=project_id(project, origin), cwd=live_cwd,
                              status=status, status_text=STATUS_TEXT[status], has_new_reply=raw_status == "done",
@@ -225,6 +241,7 @@ class Sessions:
         path = item["transcript"]
         if path is None:
             return dict(supported=False, messages=[], reason="unsupported_format", text="不支持")
+        key = None
         try:
             with self.cache_lock, path["path"].open("rb") as stream:
                 stat = os.fstat(stream.fileno())
@@ -260,7 +277,11 @@ class Sessions:
                 cache["anchor"] = stream.read(min(128, cache["offset"]))
                 self.transcript_cache[key] = cache
                 result = copy.deepcopy(cache["result"])
-        except (OSError, UnicodeError):
+        except (OSError, UnicodeError, KeyError, TypeError):
+            # A failed conversion may have advanced offsets or mutated tools.
+            # Retry the whole file next time, never reuse a partially mutated cache.
+            with self.cache_lock:
+                self.transcript_cache.pop(key, None)
             return dict(supported=False, messages=[], reason="unsupported_format", text="不支持")
         if after and result["supported"]:
             ids = [message["id"] for message in result["messages"]]
@@ -277,7 +298,8 @@ class Sessions:
         if defaults is not None:
             return defaults
         if path == "/v1/sessions":
-            return 200, {"sessions": self.list()}
+            with self.cache_lock:
+                return 200, {"sessions": self.list(), "collection": dict(self.collection)}
         match = re.fullmatch(r"/v1/jobs/([^/]+)/session", path)
         if match:
             job = messages.job_id(match[1])

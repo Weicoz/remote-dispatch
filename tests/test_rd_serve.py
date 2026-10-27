@@ -594,11 +594,26 @@ class ServeTests(unittest.TestCase):
         expected = {"progress": [dict(updated_at=latest["updated_at"], phase="legacy", summary="旧任务最新进度")]}
         self.eventually(lambda: self.request(path), lambda row: row == (200, expected))
         service.close()
-        with patch.object(cli.native, "request", side_effect=ValueError("offline")):
-            self.start(poll_interval=3600)
-            before = self.snapshot()
-            self.assertEqual(self.request(path), (200, expected))
-            self.assertEqual(self.snapshot(), before)
+        entered, release = threading.Event(), threading.Event()
+        def unavailable_transport(*args, **kwargs):
+            entered.set()
+            if not release.wait(5):
+                raise AssertionError("probe was not released")
+            raise OSError("offline")
+        with patch.object(cli.native, "request", side_effect=ValueError("offline")), \
+             patch.object(cli, "ssh", side_effect=unavailable_transport):
+            service = self.start(poll_interval=3600)
+            try:
+                self.assertTrue(entered.wait(2))
+                self.eventually(lambda: self.request("/v1/sessions")[1]["collection"],
+                                lambda row: row["last_attempt_succeeded"] is not None)
+                # Observe query side effects while startup remote writes are paused.
+                before = self.snapshot()
+                self.assertEqual(self.request(path), (200, expected))
+                self.assertEqual(self.snapshot(), before)
+            finally:
+                release.set()
+                service.close()
 
     def test_progress_history_new_fields_are_projected_and_sensitive_text_is_scrubbed(self):
         service = self.seed(poll_interval=3600, running=True)

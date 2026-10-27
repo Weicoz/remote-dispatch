@@ -379,8 +379,9 @@ class NetworkTests(unittest.TestCase):
         self.assertEqual(self.request(route, "POST", {"enabled": True}, connection=self.tls(info), headers=headers)[0], 403)
         self.assertEqual(self.request(route, "POST", {"enabled": True}, key="access")[0], 200)
         self.assertTrue(self.request("/v1/devices")[1]["devices"][0]["session_access_enabled"])
-        self.assertEqual(self.request("/v1/sessions", connection=self.tls(info), headers=headers),
-                         (200, {"sessions": []}))
+        status, body = self.request("/v1/sessions", connection=self.tls(info), headers=headers)
+        self.assertEqual(status, 200)
+        self.assertEqual(body["sessions"], [])
         self.assertEqual(self.request("/v1/sessions/missing/screen", connection=self.tls(info), headers=headers),
                          (404, {"error": {"reason": "session_closed", "text": "会话已关闭"}}))
 
@@ -427,8 +428,9 @@ class NetworkTests(unittest.TestCase):
             route = "/v1/devices/" + device["device_id"] + "/session-access"
             self.assertEqual(self.request(route, "POST", {"enabled": True}, key="enable")[0], 200)
             expected_session = dict(session, updated_at=session_event["time"])
-            self.assertEqual(self.request("/v1/sessions", connection=self.tls(info), headers=headers),
-                             (200, {"sessions": [expected_session]}))
+            status, body = self.request("/v1/sessions", connection=self.tls(info), headers=headers)
+            self.assertEqual(status, 200)
+            self.assertEqual(body["sessions"], [expected_session])
             projects = self.request("/v1/projects", connection=self.tls(info), headers=headers)[1]["projects"]
             self.assertEqual(len(projects), 1)
             self.assertTrue(projects[0]["session_only"])

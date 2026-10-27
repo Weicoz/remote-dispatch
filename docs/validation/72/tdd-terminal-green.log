@@ -1,0 +1,6 @@
+test_received_terminal_job_is_not_reprobed_but_new_round_is (tests.test_rd_session_poll_isolation.SessionPollIsolationTests.test_received_terminal_job_is_not_reprobed_but_new_round_is) ... ok
+
+----------------------------------------------------------------------
+Ran 1 test in 1.378s
+
+OK
