@@ -18,12 +18,14 @@ import math
 import os
 from pathlib import Path
 import re
+import secrets
 import shlex
 import subprocess
 import sys
 import tempfile
 import tarfile
 import time
+from urllib.parse import quote
 from . import __version__
 from . import rd_profiles as profiles
 from . import rd_native as native
@@ -2143,6 +2145,111 @@ def cmd_doctor(a, cfg):
     sys.exit(r.returncode)
 
 
+def serve_admin(method, path, body=None, *, action, write=False, uncertain_hint=""):
+    """设备与配对窗口只存在于 serve 进程，任何失败都不得回退为直接写状态。"""
+    from .rd_serve import ServeFailed, ServeUnavailable, admin_request
+    try:
+        status, reply = admin_request(method, path, body, key=secrets.token_hex(16) if write else None)
+    except ServeUnavailable as error:
+        die(f"serve_unavailable: {error}；设备和配对窗口状态只在 serve 进程里，先运行 rdispatch service install。", 4)
+    except ServeFailed as error:
+        hint = "请求可能已生效，先检查状态再重试。" if write else "稍后重试。"
+        die(f"serve_request_failed: {error}；{hint}{uncertain_hint}", 4)
+    serve_reply(status, reply, action)
+    return reply
+
+
+SERVE_ERROR_HINTS = {
+    "device_not_found": "设备不存在或已被移除。",
+    "not_found": "设备不存在或已被移除。",
+    "network_unavailable": "serve 的网络或证书状态不可用；查看 serve 日志后重试。",
+    "serve_stopping": "serve 正在停止；等它重启后重试。",
+}
+
+
+def serve_reply(status, reply, action):
+    if status == 200:
+        return
+    detail = reply.get("error") if isinstance(reply, dict) else None
+    reason = detail.get("reason") if isinstance(detail, dict) else None
+    hint = SERVE_ERROR_HINTS.get(reason, f"{action}失败（serve 返回 HTTP {status}）。")
+    die((f"{reason}: " if reason else "") + hint, 4)
+
+
+def print_json(value):
+    print(json.dumps(value, ensure_ascii=False, indent=2))
+
+
+def table_cell(value):
+    if value is None:
+        return "-"
+    return "".join(" " if ord(char) < 32 or ord(char) == 127 else char for char in str(value))
+
+
+def cmd_device(a, cfg):
+    if a.action == "list":
+        reply = serve_admin("GET", "/v1/devices", action="读取设备列表")
+        devices = reply.get("devices") if isinstance(reply, dict) else None
+        if not isinstance(devices, list) or not all(isinstance(row, dict) for row in devices):
+            die("serve_invalid_response: serve 未返回设备列表。", 4)
+        if getattr(a, "json", False):
+            print_json(reply)
+            return
+        if not devices:
+            print("no paired devices.")
+            return
+        print(f"{'ID':<34}{'NAME':<20}{'PAIRED_AT':<28}{'LAST_SEEN_AT':<28}STATUS")
+        for row in devices:
+            print(f"{table_cell(row.get('device_id')):<34}{table_cell(row.get('name')):<20}"
+                  f"{table_cell(row.get('paired_at')):<28}{table_cell(row.get('last_seen_at')):<28}"
+                  f"{'revoked' if row.get('revoked') else 'active'}")
+        return
+    reply = serve_admin("DELETE", "/v1/devices/" + quote(a.device_id, safe=""), action="吊销设备", write=True)
+    if getattr(a, "json", False):
+        print_json(reply)
+    else:
+        print("revoked " + a.device_id)
+
+
+def cmd_pair(a, cfg):
+    if a.action == "open":
+        reply = serve_admin("POST", "/v1/pairing-window", {}, action="打开配对窗口", write=True,
+                            uncertain_hint="如不确定，先运行 rdispatch pair close 关闭可能已打开的窗口。")
+        if not isinstance(reply, dict):
+            die("serve_invalid_response: serve 未返回配对窗口。", 4)
+        if getattr(a, "json", False):
+            print_json(reply)
+            return
+        code = reply.get("code")
+        if not isinstance(code, str) or not code:
+            die("serve_invalid_response: serve 未返回配对码。", 4)
+        try:
+            expires = int(reply.get("expires_in"))
+        except (TypeError, ValueError):
+            die("serve_invalid_response: serve 未返回配对窗口过期时间。", 4)
+        print("pairing code  " + code)
+        print(f"expires in    {expires}s "
+              f"({time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime(time.time() + expires))})")
+        if reply.get("spki_sha256"):
+            print("fingerprint   " + str(reply["spki_sha256"]))
+        candidates = reply.get("candidates") or []
+        for row in candidates:
+            if not isinstance(row, dict):
+                continue
+            address = str(row.get("address"))
+            endpoint = f"[{address}]:{row.get('port')}" if ":" in address else f"{address}:{row.get('port')}"
+            kind = f" ({row['kind']})" if row.get("kind") else ""
+            print(f"candidate     {endpoint}{kind}")
+        if not candidates:
+            print("candidate     none; configure a LAN or VPN listen address before pairing")
+        return
+    reply = serve_admin("DELETE", "/v1/pairing-window", action="关闭配对窗口", write=True)
+    if getattr(a, "json", False):
+        print_json(reply)
+    else:
+        print("pairing window closed")
+
+
 def cmd_serve(a, cfg):
     from .rd_serve import run_service
     run_service(cfg, a.socket, a.poll_interval)
@@ -2166,6 +2273,25 @@ def main(argv=None, *, forwarded=None):
     repo_parser.add_argument("-C", "--dir", dest="dir", help="本地仓库目录（默认为当前工作目录）")
 
     sub.add_parser("hosts", help="probe every configured machine").set_defaults(fn=cmd_hosts)
+
+    p = sub.add_parser("device", help="列出或吊销已配对设备（需要 serve）")
+    actions = p.add_subparsers(dest="action", required=True)
+    command = actions.add_parser("list", help="列出已配对设备及其配对时间、最近在线时间")
+    command.add_argument("--json", action="store_true", help="输出 serve 返回的 JSON")
+    command.set_defaults(fn=cmd_device)
+    command = actions.add_parser("revoke", help="吊销一台设备，立即切断它的访问")
+    command.add_argument("device_id", help="设备 ID，来自 rdispatch device list")
+    command.add_argument("--json", action="store_true", help="输出 serve 返回的 JSON")
+    command.set_defaults(fn=cmd_device)
+
+    p = sub.add_parser("pair", help="打开或关闭配对窗口（需要 serve）")
+    actions = p.add_subparsers(dest="action", required=True)
+    command = actions.add_parser("open", help="打开配对窗口，返回配对码与过期时间")
+    command.add_argument("--json", action="store_true", help="输出 serve 返回的 JSON")
+    command.set_defaults(fn=cmd_pair)
+    command = actions.add_parser("close", help="立即关闭配对窗口，不影响已配对设备")
+    command.add_argument("--json", action="store_true", help="输出 serve 返回的 JSON")
+    command.set_defaults(fn=cmd_pair)
 
     p = sub.add_parser("serve", help="serve local HTTP and events over a Unix socket")
     p.add_argument("--socket", help="Unix socket path (default RD_SERVE_SOCKET or RD_STATE/serve.sock)")

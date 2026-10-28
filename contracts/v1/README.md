@@ -174,3 +174,6 @@ JSON 类型，另用行为断言覆盖实际值、用户隔离、纯查询、锁
   error.running_job_ids 排序且最多 20 项，未知执行状态仍阻止删除。
 - `host-config-max-heavy-invalid.json`：max_heavy 为 >=1 的整数字符串，无 8 的上限，
   非整数或小于 1 返回原 reason、field 和新增可读 text；null 沿用清除覆盖含义。
+
+票 05 的设备与配对 CLI 只调用上述 `network-devices.json`、`network-pairing-window*.json`
+和 `network-revoke.json` 对应接口，不新增路径、字段或样例；`--json` 原样转发 serve 响应。

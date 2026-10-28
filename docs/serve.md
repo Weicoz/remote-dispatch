@@ -153,6 +153,46 @@ PYTHONPATH=src python3 -m unittest discover -s tests -p 'test_*.py'
 真实 SSH 目标机的探测、报告收取与日志读取，以及 App 消费样例的集成由编排方端到端复测；
 实现会话不部署测试栈或重启现有服务。
 
+## 设备与配对 CLI（票 05）
+
+`device` 与 `pair` 子命令只经本机 Unix socket 调用 `GET /v1/devices`、
+`DELETE /v1/devices/{id}`、`POST /v1/pairing-window` 和 `DELETE /v1/pairing-window`，
+与 App 使用同一套 serve 逻辑；不读也不写 `network/devices.json`，不缓存配对码或令牌。
+它们不走 `/_cli/v1` 转交，也不在 serve 不在线时回退为直接执行。
+
+```sh
+rdispatch device list [--json]
+rdispatch device revoke <device-id> [--json]
+rdispatch pair open [--json]
+rdispatch pair close [--json]
+```
+
+`device list` 的人类输出为 ID、名称、配对时间、最近在线时间和状态（`active`/`revoked`）；
+`last_seen_at` 尚未成功鉴权过时显示 `-`。`pair open` 的人类输出为配对码、剩余秒数与
+绝对过期时间、证书指纹和候选地址；配对码只用于本次扫码或输入，不写日志。
+`--json` 原样输出 serve 响应，字段见 `contracts/v1/network-devices.json`、
+`network-pairing-window*.json` 和 `network-revoke.json`。
+
+写请求每次生成新的 `Idempotency-Key`；重复 `pair open` 会使旧码失效，重复
+`pair close` 返回 `{"open":false}`。serve 不在线、socket 不存在或连接被拒绝时，
+四条命令都返回 4 和 `serve_unavailable`，提示 `rdispatch service install`，
+不直接写任何文件。serve 返回的业务错误（如 `device_not_found`）同样返回 4，
+错误写 stderr，`--json` 不输出半截结果。请求已发出但响应失败时返回
+`serve_request_failed`，先核对状态再重试；`pair open` 不确定时先运行
+`rdispatch pair close` 关闭可能已打开的窗口。
+
+检查：
+
+```sh
+PYTHONPATH=src python3 -m unittest tests.test_rd_serve_device_cli -v
+```
+
+测试在临时 `RD_STATE`/`RD_CONFIG` 下启动真实 `rdispatch serve` 子进程，经 Unix socket
+和 CLI 覆盖在线、离线、stale socket、配对窗口、设备列表与吊销、错误映射和 JSON 输出。
+不连接或修改任何真实状态目录。编排方在真实控制端启动常驻 serve 后，用 CLI 打开窗口、
+在 App 或手机完成一次配对、列出并吊销设备，确认 CLI 与 App 看到同一份设备状态；
+本实现会话不部署或重启现有 serve。
+
 ## 公开写接口（票 20）
 
 五个接口都接受 `Content-Type: application/json` 和非空的 `Idempotency-Key`。
