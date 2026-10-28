@@ -17,6 +17,7 @@ import time
 from http.server import BaseHTTPRequestHandler
 from urllib.parse import parse_qs, unquote, urlsplit
 
+from . import __version__
 from . import cli
 from .rd_lock import JobBusy, JobLock
 from . import rd_events as events
@@ -38,6 +39,8 @@ from .rd_serve_cache import LocalFiles
 
 WRITE_COMMANDS = {"session-default", "run", "resume", "ack", "review", "stop", "project", "inbox", "keep", "clean"}
 MAX_REQUEST_BYTES = 8 * 1024 * 1024
+# /v1 合同版本：仅在接口不兼容变化或 App 依赖的新增字段出现时递增。
+CONTRACT_VERSION = 1
 
 
 def file_changes(receipt):
@@ -260,6 +263,8 @@ class Service:
         self.host_config = HostConfigRoutes(self)
         self.state = Path(cli.STATE).resolve()
         self.user_id = cli.require_user()
+        # 启动时已成功读完配置；后续自动重载在成功或失败后更新同一结构。
+        self.config_reload = dict(ok=True, at=config.loaded_at, error=None)
         self.path = Path(socket_path or os.environ.get("RD_SERVE_SOCKET") or self.state / "serve.sock").absolute()
         self.lock = JobLock(self.state, "serve")
         self.lock.path = self.state / "locks" / "serve" / "service.lock"
@@ -746,6 +751,9 @@ class Service:
         url = urlsplit(target)
         path = unquote(url.path)
         args = parse_qs(url.query)
+        if path == "/v1/version":
+            return 200, dict(package_version=__version__, contract_version=CONTRACT_VERSION,
+                             config_reload=dict(self.config_reload))
         if path == "/v1/reports":
             return 200, {"reports": read_reports(self.state, self.user_id, args.get("initiator_session", [None])[0])}
         extra = self.project_routes.read(path, args, device)

@@ -2,12 +2,21 @@
 
 本目录是 rdispatch 与 App 假 serve 共用的接口样例。复制时记录来源提交号。
 票 20、22、25 在本目录追加；`/v1` 同版本内只添加可选字段，客户端忽略未知字段。
+合同版本由 `GET /v1/version` 返回，当前为 1。只在 `/v1` 出现不兼容变化，
+或新增 App 依赖的字段时递增；仅添加客户端可忽略的可选字段不递增。
 
 每个 JSON 文件含 `request: {method, path, headers?, body?}`、
 `response: {status, body}`、`events: [{seq, time, type, data}]`。
 路径和请求体中的示例标识需要替换为夹具中的真实标识；时间、回执 ID、项目 ID
-是示例值，不作为字符串快照比较。`tests/test_rd_serve.py` 按样例递归校验必需字段和
-JSON 类型，另用行为断言覆盖实际值、用户隔离、纯查询、锁、转交与补读。
+是示例值，不作为字符串快照比较。契约测试按样例递归校验必需字段和 JSON 类型，
+另用行为断言覆盖实际值、用户隔离、纯查询、锁、转交与补读。
+
+- `version.json`（票 02）：`GET /v1/version` 返回 `package_version`（与
+  `rdispatch --version` 一致）、`contract_version`（整数合同版本）和
+  `config_reload`（`ok/at/error`）。`at` 是带时区 ISO 8601 时间，`error` 成功时为 null；
+  本票只记录启动时成功加载配置的时间，自动重载后的结果沿用同一字段。
+  接口只读内存状态，重复读取不改变值；样例由 `tests/test_rd_serve_version.py`
+  经真实 serve 子进程校验。
 
 - `hosts.json` / `hosts-populated.json`：空列表与已配置目标机。配置顺序固定；
   `local/reachable/full` 是布尔值，资源值沿用探针的字符串或数字，未采集到为 `null`。

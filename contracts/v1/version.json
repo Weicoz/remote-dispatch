@@ -1,0 +1,16 @@
+{
+  "request": {"method": "GET", "path": "/v1/version"},
+  "response": {
+    "status": 200,
+    "body": {
+      "package_version": "0.3.0",
+      "contract_version": 1,
+      "config_reload": {
+        "ok": true,
+        "at": "2026-10-28T00:00:00+00:00",
+        "error": null
+      }
+    }
+  },
+  "events": []
+}

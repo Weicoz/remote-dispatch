@@ -194,6 +194,7 @@ class Config:
     def __init__(self):
         self.cp = configparser.ConfigParser(interpolation=None)
         self.cp.read(CONFIG, encoding="utf-8")
+        self.loaded_at = messages.utc_now()
 
     def _section(self, kind, name):
         key = f"{kind}:{name}"

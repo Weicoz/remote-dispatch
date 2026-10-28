@@ -108,6 +108,36 @@ POSIX CPU 使用 1 分钟负载除以核数，Windows 使用 CPU 百分比，不
 没有统计的旧回执继续可读；执行方提供的统计仍需发起方验收。
 SSE 仅读取事件日志，补读包括轮转段；15 秒发一次注释心跳，断线后用最后收到的 ID 重连。
 
+## 版本接口（票 02）
+
+`GET /v1/version` 是只读接口，经 Unix socket 读取；已认证的 HTTPS 客户端同样可读：
+
+```json
+{
+  "package_version": "0.3.0",
+  "contract_version": 1,
+  "config_reload": {"ok": true, "at": "2026-10-28T00:00:00+00:00", "error": null}
+}
+```
+
+`package_version` 与 `rdispatch --version` 一致。`contract_version` 是 `/v1` 合同的整数版本，
+只在接口出现不兼容变化，或新增 App 依赖的字段时递增；同版本内只添加客户端可忽略的可选字段。
+`config_reload` 记录最近一次配置加载：`ok` 为布尔值，`at` 是带时区的 ISO 8601 时间，
+`error` 是失败时的脱敏文本、成功时为 `null`。本票先返回启动时成功加载配置的时间；
+配置自动重载接入后，成功或错误沿用同一字段。
+
+接口处理本身只读内存中的版本与配置状态，不探测目标机；经 Unix socket 读取时
+不读状态目录、不写文件。已认证 HTTPS 的设备鉴权层仍按既有规则更新最近访问时间。
+重复读取返回相同的启动加载时间。样例见 `contracts/v1/version.json`。
+
+```sh
+curl --unix-socket "$RD_STATE/serve.sock" http://localhost/v1/version
+PYTHONPATH=src python3 -m unittest tests.test_rd_serve_version -v
+```
+
+测试在临时 `RD_STATE`／`RD_CONFIG` 下启动真实 `rdispatch serve` 子进程，
+经 Unix socket 读取并与合同样例比对。
+
 ## CLI 转交协议
 
 本地 CLI 的 `run/resume/ack/review/stop/project`，以及同样会写 RD_STATE 的
