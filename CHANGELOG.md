@@ -1,8 +1,15 @@
 # 变更记录
 
-## 0.3.0 — 2026-10-28
+## 0.3.1 — 2026-10-28
 
 - **新增 `rdispatch service`**：`install | uninstall | restart | status` 用用户级 LaunchAgent 托管常驻 serve，开机自启、崩溃拉起，日志写状态目录；`status` 报告 launchd 加载状态、进程、socket、包版本、合同版本与最近一次配置重载结果，支持 `--json`，未安装时非零退出并提示安装。只支持 macOS，详见 `docs/serve.md`。
+- **设置类子命令**：`rdispatch session-access [show|on|off]`、`rdispatch host list|add|update|delete` 管理会话访问总开关与目标机配置，serve 在线时转交、不在线时直接写（先备份再原子替换），与 serve 共用一套校验与写入；`rdispatch device list|revoke`、`rdispatch pair open|close` 管理已配对设备与配对窗口，必须经 serve。均支持 `--json`。
+- **serve 版本接口与配置自动重载**：新增 `GET /v1/version`（包版本、合同版本、配置重载结果）；serve 每秒检查配置文件，变化后自动重载，失败时保留旧配置并在 `/v1/version`、`/v1/hosts` 与 `rdispatch service status` 报告。
+- **本机目标派 Codex 不再要求确认同步**：`ssh = local` 时员工配置副本缺失或落后会自动同步并输出一行说明；SSH 目标机仍须确认。
+- 配置文件格式错误时 CLI 报 `config_invalid` 并退出 4，不再打印 traceback。
+
+## 0.3.0 — 2026-10-28
+
 - **新增 `rdispatch serve`**：本机 Unix socket 上的 HTTP 与事件流，供 App 等客户端读取派单、项目、会话、目标机与网络设置；serve 在运行时 CLI 写命令经 socket 转交给它，不在时 CLI 照旧直接写，两条路径共用 job 级锁。
 - 新增子命令 `project`（项目索引、隐藏与恢复）、`session-default`（会话派单默认值）、`review`（验收与打回续跑）。
 - 结果收取、进度汇报改为追加式并按轮次保留；新增发起来源字段、默认用户 ID、整轮锁与事件日志。
