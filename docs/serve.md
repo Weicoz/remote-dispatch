@@ -28,7 +28,10 @@ curl -N --unix-socket /private/tmp/rdispatch.sock -H 'Last-Event-ID: 12' http://
 每个 RD_STATE 仅一个服务，独占 `locks/serve/service.lock`，不与名为 serve 的 job 锁混用。
 拒绝覆盖普通文件、符号链接或仍在监听的 socket；取得服务锁后可回收拒绝连接的旧 socket。
 SIGINT/SIGTERM 会停止采集、等待已接受的写命令和采集结束，再释放服务锁并删除本次 socket。
-服务读取启动时的配置和用户；修改配置后由编排方重启服务。
+服务启动时读取配置和用户；运行中每 1 秒（`--poll-interval` 更小时按其值）检查
+`RD_CONFIG` 的修改时间，变化后自动重载，不需要重启 serve。
+重载先完整解析并校验候选配置；失败时保留旧配置和正在运行的采集。
+重载只替换内存中的配置对象并唤醒后台采集，不重启 socket，也不取消已接受的请求或写命令。
 会话派单默认值 GET 的 `config` 例外：每次只读当前本地配置文件，反映 CLI 派单时使用的默认值。
 
 只读接口、字段和 SSE 帧以 [contracts/v1](../contracts/v1/README.md) 为准。
@@ -43,7 +46,8 @@ HTTP 请求不探测目标机、不发起 SSH、不收取回执，也不执行 H
 日志缓存按派单代际、轮次与输出流隔离，不落盘；停止时等待采集器退出。
 后台启动即采集，之后默认每 15 秒采集，可用
 `--poll-interval` 设置正的有限秒数；周期是每轮采集完成后的等待时间。
-`/v1/hosts` 启动即返回配置中启用的全部目标机；首次探测前
+`/v1/hosts` 启动即返回配置中启用的全部目标机，响应另带 `config_reload`
+（与 `/v1/version` 同形，成功与失败都返回）；首次探测前
 `probed=false`、`reachable=false`、`full=false`，资源数值均为 `null`，三项指标级别均为未知。
 会话使用独立采集线程；派单刷新器先探测目标机并发布机器缓存，再批量采集派单。
 慢派单不会延迟本轮机器结果，也不占用会话的刷新周期。
@@ -123,8 +127,8 @@ SSE 仅读取事件日志，补读包括轮转段；15 秒发一次注释心跳�
 `package_version` 与 `rdispatch --version` 一致。`contract_version` 是 `/v1` 合同的整数版本，
 只在接口出现不兼容变化，或新增 App 依赖的字段时递增；同版本内只添加客户端可忽略的可选字段。
 `config_reload` 记录最近一次配置加载：`ok` 为布尔值，`at` 是带时区的 ISO 8601 时间，
-`error` 是失败时的脱敏文本、成功时为 `null`。本票先返回启动时成功加载配置的时间；
-配置自动重载接入后，成功或错误沿用同一字段。
+`error` 是失败时的脱敏文本、成功时为 `null`。成功时 `at` 是本次读取配置的时间，
+失败时是失败时间；配置未变化时重复读取返回同一个启动加载时间。
 
 接口处理本身只读内存中的版本与配置状态，不探测目标机；经 Unix socket 读取时
 不读状态目录、不写文件。已认证 HTTPS 的设备鉴权层仍按既有规则更新最近访问时间。
@@ -137,6 +141,32 @@ PYTHONPATH=src python3 -m unittest tests.test_rd_serve_version -v
 
 测试在临时 `RD_STATE`／`RD_CONFIG` 下启动真实 `rdispatch serve` 子进程，
 经 Unix socket 读取并与合同样例比对。
+
+## 配置自动重载（票 03）
+
+serve 在后台检查 `RD_CONFIG` 的修改时间（含大小、inode 与权限）；变化后重新读取，
+并在替换前校验所有 `[host:*]` 段、`[serve] execute_timeout`、`[serve] session_access`
+和 `[monitor] report_merge_window_seconds`。
+校验通过才一次性替换内存配置：新增或重新启用的目标机立即出现在 `/v1/hosts`，
+禁用的目标机从列表移除，同名目标机修改后重置探测状态并由后台重新探测。
+成功重载同时刷新命令执行超时、会话访问开关与汇报合并窗口；
+`[serve] listen_addresses`、TLS 与请求超时等监听参数仍只在启动时读取，修改后需重启 serve。
+验证失败或 INI 解析失败时保留旧配置、继续服务；`/v1/version` 与 `/v1/hosts` 的
+`config_reload` 返回 `{"ok": false, "at": "失败时间", "error": "脱敏错误"}`。
+错误来自配置校验时包含目标机与字段名；解析错误可能引用原始行，因此所有错误都经脱敏。
+修好配置后，下一次文件变化会清除错误并返回成功时间。
+
+重载只交换内存中的配置对象，不重启 Unix socket、采集线程或请求处理线程，
+也不取消已接受的请求和转发写命令。`config_reload` 是客户端可忽略的新增字段，
+合同版本保持 1。测试在临时 `RD_STATE`／`RD_CONFIG` 下启动真实 `rdispatch serve`
+子进程，改写临时配置文件并用 CLI 与 Unix socket 驱动：
+
+```sh
+PYTHONPATH=src:tests RD_RUN_SOCKET_TESTS=1 python3 -m unittest tests.test_rd_serve_config_reload -v
+```
+
+样例见 `contracts/v1/hosts-config-reload-error.json`；失败时 `hosts` 继续返回
+上一次成功加载的目标机。
 
 ## CLI 转交协议
 

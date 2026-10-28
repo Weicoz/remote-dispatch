@@ -1,0 +1,59 @@
+{
+  "request": {
+    "method": "GET",
+    "path": "/v1/hosts"
+  },
+  "response": {
+    "status": 200,
+    "body": {
+      "hosts": [
+        {
+          "name": "stable",
+          "local": true,
+          "reachable": false,
+          "full": false,
+          "probed": false,
+          "load1": null,
+          "ncpu": null,
+          "memfree": null,
+          "disk": null,
+          "running": null,
+          "heavy": null,
+          "cpu_pct": null,
+          "disk_total": null,
+          "metrics": {
+            "cpu": {
+              "value": null,
+              "unit": "load_per_core",
+              "warning": 1.0,
+              "pressure": 1.5,
+              "level": "unknown"
+            },
+            "memory": {
+              "value": null,
+              "unit": "free_pct",
+              "warning": 20.0,
+              "pressure": 10.0,
+              "level": "unknown"
+            },
+            "disk": {
+              "value": null,
+              "total": null,
+              "unit": "free_gb",
+              "warning": 20.0,
+              "pressure": 10.0,
+              "level": "unknown"
+            }
+          },
+          "last_seen_at": null
+        }
+      ],
+      "config_reload": {
+        "ok": false,
+        "at": "2026-10-28T00:00:00+00:00",
+        "error": "[host:broken] 缺少 ssh；填 user@address，或把 ssh 设为 local 以在本机派发。"
+      }
+    }
+  },
+  "events": []
+}

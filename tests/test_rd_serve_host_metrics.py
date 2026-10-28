@@ -61,7 +61,7 @@ class HostMetricsTests(unittest.TestCase):
             with self.subTest(contract=name):
                 row = self.host_row(values, windows=windows)
                 example = json.loads((base.CONTRACTS / (name + ".json")).read_text())
-                self.assert_structure({"hosts": [row]}, example["response"]["body"])
+                self.assert_structure({"hosts": [row]}, {"hosts": example["response"]["body"]["hosts"]})
                 self.assertEqual(row, example["response"]["body"]["hosts"][0])
 
     def test_new_fields_cannot_carry_secrets_from_probe_or_configuration(self):

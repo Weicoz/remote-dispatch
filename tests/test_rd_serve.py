@@ -681,7 +681,10 @@ class ServeTests(unittest.TestCase):
         service = self.start()
         with self.assertRaisesRegex(ValueError, "serve_already_running"):
             Service(cli.Config(), self.path).start()
-        self.assertEqual(self.request("/v1/hosts"), (200, {"hosts": []}))
+        status, body = self.request("/v1/hosts")
+        self.assertEqual((status, body["hosts"]), (200, []))
+        self.assertTrue(body["config_reload"]["ok"])
+        self.assertIsNone(body["config_reload"]["error"])
         service.close()
         stale = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         stale.bind(str(self.path))
@@ -697,8 +700,11 @@ class ServeTests(unittest.TestCase):
     def test_hosts_contract_is_readable_and_service_removes_its_private_socket(self):
         service = self.start()
         contract = json.loads((CONTRACTS / "hosts.json").read_text())
-        self.assertEqual(self.request(contract["request"]["path"]),
-                         (contract["response"]["status"], contract["response"]["body"]))
+        status, body = self.request(contract["request"]["path"])
+        self.assertEqual(status, contract["response"]["status"])
+        self.assertEqual(body["hosts"], contract["response"]["body"]["hosts"])
+        self.assertEqual(body["config_reload"]["ok"], contract["response"]["body"]["config_reload"]["ok"])
+        self.assertIsNone(body["config_reload"]["error"])
         self.assertEqual(self.path.stat().st_mode & 0o777, 0o600)
         service.close()
         self.assertFalse(self.path.exists())

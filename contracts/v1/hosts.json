@@ -1,5 +1,18 @@
 {
-  "request": {"method": "GET", "path": "/v1/hosts"},
-  "response": {"status": 200, "body": {"hosts": []}},
+  "request": {
+    "method": "GET",
+    "path": "/v1/hosts"
+  },
+  "response": {
+    "status": 200,
+    "body": {
+      "hosts": [],
+      "config_reload": {
+        "ok": true,
+        "at": "2026-10-28T00:00:00+00:00",
+        "error": null
+      }
+    }
+  },
   "events": []
 }

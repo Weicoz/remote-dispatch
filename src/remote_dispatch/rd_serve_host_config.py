@@ -166,6 +166,18 @@ class HostConfigRoutes:
         # Assign a new set: concurrent redactors may be iterating the old one.
         self.service.sensitive = self.service.sensitive | secrets
 
+    @staticmethod
+    def discard_body(handler):
+        """Drain a rejected body before closing, so the client sees the 400 not EPIPE."""
+        if handler.headers.get("Transfer-Encoding"):
+            return
+        try:
+            length = int(handler.headers.get("Content-Length", "0") or 0)
+        except (TypeError, ValueError):
+            return
+        if 0 < length <= 8 * 1024 * 1024:
+            handler.rfile.read(length)
+
     def get(self, handler):
         path = unquote(urlsplit(handler.path).path)
         if path == SESSION_ACCESS:
@@ -189,12 +201,14 @@ class HostConfigRoutes:
         try:
             key = handler.headers.get("Idempotency-Key", "")
             if not key.strip() or len(key) > 255 or len(handler.headers.get_all("Idempotency-Key", [])) != 1:
+                self.discard_body(handler)
                 handler.json(400, {"error": {"reason": "idempotency_key_required"}})
                 return True
             length = int(handler.headers.get("Content-Length", "0"))
             bare_delete = handler.command == "DELETE" and length == 0
             if (handler.headers.get("Transfer-Encoding") or not 0 <= length <= 8 * 1024 * 1024
                     or not bare_delete and (not length or handler.headers.get_content_type() != "application/json")):
+                self.discard_body(handler)
                 raise ValueError("invalid_request")
             body = {} if bare_delete else json.loads(handler.rfile.read(length))
             if not isinstance(body, dict):
