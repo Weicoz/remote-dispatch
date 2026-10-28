@@ -2604,6 +2604,123 @@ def cmd_serve(a, cfg):
     run_service(cfg, a.socket, a.poll_interval)
 
 
+SERVICE_INSTALL_HINT = "serve 未安装；运行 rdispatch service install。"
+
+
+def service_environment():
+    """plist 记录的环境：状态目录、用户、当前 PATH，以及用户设置过的配置文件。"""
+    environment = {
+        "RD_STATE": os.path.abspath(os.path.expanduser(STATE)),
+        "RD_USER_ID": require_user(),
+        "PATH": os.environ.get("PATH", ""),
+    }
+    if os.environ.get("RD_CONFIG"):
+        environment["RD_CONFIG"] = os.path.abspath(os.path.expanduser(os.environ["RD_CONFIG"]))
+    return environment
+
+
+def print_service_status(state):
+    def value(field):
+        return table_cell(state.get(field))
+
+    loaded = {True: "yes", False: "no", None: "unknown"}[state["loaded"]]
+    if state["pid"] is None:
+        process = "-"
+    else:
+        process = f"{state['pid']} ({'running' if state['running'] else 'not running'})"
+    if state["config_reload"] is None:
+        config_reload = "-"
+    else:
+        reload_status = state["config_reload"]
+        config_reload = ("ok " if reload_status.get("ok") else "failed ") + table_cell(reload_status.get("at"))
+        if reload_status.get("error"):
+            config_reload += f" ({reload_status['error']})"
+    print(f"{'installed':<15}{'yes' if state['installed'] else 'no'}")
+    print(f"{'label':<15}{state['label']}")
+    print(f"{'plist':<15}{value('plist')}")
+    print(f"{'loaded':<15}{loaded}")
+    print(f"{'process':<15}{process}")
+    print(f"{'socket':<15}{value('socket')}")
+    print(f"{'serve':<15}{'online' if state['serve_online'] else 'offline'}")
+    print(f"{'package':<15}{value('package_version')}")
+    print(f"{'contract':<15}{value('contract_version')}")
+    print(f"{'config reload':<15}{config_reload}")
+    print(f"{'executable':<15}{value('executable')}")
+    print(f"{'logs':<15}{value('log')}")
+
+
+def service_hint(state):
+    """已安装时的人读排查提示；JSON 只给字段，不掺提示行。"""
+    if state["plist_error"]:
+        return f"无法读取 plist（{state['plist_error']}）；运行 rdispatch service install 重写。"
+    if state["launchctl_error"]:
+        return "无法读取 launchd 状态：" + state["launchctl_error"]
+    if state["serve_online"]:
+        if state["loaded"] is False:
+            return "serve 在响应 socket，但 launchd 未加载本任务；运行 rdispatch service restart 交给 launchd 托管。"
+        if state["package_version"] != state["cli_version"]:
+            return (f"serve 版本 {state['package_version']} 与当前 CLI 版本 {state['cli_version']} 不同；"
+                    "运行 rdispatch service restart 使新代码生效。")
+        return None
+    if not state["running"]:
+        log = state["error_log"] or state["log"]
+        if log:
+            return f"serve 未运行；查看 {log}，或运行 rdispatch service restart。"
+        return "serve 未运行；运行 rdispatch service install 重写 plist 后重试。"
+    return "serve 未响应 socket；运行 rdispatch service restart 后重试。"
+
+
+def cmd_service(a, cfg):
+    from . import rd_service as service
+    if sys.platform != "darwin":
+        die("service_unsupported: rdispatch service 只支持 macOS。", 4)
+    path = service.plist_path()
+    if a.action == "install":
+        environment = service_environment()
+        try:
+            service.prepare(environment["RD_STATE"])
+            service.write(path, service.document(service.entry(), environment))
+        except OSError as error:
+            die(f"service_install_failed: {error}", 4)
+        service.reload(path)
+        print(f"installed serve {service.LABEL}")
+        print(f"plist  {path}")
+        print(f"socket {Path(environment['RD_STATE']) / service.SOCKET_NAME}")
+        print(f"logs   {Path(environment['RD_STATE']) / service.ERROR_LOG_NAME}")
+        return
+    if a.action == "restart":
+        if not path.exists():
+            die(f"service_not_installed: {SERVICE_INSTALL_HINT}", 4)
+        service.reload(path)
+        print(f"reloaded serve {service.LABEL}")
+        return
+    if a.action == "uninstall":
+        if not path.exists():
+            service.bootout()
+            print("serve not installed.")
+            return
+        service.unload()
+        try:
+            path.unlink()
+        except OSError as error:
+            die(f"service_uninstall_failed: {error}", 4)
+        print(f"uninstalled serve {service.LABEL} (state and logs kept)")
+        return
+    if a.action == "status":
+        state = service.status(path)
+        if getattr(a, "json", False):
+            print_json(state)
+        else:
+            print_service_status(state)
+            hint = service_hint(state)
+            if state["installed"] and hint:
+                print(f"{'hint':<15}{hint}")
+        if not state["installed"]:
+            die(f"service_not_installed: {SERVICE_INSTALL_HINT}", 4)
+        return
+    die("service_action_unknown: 未知的 service 动作。", 4)
+
+
 def main(argv=None, *, forwarded=None):
     if os.name == "nt":
         sys.stdout.reconfigure(encoding="utf-8")
@@ -2678,6 +2795,15 @@ def main(argv=None, *, forwarded=None):
     p.add_argument("--socket", help="Unix socket path (default RD_SERVE_SOCKET or RD_STATE/serve.sock)")
     p.add_argument("--poll-interval", type=float, default=15, help="background poll interval in seconds; config reload checks every min(1, interval) seconds (default 15)")
     p.set_defaults(fn=cmd_serve)
+
+    p = sub.add_parser("service", help="把 serve 装成常驻 LaunchAgent（只支持 macOS）")
+    actions = p.add_subparsers(dest="action", required=True)
+    actions.add_parser("install", help="生成并加载 LaunchAgent plist；启动开机自启与崩溃拉起").set_defaults(fn=cmd_service)
+    actions.add_parser("restart", help="重新加载 plist，用于升级 rdispatch 后生效").set_defaults(fn=cmd_service)
+    command = actions.add_parser("status", help="显示加载状态、进程、socket 与 serve 版本")
+    command.add_argument("--json", action="store_true", help="输出机器可读状态")
+    command.set_defaults(fn=cmd_service)
+    actions.add_parser("uninstall", help="卸载并删除 plist；保留状态目录与日志").set_defaults(fn=cmd_service)
 
     p = sub.add_parser("project", help="manage persistent project history")
     actions = p.add_subparsers(dest="action", required=True)

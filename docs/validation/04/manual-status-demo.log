@@ -1,0 +1,151 @@
+--- service status (未安装)
+rdispatch: service_not_installed: serve 未安装；运行 rdispatch service install。
+installed      no
+label          io.github.weicoz.remote-dispatch.serve
+plist          /tmp/u04-demo.SOB1J0/home/Library/LaunchAgents/io.github.weicoz.remote-dispatch.serve.plist
+loaded         unknown
+process        -
+socket         -
+serve          offline
+package        -
+contract       -
+config reload  -
+executable     -
+logs           -
+exit=4
+--- service install
+installed serve io.github.weicoz.remote-dispatch.serve
+plist  /tmp/u04-demo.SOB1J0/home/Library/LaunchAgents/io.github.weicoz.remote-dispatch.serve.plist
+socket /tmp/u04-demo.SOB1J0/state/serve.sock
+logs   /tmp/u04-demo.SOB1J0/state/serve.err.log
+exit=0
+--- plist 内容
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>EnvironmentVariables</key>
+	<dict>
+		<key>PATH</key>
+		<string>/tmp/u04-demo.SOB1J0/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+		<key>RD_CONFIG</key>
+		<string>/tmp/u04-demo.SOB1J0/config.ini</string>
+		<key>RD_STATE</key>
+		<string>/tmp/u04-demo.SOB1J0/state</string>
+		<key>RD_USER_ID</key>
+		<string>fixture</string>
+	</dict>
+	<key>KeepAlive</key>
+	<true/>
+	<key>Label</key>
+	<string>io.github.weicoz.remote-dispatch.serve</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>/Applications/Xcode.app/Contents/Developer/usr/bin/python3</string>
+		<string>-m</string>
+		<string>remote_dispatch</string>
+		<string>serve</string>
+	</array>
+	<key>RunAtLoad</key>
+	<true/>
+	<key>StandardErrorPath</key>
+	<string>/tmp/u04-demo.SOB1J0/state/serve.err.log</string>
+	<key>StandardOutPath</key>
+	<string>/tmp/u04-demo.SOB1J0/state/serve.log</string>
+</dict>
+</plist>
+--- 启动真实 serve（默认 socket）
+--- service status (launchd 列出但未运行)
+installed      yes
+label          io.github.weicoz.remote-dispatch.serve
+plist          /tmp/u04-demo.SOB1J0/home/Library/LaunchAgents/io.github.weicoz.remote-dispatch.serve.plist
+loaded         yes
+process        -
+socket         /tmp/u04-demo.SOB1J0/state/serve.sock
+serve          online
+package        0.3.0
+contract       1
+config reload  ok 2026-10-28T05:37:12.369674+00:00
+executable     /Applications/Xcode.app/Contents/Developer/usr/bin/python3
+logs           /tmp/u04-demo.SOB1J0/state/serve.log
+exit=0
+--- service status (运行中)
+installed      yes
+label          io.github.weicoz.remote-dispatch.serve
+plist          /tmp/u04-demo.SOB1J0/home/Library/LaunchAgents/io.github.weicoz.remote-dispatch.serve.plist
+loaded         yes
+process        79157 (running)
+socket         /tmp/u04-demo.SOB1J0/state/serve.sock
+serve          online
+package        0.3.0
+contract       1
+config reload  ok 2026-10-28T05:37:12.369674+00:00
+executable     /Applications/Xcode.app/Contents/Developer/usr/bin/python3
+logs           /tmp/u04-demo.SOB1J0/state/serve.log
+exit=0
+--- service status --json
+{
+  "installed": true,
+  "label": "io.github.weicoz.remote-dispatch.serve",
+  "plist": "/tmp/u04-demo.SOB1J0/home/Library/LaunchAgents/io.github.weicoz.remote-dispatch.serve.plist",
+  "executable": "/Applications/Xcode.app/Contents/Developer/usr/bin/python3",
+  "state_dir": "/tmp/u04-demo.SOB1J0/state",
+  "config": "/tmp/u04-demo.SOB1J0/config.ini",
+  "socket": "/tmp/u04-demo.SOB1J0/state/serve.sock",
+  "log": "/tmp/u04-demo.SOB1J0/state/serve.log",
+  "error_log": "/tmp/u04-demo.SOB1J0/state/serve.err.log",
+  "loaded": true,
+  "pid": 79157,
+  "running": true,
+  "serve_online": true,
+  "package_version": "0.3.0",
+  "contract_version": 1,
+  "config_reload": {
+    "ok": true,
+    "at": "2026-10-28T05:37:12.369674+00:00",
+    "error": null
+  },
+  "cli_version": "0.3.0",
+  "plist_error": null,
+  "launchctl_error": null
+}
+exit=0
+--- service restart
+reloaded serve io.github.weicoz.remote-dispatch.serve
+exit=0
+--- plist 权限
+-rw------- /tmp/u04-demo.SOB1J0/home/Library/LaunchAgents/io.github.weicoz.remote-dispatch.serve.plist
+--- service uninstall（launchd 已不再列出）
+uninstalled serve io.github.weicoz.remote-dispatch.serve (state and logs kept)
+exit=0
+--- 卸载后状态目录与日志仍在
+total 0
+drwxr-xr-x 6 weicoz wheel 192 10月 28 13:37 locks
+drwx------ 4 weicoz wheel 128 10月 28 13:37 network
+drwx------ 3 weicoz wheel 96 10月 28 13:37 reports
+srw------- 1 weicoz wheel 0 10月 28 13:37 serve.sock
+--- service status（卸载后）
+rdispatch: service_not_installed: serve 未安装；运行 rdispatch service install。
+installed      no
+label          io.github.weicoz.remote-dispatch.serve
+plist          /tmp/u04-demo.SOB1J0/home/Library/LaunchAgents/io.github.weicoz.remote-dispatch.serve.plist
+loaded         unknown
+process        -
+socket         -
+serve          offline
+package        -
+contract       -
+config reload  -
+executable     -
+logs           -
+exit=4
+--- launchctl 调用序列
+["bootout", "gui/501/io.github.weicoz.remote-dispatch.serve"]
+["bootstrap", "gui/501", "/tmp/u04-demo.SOB1J0/home/Library/LaunchAgents/io.github.weicoz.remote-dispatch.serve.plist"]
+["list"]
+["list"]
+["list"]
+["bootout", "gui/501/io.github.weicoz.remote-dispatch.serve"]
+["bootstrap", "gui/501", "/tmp/u04-demo.SOB1J0/home/Library/LaunchAgents/io.github.weicoz.remote-dispatch.serve.plist"]
+["bootout", "gui/501/io.github.weicoz.remote-dispatch.serve"]
+["list"]

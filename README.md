@@ -64,6 +64,23 @@ rdispatch fetch <job>           # 把提交取回为 rd/<branch>
 rdispatch resume <job> --prompt-file next.md
 ```
 
+## 常驻 serve（macOS）
+
+`rdispatch service` 用用户级 LaunchAgent 托管常驻 serve：开机自启、崩溃拉起，socket 用默认路径
+`$RD_STATE/serve.sock`。App 和 CLI 都不用再带环境变量。
+
+```sh
+rdispatch service install     # 生成 plist 并加载
+rdispatch service status      # 加载状态、进程、socket、包版本、合同版本、配置重载结果；--json
+rdispatch service restart     # 升级 rdispatch 后重新加载
+rdispatch service uninstall   # 卸载并删除 plist，保留状态目录与日志
+```
+
+只支持 macOS。plist 记录当前运行 `rdispatch` 的入口、`RD_USER_ID`、`RD_STATE`、
+有设置时的 `RD_CONFIG`、安装时的 `PATH`（launchd 默认 PATH 找不到 `herdr` 等用户级命令），
+日志写到状态目录。`status` 未安装时返回非零并提示 `rdispatch service install`。
+细节见 [docs/serve.md](docs/serve.md)。
+
 ## 设备与配对（需要 serve）
 
 设备与配对窗口状态只在 serve 进程里。这组命令经本机 Unix socket 调用 serve，不直接写状态文件；serve 不在线时报错并提示 `rdispatch service install`。
