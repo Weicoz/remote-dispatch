@@ -1,0 +1,6 @@
+test_session_access_offline_show_toggle_backup_and_json (tests.test_rd_config_cli.ConfigCliTests.test_session_access_offline_show_toggle_backup_and_json) ... ok
+
+----------------------------------------------------------------------
+Ran 1 test in 0.440s
+
+OK

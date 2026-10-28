@@ -1,0 +1,6 @@
+test_hosts_offline_list_add_update_delete_json_backup_and_validation (tests.test_rd_config_cli.ConfigCliTests.test_hosts_offline_list_add_update_delete_json_backup_and_validation) ... ok
+
+----------------------------------------------------------------------
+Ran 1 test in 1.825s
+
+OK

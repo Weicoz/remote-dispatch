@@ -13,6 +13,7 @@ import concurrent.futures
 import configparser
 import functools
 import hashlib
+import http.client
 import json
 import math
 import os
@@ -20,12 +21,14 @@ from pathlib import Path
 import re
 import secrets
 import shlex
+import socket
 import subprocess
 import sys
 import tempfile
 import tarfile
 import time
 from urllib.parse import quote
+import uuid
 from . import __version__
 from . import rd_profiles as profiles
 from . import rd_native as native
@@ -44,6 +47,7 @@ from .rd_reports import read_reports
 CONFIG = os.environ.get("RD_CONFIG") or os.path.expanduser("~/.config/remote-dispatch/config.ini")
 STATE = os.environ.get("RD_STATE") or os.path.expanduser("~/.local/state/remote-dispatch")
 HERE = os.path.dirname(os.path.abspath(__file__))
+CONFIG_REQUEST_TIMEOUT = 30
 
 DEFAULTS = {
     "workdir": "~/remote-dispatch",
@@ -288,6 +292,312 @@ class Config:
         a.setdefault("bin", a["start"].split()[0])
         a["kind"] = name
         return a
+
+
+# ------------------------------------------------------- setting commands
+
+def config_path():
+    return Path(CONFIG).absolute()
+
+
+def config_lock():
+    lock = JobLock(STATE, "host-config")
+    lock.path = config_path().with_name(config_path().name + ".lock")
+    return lock
+
+
+def serve_config_request(method, path, body=None):
+    """Ask the running serve before falling back; only pre-send absence can fall back."""
+    from .rd_host_config import config_digest
+    from .rd_serve import UnixHTTPConnection
+    socket_path = Path(os.environ.get("RD_SERVE_SOCKET") or Path(STATE) / "serve.sock")
+    if not hasattr(socket, "AF_UNIX") or not socket_path.exists():
+        return None
+    connection = UnixHTTPConnection(socket_path)
+    try:
+        try:
+            connection.connect()
+        except (FileNotFoundError, ConnectionRefusedError):
+            return None
+        connection.sock.settimeout(CONFIG_REQUEST_TIMEOUT)
+        headers = {"X-Rdispatch-Config-SHA256": config_digest(config_path())}
+        payload = None
+        if body is not None:
+            payload = json.dumps(body, ensure_ascii=False).encode("utf-8")
+            headers["Content-Type"] = "application/json"
+        if method in ("POST", "PUT", "DELETE"):
+            headers["Idempotency-Key"] = uuid.uuid4().hex
+        connection.request(method, path, payload, headers)
+        response = connection.getresponse()
+        raw = response.read()
+        try:
+            reply = json.loads(raw)
+        except ValueError:
+            raise ValueError("cli_forward_failed: command may have run; check state before retrying") from None
+        return response.status, reply
+    except (OSError, http.client.HTTPException) as error:
+        raise ValueError("cli_forward_failed: command may have run; check state before retrying") from error
+    finally:
+        connection.close()
+
+
+def config_error(error, status):
+    reason = error.get("reason") if isinstance(error.get("reason"), str) else "invalid_response"
+    field = error.get("field")
+    if reason in ("invalid_host_field", "host_field_required"):
+        message = reason + ": 字段 " + str(field or "?")
+        if reason == "host_field_required":
+            message += " 不能为空"
+        elif field == "max_heavy":
+            message += " 必须是大于等于 1 的整数"
+        else:
+            message += " 取值无效"
+    elif reason == "host_has_active_dispatches":
+        ids = error.get("running_job_ids") or []
+        message = (reason + ": running_count=" + str(error.get("running_count", 0))
+                   + " running_job_ids=" + ",".join(map(str, ids[:20])))
+    elif reason == "host_config_busy":
+        message = reason + ": 配置正在写入，请稍后重试"
+    elif reason == "not_found":
+        message = "not_found: 目标机不存在"
+    elif reason == "host_exists":
+        message = "host_exists: 目标机名称已存在"
+    elif reason == "cli_config_mismatch":
+        message = "cli_config_mismatch: CLI 与 serve 使用不同的配置文件"
+    elif reason == "invalid_host_request":
+        message = "invalid_host_request: 目标机配置请求格式无效"
+    elif reason == "method_not_allowed":
+        message = "method_not_allowed: 此路径不支持该操作"
+    elif reason == "idempotency_key_required":
+        message = "idempotency_key_required: 请提供有效的请求标识"
+    elif reason == "idempotency_key_reused":
+        message = "idempotency_key_reused: 请求标识已用于其他操作"
+    elif reason == "host_config_unavailable":
+        message = "host_config_unavailable: 无法读取或保存目标机配置"
+    elif reason == "host_config_outcome_unknown":
+        message = "host_config_outcome_unknown: 操作结果未确认，请刷新后核对"
+    else:
+        message = reason
+        if field:
+            message += " field=" + str(field)
+        if error.get("text"):
+            message += "：" + str(error["text"])
+    return message, 4 if status in (400, 422) else 1
+
+
+def config_reply(method, path, body=None):
+    reply = serve_config_request(method, path, body)
+    if reply is None:
+        return None
+    status, payload = reply
+    if status >= 400:
+        error = payload.get("error") if isinstance(payload, dict) else None
+        error = error if isinstance(error, dict) else {}
+        message, code = config_error(error, status)
+        die(message, code)
+    return payload
+
+
+def mask_ssh(value):
+    return re.sub(r"(://)[^/@\s]+@", r"\1[redacted]@", value or "")
+
+
+def host_secrets(cp, module):
+    return {value for section in cp.sections() if section.startswith("host:")
+            for field, value in module.effective(cp, section[5:]).items()
+            if field not in module.PUBLIC_FIELDS and value}
+
+
+def redact_public(value, secrets):
+    for secret in sorted(secrets, key=len, reverse=True):
+        value = value.replace(secret, "[redacted]")
+    return re.sub(r"-----BEGIN [^-]*PRIVATE KEY-----.*?-----END [^-]*PRIVATE KEY-----",
+                  "[redacted]", value, flags=re.S)
+
+
+def host_row(cp, name, module, secrets=()):
+    values = module.effective(cp, name)
+    public = {key: redact_public(values[key], secrets) for key in module.PUBLIC_FIELDS if key != "ssh"}
+    connection = values.get("ssh", "")
+    public["ssh"] = mask_ssh(redact_public(connection, secrets - {connection}))
+    return dict(name=name, values=public,
+                protected_fields=[dict(field=key, is_set=bool(value)) for key, value in values.items()
+                                  if key not in module.PUBLIC_FIELDS])
+
+
+def local_job_states(records):
+    states = {}
+    for rec in records:
+        number = int(rec.get("rounds") or 1)
+        try:
+            receipt = messages.read_json(query.result_path(STATE, rec, number)) or {}
+        except (OSError, ValueError):
+            # A damaged receipt cannot prove the dispatch ended.
+            receipt = {}
+        states[rec["job"]] = dict(
+            state=receipt.get("execution_state") or rec.get("execution_state")
+            or ("dead" if rec.get("dispatch_state") == "preparation_failed" else "starting"))
+    return states
+
+
+def host_fields(a):
+    fields = {}
+    for field in ("ssh", "workdir", "sync", "platform", "enabled", "launcher", "tags"):
+        value = getattr(a, field, None)
+        if value is not None:
+            fields[field] = value
+    for item in getattr(a, "set_fields", None) or []:
+        if "=" not in item:
+            die("--set 需要 FIELD=VALUE。", 4)
+        field, value = item.split("=", 1)
+        if field == "name":
+            die("名称用位置参数指定，不能通过 --set 修改。", 4)
+        fields[field] = value
+    for field in getattr(a, "unset_fields", None) or []:
+        if field == "name":
+            die("名称用位置参数指定，不能通过 --unset 修改。", 4)
+        if field in fields:
+            die(f"--set 和 --unset 同时给出字段 {field}。", 4)
+        fields[field] = None
+    return fields
+
+
+def validate_host_fields(module, fields):
+    for field, value in fields.items():
+        try:
+            module.validate_field(field, value)
+        except module.InvalidField:
+            die(f"invalid_host_field: 字段 {field} 取值无效", 4)
+        except ValueError:
+            die("invalid_host_request: 字段名必须是小写字母开头的标识符", 4)
+
+
+def die_invalid_field(error):
+    message, code = config_error(dict(reason=error.reason, field=error.field), 400)
+    die(message, code)
+
+
+def die_active_dispatches(running):
+    message, code = config_error(dict(reason="host_has_active_dispatches",
+                                      running_count=len(running), running_job_ids=running), 409)
+    die(message, code)
+
+
+def config_unavailable(message="host_config_unavailable: 无法读取或保存目标机配置"):
+    die(message, 1)
+
+
+def print_hosts(reply, as_json):
+    if as_json:
+        print(json.dumps(reply, ensure_ascii=False))
+        return
+    rows = reply.get("hosts") or []
+    if not rows:
+        print("no hosts configured.")
+        return
+    for row in rows:
+        values = row.get("values") or {}
+        order = ("ssh", "workdir", "sync", "platform", "launcher", "enabled", "tags")
+        shown = [f"{key}={values[key]}" for key in order if key in values]
+        shown += [f"{key}={values[key]}" for key in sorted(set(values) - set(order))]
+        print("  ".join([row.get("name", "?")] + shown))
+
+
+def cmd_session_access(a, cfg):
+    from . import rd_host_config as host_config
+    if a.action == "show":
+        reply = config_reply("GET", host_config.SESSION_ACCESS)
+        if reply is None:
+            try:
+                _, cp = host_config.load(config_path())
+                reply = dict(enabled=host_config.session_access(cp))
+            except (OSError, UnicodeError, configparser.Error):
+                config_unavailable()
+    else:
+        enabled = a.action == "on"
+        reply = config_reply("PUT", host_config.SESSION_ACCESS, {"enabled": enabled})
+        if reply is None:
+            try:
+                with config_lock():
+                    raw, _ = host_config.load(config_path())
+                    updated, encoded = host_config.session_access_candidate(raw, enabled)
+                    host_config.replace(config_path(), raw, encoded)
+                    reply = dict(enabled=host_config.session_access(updated))
+            except JobBusy:
+                die("host_config_busy: 配置正在写入，请稍后重试", 1)
+            except (OSError, UnicodeError, configparser.Error, ValueError):
+                config_unavailable()
+    if a.json:
+        print(json.dumps(reply, ensure_ascii=False))
+    else:
+        print("会话访问：开" if reply.get("enabled") else "会话访问：关")
+
+
+def cmd_host(a, cfg):
+    from . import rd_host_config as host_config
+    if a.action == "list":
+        reply = config_reply("GET", host_config.COLLECTION)
+        if reply is None:
+            try:
+                _, cp = host_config.load(config_path())
+                secrets = host_secrets(cp, host_config)
+                reply = dict(hosts=[host_row(cp, section[5:], host_config, secrets)
+                                    for section in cp.sections() if section.startswith("host:")])
+            except (OSError, UnicodeError, configparser.Error):
+                config_unavailable()
+        print_hosts(reply, a.json)
+        return
+    fields = {} if a.action == "delete" else host_fields(a)
+    try:
+        host_config.validate_name(a.name)
+    except host_config.InvalidField as error:
+        die_invalid_field(error)
+    validate_host_fields(host_config, fields)
+    if a.action == "add":
+        body = dict(fields, name=a.name)
+        reply = config_reply("POST", host_config.COLLECTION, body)
+    elif a.action == "update":
+        reply = config_reply("PUT", host_config.COLLECTION + "/" + a.name, fields)
+    else:
+        reply = config_reply("DELETE", host_config.COLLECTION + "/" + a.name, {})
+    if reply is None:
+        try:
+            with config_lock():
+                raw, cp = host_config.load(config_path())
+                if a.action == "add":
+                    if cp.has_section("host:" + a.name):
+                        die("host_exists: 目标机 " + a.name + " 已存在", 1)
+                    updated, encoded = host_config.host_candidate(raw, a.name, fields)
+                    host_config.validate(host_config.effective(updated, a.name))
+                elif a.action == "update":
+                    if not cp.has_section("host:" + a.name):
+                        die("not_found: 目标机 " + a.name + " 不存在", 1)
+                    updated, encoded = host_config.host_candidate(raw, a.name, fields)
+                    host_config.validate(host_config.effective(updated, a.name))
+                else:
+                    if not cp.has_section("host:" + a.name):
+                        die("not_found: 目标机 " + a.name + " 不存在", 1)
+                    records = [rec for rec in all_jobs() if rec.get("host") == a.name]
+                    running = host_config.active_job_ids(records, local_job_states(records))
+                    if running:
+                        die_active_dispatches(running)
+                    updated, encoded = host_config.host_candidate(raw, a.name, {}, delete=True)
+                host_config.replace(config_path(), raw, encoded)
+                reply = (dict(deleted=a.name) if a.action == "delete"
+                         else dict(host=host_row(updated, a.name, host_config,
+                                                 host_secrets(updated, host_config))))
+        except host_config.InvalidField as error:
+            die_invalid_field(error)
+        except JobBusy:
+            die("host_config_busy: 配置正在写入，请稍后重试", 1)
+        except (OSError, UnicodeError, configparser.Error, ValueError):
+            config_unavailable()
+    if a.json:
+        print(json.dumps(reply, ensure_ascii=False))
+    elif a.action == "delete":
+        print("deleted host " + reply["deleted"])
+    else:
+        print(("added" if a.action == "add" else "updated") + " host " + reply["host"]["name"])
 
 
 def root_expr(host):
@@ -2293,6 +2603,38 @@ def main(argv=None, *, forwarded=None):
     command = actions.add_parser("close", help="立即关闭配对窗口，不影响已配对设备")
     command.add_argument("--json", action="store_true", help="输出 serve 返回的 JSON")
     command.set_defaults(fn=cmd_pair)
+
+    p = sub.add_parser("session-access", help="查看或开关会话访问总开关")
+    p.add_argument("action", nargs="?", choices=("show", "on", "off"), default="show")
+    p.add_argument("--json", action="store_true")
+    p.set_defaults(fn=cmd_session_access)
+
+    p = sub.add_parser("host", help="查看或增删改目标机配置；hosts 负责探测状态")
+    actions = p.add_subparsers(dest="action", required=True)
+    command = actions.add_parser("list", help="列出配置中的目标机，含禁用项")
+    command.add_argument("--json", action="store_true")
+    command.set_defaults(fn=cmd_host)
+    for action in ("add", "update"):
+        command = actions.add_parser(action, help=("新增" if action == "add" else "修改") + "目标机")
+        command.add_argument("name")
+        command.add_argument("--ssh", help="user@address，或 local 表示本机")
+        command.add_argument("--workdir", help="目标机上的工作根目录")
+        command.add_argument("--sync", choices=("origin", "direct"))
+        command.add_argument("--platform", choices=("posix", "macos", "linux", "windows"))
+        command.add_argument("--enabled", help="1/0、true/false 或 yes/no")
+        command.add_argument("--launcher", choices=("nohup", "tmux"))
+        command.add_argument("--tags", help="逗号分隔的标签")
+        command.add_argument("--set", dest="set_fields", action="append", metavar="FIELD=VALUE",
+                             help="设置任意配置字段，可重复")
+        if action == "update":
+            command.add_argument("--unset", dest="unset_fields", action="append", metavar="FIELD",
+                                 help="移除本段覆盖，恢复继承，可重复")
+        command.add_argument("--json", action="store_true")
+        command.set_defaults(fn=cmd_host)
+    command = actions.add_parser("delete", help="删除目标机；有运行中派单时拒绝")
+    command.add_argument("name")
+    command.add_argument("--json", action="store_true")
+    command.set_defaults(fn=cmd_host)
 
     p = sub.add_parser("serve", help="serve local HTTP and events over a Unix socket")
     p.add_argument("--socket", help="Unix socket path (default RD_SERVE_SOCKET or RD_STATE/serve.sock)")

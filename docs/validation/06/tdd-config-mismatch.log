@@ -1,0 +1,6 @@
+test_online_rejects_cli_with_a_different_config_path (tests.test_rd_config_cli.ConfigCliTests.test_online_rejects_cli_with_a_different_config_path) ... ok
+
+----------------------------------------------------------------------
+Ran 1 test in 0.705s
+
+OK

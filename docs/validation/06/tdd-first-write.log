@@ -1,0 +1,6 @@
+test_offline_first_host_write_creates_config_and_empty_backup (tests.test_rd_config_cli.ConfigCliTests.test_offline_first_host_write_creates_config_and_empty_backup) ... ok
+
+----------------------------------------------------------------------
+Ran 1 test in 0.113s
+
+OK

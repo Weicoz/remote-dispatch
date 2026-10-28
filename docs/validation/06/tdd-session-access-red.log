@@ -1,0 +1,18 @@
+test_session_access_offline_show_toggle_backup_and_json (tests.test_rd_config_cli.ConfigCliTests.test_session_access_offline_show_toggle_backup_and_json) ... FAIL
+
+======================================================================
+FAIL: test_session_access_offline_show_toggle_backup_and_json (tests.test_rd_config_cli.ConfigCliTests.test_session_access_offline_show_toggle_backup_and_json)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/weicoz/remote-dispatch-self/users/weicoz/wt/weicoz-remote-dispatch-u06-20261028-115022-261556000/tests/test_rd_config_cli.py", line 98, in test_session_access_offline_show_toggle_backup_and_json
+    self.assertEqual(shown.returncode, 0, shown.stderr)
+    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: 2 != 0 : usage: rdispatch [-h] [-C TOP_DIR] [--version]
+                 {hosts,serve,project,profile,doctor,run,session-default,status,wait,watch,logs,result,inbox,ack,review,resume,fetch,stop,keep,clean} ...
+rdispatch: error: argument command: invalid choice: 'session-access' (choose from 'hosts', 'serve', 'project', 'profile', 'doctor', 'run', 'session-default', 'status', 'wait', 'watch', 'logs', 'result', 'inbox', 'ack', 'review', 'resume', 'fetch', 'stop', 'keep', 'clean')
+
+
+----------------------------------------------------------------------
+Ran 1 test in 0.071s
+
+FAILED (failures=1)

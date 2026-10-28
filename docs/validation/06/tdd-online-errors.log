@@ -1,0 +1,6 @@
+test_online_errors_keep_reason_and_exit_codes (tests.test_rd_config_cli.ConfigCliTests.test_online_errors_keep_reason_and_exit_codes) ... ok
+
+----------------------------------------------------------------------
+Ran 1 test in 1.009s
+
+OK

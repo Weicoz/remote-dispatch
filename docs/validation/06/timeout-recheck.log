@@ -1,0 +1,7 @@
+test_connection_loss_after_request_does_not_fall_back_or_write (tests.test_rd_config_cli.ConfigCliTests.test_connection_loss_after_request_does_not_fall_back_or_write) ... ok
+test_online_session_access_and_hosts_are_written_by_serve (tests.test_rd_config_cli.ConfigCliTests.test_online_session_access_and_hosts_are_written_by_serve) ... ok
+
+----------------------------------------------------------------------
+Ran 2 tests in 7.025s
+
+OK

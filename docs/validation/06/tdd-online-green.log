@@ -1,0 +1,6 @@
+test_online_session_access_and_hosts_are_written_by_serve (tests.test_rd_config_cli.ConfigCliTests.test_online_session_access_and_hosts_are_written_by_serve) ... ok
+
+----------------------------------------------------------------------
+Ran 1 test in 7.170s
+
+OK

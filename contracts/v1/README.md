@@ -186,3 +186,8 @@
 
 票 05 的设备与配对 CLI 只调用上述 `network-devices.json`、`network-pairing-window*.json`
 和 `network-revoke.json` 对应接口，不新增路径、字段或样例；`--json` 原样转发 serve 响应。
+
+票 06 的 `rdispatch session-access` 与 `rdispatch host` JSON 输出直接复用
+`session-access-*.json`、`host-config-*.json` 的 HTTP 响应结构，没有新增 HTTP
+路径或字段，因此不增加合同样例。CLI 在线时调用上述接口，离线时用同一套配置读写
+模块；差异只在错误输出走 `rdispatch:` stderr，不改变 HTTP 合同。
