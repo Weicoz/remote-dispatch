@@ -18,6 +18,12 @@ rdispatch profile sync mini --confirm-user-id zhangsan --confirm-version <profil
 
 两个确认参数不是用户日常固定配置：它们记录本次同步已确认的 ID 和版本。清单变化后必须重新检查和确认。ID 无法解析、确认 ID 错误、确认版本过期、远端同步竞争或本地比远端旧时停止同步。提醒不会自动更新，拒绝更新时使用旧配置；首次没有远端配置则不派任务。
 
+### 本机目标例外
+
+目标机写 `ssh = local`（例如 `self`）时，配置源与目的地是同一台机器、同一个用户，确认没有意义。派 Codex 前若副本缺失或落后于本机配置包，直接执行同一套同步，写入 `<workdir>/users/<ID>/profiles/`，输出一行 `本机目标 <机器>：已自动同步员工配置副本 version=…；无需确认。`，不要求 `--confirm-user-id` 与 `--confirm-version`。任务仍从这个独立副本生成自己的 `CODEX_HOME`，不读写用户自己的 Codex 目录。
+
+副本比本地配置包新时仍停止，不覆盖较新副本。本机没有配置包（`RD_PROFILE_DIR` 与默认目录都不存在）时无法比较或同步：已有副本就沿用，没有副本就停止派单。SSH 目标行为不变，首次仍须确认 ID 与版本指纹。`rdispatch profile check` / `profile sync` 对本机目标仍可手动使用。
+
 ## 配置包
 
 来源是派单端用户选定的配置。`RD_PROFILE_DIR` 可指定包目录；默认 `~/.config/remote-dispatch/profiles/<ID>/`。不是整个 `~/.codex`，不是目标机机器主人的配置。机器之间共用 ID，但不自动上传新电脑的环境。

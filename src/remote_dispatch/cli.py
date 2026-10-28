@@ -748,19 +748,10 @@ def profile_report(host, uid, local, remote):
     return state
 
 
-def cmd_profile(a, cfg):
-    uid = require_user()
-    host = scoped_host(cfg.host(a.host), uid)
-    local, payload = local_profile(uid, required=a.action == "sync")
-    remote = remote_profile(host, uid)
-    profile_report(host, uid, local, remote)
-    if a.action == "check":
-        return
-    if a.confirm_user_id != uid or not a.confirm_version or a.confirm_version != local["fingerprint"]:
-        die("尚未确认同步：向用户展示 ID、清单和版本，明确同意后传 --confirm-user-id 和 --confirm-version。", 4)
+def sync_profile(host, uid, local, payload, remote):
+    """把本地配置包写入目标机；调用方负责确认与输出。内容一致时不写，返回 None。"""
     if remote and remote["fingerprint"] == local["fingerprint"]:
-        print("配置内容一致；无需更新。")
-        return
+        return None
     if remote and local["source_updated_at"] < remote["source_updated_at"]:
         die("本地配置比远端旧；先取正确配置，不覆盖远端新版本。", 4)
     version = local["fingerprint"]
@@ -769,8 +760,7 @@ def cmd_profile(a, cfg):
         synced = native.request(host, "profile-sync", {"expected": remote, "manifest": local, "user_id": uid}, payload=payload)
         if synced["fingerprint"] != version:
             die("Windows 配置同步回读版本不匹配。")
-        print(f"已同步：ID={uid} version={version}；旧版本保留。")
-        return
+        return synced
     with tempfile.TemporaryFile() as stream:
         stream.write(payload)
         stream.seek(0)
@@ -791,7 +781,37 @@ mv "$ROOT/profiles/current.tmp" "$ROOT/profiles/current.json"
     synced = remote_profile(host, uid)
     if synced["fingerprint"] != version:
         die("同步回读版本不匹配；停止派单。")
-    print(f"已同步：ID={uid} version={version}；旧版本保留。")
+    return synced
+
+
+def prepare_local_profile(host, uid, local, payload, profile):
+    """本机目标的配置源与目的地同机同用户：副本缺失或落后时直接同步，不要求确认。"""
+    if profiles.comparison(local, profile) == "remote-newer":
+        die("本机目标的员工配置副本比本地配置包新；不覆盖较新副本，先核对配置再派单。未推送任务分支。", 4)
+    if not local:
+        if profile is not None:
+            return profile
+        die("此 ID 尚无员工配置副本；本机也没有配置包，无法自动同步。先准备配置包再派单。未推送任务分支。", 4)
+    synced = sync_profile(host, uid, local, payload, profile)
+    if synced is None:
+        return profile
+    print(f"本机目标 {host['name']}：已自动同步员工配置副本 version={synced['fingerprint'][:12]}；无需确认。")
+    return synced
+
+
+def cmd_profile(a, cfg):
+    uid = require_user()
+    host = scoped_host(cfg.host(a.host), uid)
+    local, payload = local_profile(uid, required=a.action == "sync")
+    remote = remote_profile(host, uid)
+    profile_report(host, uid, local, remote)
+    if a.action == "check":
+        return
+    if a.confirm_user_id != uid or not a.confirm_version or a.confirm_version != local["fingerprint"]:
+        die("尚未确认同步：向用户展示 ID、清单和版本，明确同意后传 --confirm-user-id 和 --confirm-version。", 4)
+    synced = sync_profile(host, uid, local, payload, remote)
+    print("配置内容一致；无需更新。" if synced is None
+          else f"已同步：ID={uid} version={synced['fingerprint']}；旧版本保留。")
 
 
 # ---------------------------------------------------------------- probing
@@ -1347,8 +1367,11 @@ def worker_path(path):
     return shlex.quote(path)
 
 
-def agent_preflight(host, uid, name, agent):
-    """按代理登记的能力检查目标机，不满足即在推送任务分支前停止；返回 Codex 员工配置。"""
+def agent_preflight(host, uid, name, agent, auto_sync=True):
+    """按代理登记的能力检查目标机，不满足即在推送任务分支前停止；返回 Codex 员工配置。
+
+    auto_sync=False 时不改本机目标的配置副本；续跑换目标机必须沿用原派单版本。
+    """
     spec = agents.SPECS[name]
     if host["platform"] not in spec["platforms"]:
         die(f"{name} 派单目前只支持 {'、'.join(spec['platforms'])} 目标机。", 4)
@@ -1360,11 +1383,14 @@ def agent_preflight(host, uid, name, agent):
             die(f"[host:{host['name']}] {spec['auth_key']} 必须是目标机上的绝对路径或 ~/ 开头路径。", 4)
     profile = None
     if spec["isolation"] == "profile":
-        local, _ = local_profile(uid)
+        local, payload = local_profile(uid)
         profile = remote_profile(host, uid)
-        profile_report(host, uid, local, profile)
-        if profile is None:
-            die("此 ID 尚无远端配置；先询问是否同步、确认 ID，再执行 rdispatch profile sync。未推送任务分支。", 4)
+        if is_local(host) and auto_sync:
+            profile = prepare_local_profile(host, uid, local, payload, profile)
+        else:
+            profile_report(host, uid, local, profile)
+            if profile is None:
+                die("此 ID 尚无远端配置；先询问是否同步、确认 ID，再执行 rdispatch profile sync。未推送任务分支。", 4)
     if host["platform"] == "windows":
         if any(agent[k] != AGENTS[name][k] for k in ("start", "resume")):
             die("Windows 使用内置 Codex 参数适配；自定义 POSIX 启动模板不能直接移植。", 4)
@@ -1977,7 +2003,7 @@ def resume_job(a, cfg, rec, *, prompt=None, before_launch=None, rollback_stack=N
         rec.setdefault("recovery_repairs", []).append(dict(from_round=rec["rounds"],
                                                            evidence=a.retry_after_repair, at=messages.utc_now()))
     if moving:
-        target_profile = agent_preflight(host, rec["user_id"], rec["agent"], agent)
+        target_profile = agent_preflight(host, rec["user_id"], rec["agent"], agent, auto_sync=False)
         if target_profile != rec.get("profile"):
             die("resume_profile_mismatch: 目标机用户配置与原派单不一致；先同步原配置。", 4)
         rec.setdefault("context_history", []).append(dict(receiver_session=session, from_round=rec["rounds"],

@@ -133,6 +133,8 @@ dsh_auth_file = ~/.dsh/.credentials.yaml
 
 `rdispatch hosts` 会把它显示为「本机」。不需要 sshd、免密或外网探针；代理调用模型仍需网络。`--host auto` 不会选本机，必须显式 `--host self`；Windows 发起方不能配置 `ssh = local`。负载、内存、磁盘阈值照样生效，超阈值才用 `--force-host`。只有 codex/dsh/agy 有员工配置隔离，本机派 kimi/claude 同样会被拒。本机 dsh 的 provider key 缺失会报 `MISSING_CREDENTIAL`，处理方法见 [代理适配](docs/agents.md)。
 
+派 Codex 到本机目标时，员工配置副本与配置源在同一台机器、同一个用户：副本缺失或落后于本机配置就先自动同步，输出一行 `本机目标 <机器>：已自动同步员工配置副本 version=…；无需确认。`，不要求 `--confirm-user-id` / `--confirm-version`。任务仍使用独立副本运行，不读写用户自己的 Codex 目录。SSH 目标行为不变，首次仍须确认 ID 与版本指纹，见 [用户配置](docs/user-profiles.md)。
+
 ## 安全边界
 
 - 只做派单与取回，不代替你验收；检查状态是执行方自报，最终验收由发起方判断。
