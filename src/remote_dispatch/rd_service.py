@@ -10,6 +10,7 @@ from pathlib import Path
 import plistlib
 import subprocess
 import sys
+import time
 import tempfile
 
 from . import __version__
@@ -96,9 +97,20 @@ def bootstrap(path):
     return launchctl("bootstrap", f"gui/{os.getuid()}", str(path))
 
 
-def reload(path):
-    """重新加载 plist：先卸下可能存在的旧任务，再按文件加载。"""
+def reload(path, wait=5.0):
+    """重新加载 plist：先卸下可能存在的旧任务，等 launchd 不再列出它，再按文件加载。
+
+    bootout 是异步的；立刻 bootstrap 可能撞上尚未卸完的旧任务而报 I/O 错误。
+    """
     bootout()
+    deadline = time.monotonic() + wait
+    while time.monotonic() < deadline:
+        try:
+            if LABEL not in jobs():
+                break
+        except ValueError:
+            break
+        time.sleep(0.1)
     return bootstrap(path)
 
 
@@ -165,7 +177,7 @@ def status(path):
     environment = document.get("EnvironmentVariables") or {}
     state = environment.get("RD_STATE")
     # plist 不可读或没写 RD_STATE 时不猜 socket，避免把别的 serve 当成这个服务。
-    socket = str(Path(state) / SOCKET_NAME) if state else None
+    socket = environment.get("RD_SERVE_SOCKET") or (str(Path(state) / SOCKET_NAME) if state else None)
     loaded = None
     pid = None
     launchctl_error = None

@@ -677,8 +677,6 @@ class Service:
         with self.writer:
             if self.stop.is_set() or self.config_file_stamp(path) != stamp:
                 return False
-            previous = {row["name"]: row for row in self.hosts}
-            previous_fingerprints = self.host_fingerprints
             fingerprints = {host["name"]: self.host_fingerprint(host) for host in hosts}
             # Only the validation pass needs strict errors; the live object keeps
             # the CLI's existing behavior for callers that predate reload.
@@ -688,6 +686,10 @@ class Service:
             self.reports.window = report_window
             self.host_config.remember_secrets(config.cp)
             with self.cache_lock:
+                # Read the published rows under the lock so a concurrent poll cannot
+                # hand us stale probe rows to carry over.
+                previous = {row["name"]: row for row in self.hosts}
+                previous_fingerprints = self.host_fingerprints
                 self.hosts = [previous.get(host["name"])
                               if previous_fingerprints.get(host["name"]) == fingerprints[host["name"]]
                               else self.host_row(host)

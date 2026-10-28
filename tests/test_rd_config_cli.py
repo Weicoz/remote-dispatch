@@ -379,3 +379,10 @@ class ConfigCliTests(unittest.TestCase):
         result = self.command("session-access", "off", "--json")
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertRegex(self.config.read_text(), r"session_access\s*=\s*false")
+
+    def test_broken_config_reports_an_error_instead_of_a_traceback(self):
+        self.config.write_text("garbage\n", encoding="utf-8")
+        result = self.command("host", "list")
+        self.assertEqual(result.returncode, 4)
+        self.assertNotIn("Traceback", result.stderr)
+        self.assertIn("config_invalid", result.stderr)

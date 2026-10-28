@@ -119,6 +119,7 @@ class ServiceTests(unittest.TestCase):
         self.assertIs(document["RunAtLoad"], True)
         self.assertIs(document["KeepAlive"], True)
         self.assertEqual(self.calls(), [["bootout", f"gui/{UID}/{LABEL}"],
+                                        ["list"],
                                         ["bootstrap", f"gui/{UID}", str(self.plist)]])
         self.assertTrue(self.state.is_dir(), "install 必须建好日志所在的 RD_STATE")
         self.assertIn("installed serve " + LABEL, result.stdout)
@@ -156,8 +157,10 @@ class ServiceTests(unittest.TestCase):
         self.assertEqual(again.returncode, 0, again.stderr)
         self.assertEqual(self.plist.read_bytes(), first)
         self.assertEqual(self.calls(), [["bootout", f"gui/{UID}/{LABEL}"],
+                                        ["list"],
                                         ["bootstrap", f"gui/{UID}", str(self.plist)],
                                         ["bootout", f"gui/{UID}/{LABEL}"],
+                                        ["list"],
                                         ["bootstrap", f"gui/{UID}", str(self.plist)]])
         self.assertEqual(plistlib.loads(self.plist.read_bytes())["ProgramArguments"],
                          [sys.executable, "-m", "remote_dispatch", "serve"])
@@ -369,14 +372,15 @@ class ServiceTests(unittest.TestCase):
         self.assertFalse(self.plist.exists(), "卸载必须删除 plist")
         self.assertTrue(self.state.is_dir(), "卸载不得删除状态目录")
         self.assertEqual(log.read_text(encoding="utf-8"), "serve output\n", "卸载不得删除日志")
-        self.assertEqual(self.calls()[2:], [["bootout", f"gui/{UID}/{LABEL}"], ["list"]])
+        self.assertEqual(self.calls()[3:], [["bootout", f"gui/{UID}/{LABEL}"], ["list"]])
         self.assertIn("uninstalled serve " + LABEL, result.stdout)
 
     def test_restart_reloads_the_installed_plist(self):
         self.assertEqual(self.command("service", "install").returncode, 0)
         result = self.command("service", "restart")
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(self.calls()[2:], [["bootout", f"gui/{UID}/{LABEL}"],
+        self.assertEqual(self.calls()[3:], [["bootout", f"gui/{UID}/{LABEL}"],
+                                            ["list"],
                                             ["bootstrap", f"gui/{UID}", str(self.plist)]])
         self.assertIn("reloaded serve " + LABEL, result.stdout)
 
@@ -408,6 +412,21 @@ class ServiceTests(unittest.TestCase):
         self.assertFalse(self.plist.exists())
         self.assertFalse(self.state.exists())
         self.assertIn("not installed", result.stdout)
+
+    def test_status_and_socket_still_work_when_the_config_is_broken(self):
+        self.config.write_text("garbage\n[host:x\n", encoding="utf-8")
+        result = self.command("service", "status")
+        self.assertEqual(result.returncode, 4)
+        self.assertNotIn("Traceback", result.stderr)
+        self.assertIn("rdispatch service install", result.stderr)
+
+    def test_install_records_a_custom_serve_socket_for_cli_and_app(self):
+        socket = self.root / "custom.sock"
+        result = self.command("service", "install", RD_SERVE_SOCKET=str(socket))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        variables = plistlib.loads(self.plist.read_bytes())["EnvironmentVariables"]
+        self.assertEqual(variables["RD_SERVE_SOCKET"], str(socket))
+        self.assertIn(f"socket {socket}", result.stdout)
 
 
 if __name__ == "__main__":

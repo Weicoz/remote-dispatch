@@ -206,7 +206,13 @@ class Config:
     def __init__(self, strict=False):
         self.strict = strict
         self.cp = configparser.ConfigParser(interpolation=None)
-        self.cp.read(CONFIG, encoding="utf-8")
+        if strict and os.path.exists(CONFIG):
+            # cp.read silently skips unreadable files; a reload must not mistake
+            # a transient EACCES for an empty configuration.
+            with open(CONFIG, encoding="utf-8") as stream:
+                self.cp.read_file(stream, CONFIG)
+        else:
+            self.cp.read(CONFIG, encoding="utf-8")
         self.loaded_at = messages.utc_now()
 
     def fail(self, message, code=1):
@@ -2616,6 +2622,9 @@ def service_environment():
     }
     if os.environ.get("RD_CONFIG"):
         environment["RD_CONFIG"] = os.path.abspath(os.path.expanduser(os.environ["RD_CONFIG"]))
+    if os.environ.get("RD_SERVE_SOCKET"):
+        # CLI 转交与 App 都读这个变量；serve 必须监听同一路径。
+        environment["RD_SERVE_SOCKET"] = os.path.abspath(os.path.expanduser(os.environ["RD_SERVE_SOCKET"]))
     return environment
 
 
@@ -2685,7 +2694,7 @@ def cmd_service(a, cfg):
         service.reload(path)
         print(f"installed serve {service.LABEL}")
         print(f"plist  {path}")
-        print(f"socket {Path(environment['RD_STATE']) / service.SOCKET_NAME}")
+        print(f"socket {environment.get('RD_SERVE_SOCKET') or Path(environment['RD_STATE']) / service.SOCKET_NAME}")
         print(f"logs   {Path(environment['RD_STATE']) / service.ERROR_LOG_NAME}")
         return
     if a.action == "restart":
@@ -2988,7 +2997,12 @@ def main(argv=None, *, forwarded=None):
             code = rd_serve.forward(a, list(sys.argv[1:] if argv is None else argv))
             if code is not None:
                 raise SystemExit(code)
-        a.fn(a, Config())
+        # service/device/pair 不读配置：配置写坏时仍要能查看服务状态和修复设置。
+        a.fn(a, None if a.command in ("service", "device", "pair") else Config())
+    except configparser.Error as error:
+        line = getattr(error, "lineno", None)
+        where = f"第 {line} 行" if line else type(error).__name__
+        die(f"config_invalid: {CONFIG} 格式错误（{where}）；修好后重试。", 4)
     except ValueError as error:
         die(str(error), 4)
 
