@@ -45,7 +45,7 @@ rdispatch --version          # 验证入口
 
 ```ini
 [host:mini]
-ssh = weicoz@192.168.1.20
+ssh = user@mini.local
 workdir = ~/remote-dispatch
 sync = origin
 ; 只有 dsh 需要；注释必须单独成行，rdispatch 不识别行尾注释
