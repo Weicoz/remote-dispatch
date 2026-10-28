@@ -1,0 +1,8 @@
+rdispatch: [host:self] 本机派发只支持 POSIX；Windows 目标必须通过 SSH。
+rdispatch: [self] step failed (7):
+
+----------------------------------------------------------------------
+Ran 26 tests in 25.466s
+
+OK
+remote       load 0/1c  mem-free 50%  swap ? used/? free io ?MB/s  disk 100G  sessions 0  heavy 0/1  network [unknown]  -> ok

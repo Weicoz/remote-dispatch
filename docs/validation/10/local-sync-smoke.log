@@ -1,0 +1,14 @@
+exit: 0
+--- stdout ---
+本机目标 self：已自动同步员工配置副本 version=9671b3357801；无需确认。
+dispatching employee_a-repo-codex-20261028-125221-434847000 -> self (branch rd/employee_a/codex-20261028-125221-434847000, base 253d2bd477, sync direct)
+started. job id: employee_a-repo-codex-20261028-125221-434847000
+  rdispatch status employee_a-repo-codex-20261028-125221-434847000    rdispatch logs employee_a-repo-codex-20261028-125221-434847000    rdispatch wait employee_a-repo-codex-20261028-125221-434847000    rdispatch fetch employee_a-repo-codex-20261028-125221-434847000
+--- stderr ---
+
+job: employee_a-repo-codex-20261028-125221-434847000
+exit_code: 0
+codex_home: /private/var/folders/55/xwg7x1wj6m93xp67ncz01_3m0000gn/T/rd-local-profile-4983exmm/worker/users/employee_a/jobs/employee_a-repo-codex-20261028-125221-434847000/codex
+account_home: /private/var/folders/55/xwg7x1wj6m93xp67ncz01_3m0000gn/T/rd-local-profile-4983exmm/home
+user-codex-exists: False
+current.json: {"user_id": "employee_a", "fingerprint": "9671b33578012b7bc3a4e2d5fa757786b1186bdecaf807a67c9643677d3bb8e9", "source_upd...

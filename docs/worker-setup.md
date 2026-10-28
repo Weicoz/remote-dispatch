@@ -17,6 +17,8 @@ sync = direct
 
 本机需要 `git`、`pgrep`（Linux 用 procps）、Python 3.11+，以及要派的代理 CLI。`rdispatch doctor self` 会逐项检查。派 dsh 仍需 `dsh_auth_file`；provider key 缺失的处理见 [代理适配](agents.md)。负载、内存、磁盘阈值与远端一致，超阈值派单会被拦。
 
+派 Codex 到本机目标时，员工配置副本缺失或落后于本机配置包会先自动同步，输出一行说明，不要求确认；任务仍用独立副本运行。SSH 目标行为不变，首次仍须确认 ID 与版本指纹，见 [用户配置](user-profiles.md)。
+
 以下步骤按 SSH 目标描述。本机目标跳过免密登录与远端 SSH 安装，但 git、Python、代理 CLI 仍须在本机可用。
 
 ## 1. 本机能免密登录

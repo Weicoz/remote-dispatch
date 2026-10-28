@@ -3,9 +3,12 @@ import argparse
 import contextlib
 import io
 import getpass
+import json
 import os
 from pathlib import Path
+import re
 import subprocess
+import sys
 import tempfile
 import time
 import unittest
@@ -332,6 +335,232 @@ class LocalEndToEndTest(unittest.TestCase):
         branch = subprocess.run(["git", "-C", str(Path(rec["worker_root"], rec["bare"])), "show-ref",
                                  "--verify", "refs/heads/" + rec["branch"]], capture_output=True)
         self.assertNotEqual(branch.returncode, 0)
+
+
+FAKE_CODEX = '''#!/usr/bin/env python3
+import json, os, pathlib, sys
+if "--help" in sys.argv:
+    print("--disable --permission-profile")
+    sys.exit(0)
+if sys.argv[1:] == ["features", "list"]:
+    print("hooks stable true\\nplugins stable true\\nmemories stable true\\nexternal_agent_memory_import development false")
+    sys.exit(0)
+home = pathlib.Path(os.environ["CODEX_HOME"])
+record = {"codex_home": str(home), "account_home": os.environ.get("HOME"),
+          "config": (home / "config.toml").read_text(), "agents": (home / "AGENTS.md").read_text()}
+pathlib.Path(os.environ["RD_JOB_DIR"], "codex-record.json").write_text(json.dumps(record))
+print(json.dumps({"session_id": "fixture-session"}))
+'''
+
+# 假 ssh 只替换传输层：参数按本机命令执行，目标机逻辑与真实 SSH 目标一致。
+FAKE_SSH = '''#!/bin/sh
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -o) shift 2 ;;
+    -*) shift ;;
+    *) break ;;
+  esac
+done
+shift
+exec sh -c "$*"
+'''
+
+
+class LocalTargetProfileSyncTest(unittest.TestCase):
+    """本机目标派 Codex 前自动同步员工配置副本；SSH 目标仍要求确认。"""
+
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory(prefix="rd-local-profile-")
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name).resolve()
+        self.source = self.root / "profile-source"
+        self.source.mkdir()
+        (self.source / "config.toml").write_text(
+            'approval_policy="never"\nsandbox_mode="workspace-write"\nmodel="fixture-a"\n', encoding="utf-8")
+        (self.source / "AGENTS.md").write_text("公司规范\nEMPLOYEE_RULE_MARKER\n", encoding="utf-8")
+        self.state = self.root / "state"
+        self.config = self.root / "config.ini"
+        self.worker = self.root / "worker"
+        self.users = self.worker / "users" / "employee_a"
+        self.home = self.root / "home"
+        self.home.mkdir()
+        self.bin = self.root / "bin"
+        self.bin.mkdir()
+        (self.bin / "python3").symlink_to(sys.executable)
+        (self.bin / "codex").write_text(FAKE_CODEX, encoding="utf-8")
+        (self.bin / "codex").chmod(0o755)
+        self.repo = self.root / "repo"
+        self.repo.mkdir()
+        self.git("init", "-q")
+        self.git("config", "user.name", "Fixture")
+        self.git("config", "user.email", "fixture@example.invalid")
+        (self.repo / "tracked.txt").write_text("base\n", encoding="utf-8")
+        self.git("add", ".")
+        self.git("commit", "-qm", "fixture base")
+        self.prompt = self.root / "task.md"
+        self.prompt.write_text("Fixture only; no model API request.\n", encoding="utf-8")
+        self.write_config(f"[host:self]\nssh = local\nworkdir = {self.worker}\nsync = direct\n"
+                          f"path = {self.bin}:{os.environ['PATH']}\ntimeout = 30\n")
+        self.env = dict({k: v for k, v in os.environ.items() if not k.startswith("RD_")},
+                        RD_STATE=str(self.state), RD_CONFIG=str(self.config), RD_USER_ID="employee_a",
+                        RD_PROFILE_DIR=str(self.source), HOME=str(self.home),
+                        PYTHONPATH=str(Path(__file__).resolve().parents[1] / "src"))
+
+    def git(self, *args):
+        return subprocess.run(["git", "-C", str(self.repo), *args], check=True,
+                              capture_output=True, text=True).stdout
+
+    def write_config(self, text):
+        self.config.write_text(text, encoding="utf-8")
+
+    def cli(self, *argv, env=None):
+        return subprocess.run([sys.executable, "-m", "remote_dispatch", *argv], env=env or self.env,
+                              capture_output=True, text=True, timeout=60)
+
+    def dispatch(self, host="self", env=None):
+        return self.cli("run", "--dir", str(self.repo), "--agent", "codex", "--prompt-file", str(self.prompt),
+                        "--host", host, "--force-host", "--timeout", "30", env=env)
+
+    def job_id(self, result):
+        match = re.search(r"started\. job id: (\S+)", result.stdout)
+        self.assertIsNotNone(match, "派单未启动：\n" + result.stdout + result.stderr)
+        return match.group(1)
+
+    def wait_round(self, job, round_no=1, worker=None):
+        directory = Path(worker or self.worker) / "users" / "employee_a" / "jobs" / job
+        deadline = time.time() + 30
+        while time.time() < deadline:
+            if (directory / f"exit.r{round_no}").exists():
+                return directory
+            time.sleep(0.05)
+        self.fail(f"任务第 {round_no} 轮未在 30 秒内结束：{directory}")
+
+    def codex_record(self, directory, round_no=1):
+        path = directory / "codex-record.json"
+        self.assertTrue(path.exists(), "任务没有在隔离的 Codex 配置下运行：\n"
+                        + (directory / f"stderr.r{round_no}.log").read_text(encoding="utf-8"))
+        return json.loads(path.read_text(encoding="utf-8"))
+
+    def current_profile(self, worker=None):
+        directory = Path(worker or self.worker) / "users" / "employee_a" / "profiles"
+        return json.loads((directory / "current.json").read_text(encoding="utf-8"))
+
+    def test_local_target_syncs_missing_profile_and_runs_with_an_isolated_copy(self):
+        result = self.dispatch()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("本机目标 self：已自动同步员工配置副本 version=", result.stdout)
+        self.assertNotIn("--confirm-version", result.stdout + result.stderr)
+        current = self.current_profile()
+        self.assertEqual(current["user_id"], "employee_a")
+        self.assertTrue((self.users / "profiles" / current["fingerprint"] / "config.toml").exists())
+        job = self.job_id(result)
+        directory = self.wait_round(job)
+        self.assertEqual((directory / "exit.r1").read_text(encoding="utf-8").strip(), "0")
+        record = self.codex_record(directory)
+        self.assertEqual(record["codex_home"], str(directory / "codex"))
+        self.assertEqual(record["account_home"], str(self.home))
+        self.assertIn("EMPLOYEE_RULE_MARKER", record["agents"])
+        self.assertFalse((self.home / ".codex").exists())
+
+    def test_local_target_does_not_sync_when_the_copy_is_current(self):
+        first = self.dispatch()
+        self.assertEqual(first.returncode, 0, first.stdout + first.stderr)
+        self.wait_round(self.job_id(first))
+        second = self.dispatch()
+        self.assertEqual(second.returncode, 0, second.stdout + second.stderr)
+        self.assertNotIn("已自动同步", second.stdout)
+        versions = [p.name for p in (self.users / "profiles").iterdir()
+                    if p.is_dir() and not p.name.startswith(".")]
+        self.assertEqual(versions, [self.current_profile()["fingerprint"]])
+
+    def test_local_target_updates_a_stale_copy_and_keeps_old_versions(self):
+        check = self.cli("profile", "check", "self")
+        self.assertEqual(check.returncode, 0, check.stderr)
+        self.assertIn("Remote Dispatch: ID=employee_a host=self", check.stdout)
+        fingerprint = json.loads((self.state / "profiles" / "employee_a" / "source.json").read_text())["fingerprint"]
+        synced = self.cli("profile", "sync", "self", "--confirm-user-id", "employee_a",
+                          "--confirm-version", fingerprint)
+        self.assertEqual(synced.returncode, 0, synced.stdout + synced.stderr)
+        self.assertIn("已同步：ID=employee_a version=", synced.stdout)
+        first = self.current_profile()["fingerprint"]
+        (self.source / "AGENTS.md").write_text("公司规范\nEMPLOYEE_RULE_MARKER_V2\n", encoding="utf-8")
+        result = self.dispatch()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("本机目标 self：已自动同步员工配置副本 version=", result.stdout)
+        second = self.current_profile()["fingerprint"]
+        self.assertNotEqual(first, second)
+        self.assertTrue((self.users / "profiles" / first).is_dir())
+        directory = self.wait_round(self.job_id(result))
+        record = self.codex_record(directory)
+        self.assertIn("EMPLOYEE_RULE_MARKER_V2", record["agents"])
+
+    def test_local_target_keeps_a_newer_copy_instead_of_overwriting_it(self):
+        profiles = self.users / "profiles"
+        profiles.mkdir(parents=True)
+        manifest = {"user_id": "employee_a", "fingerprint": "a" * 64, "source_updated_at": time.time() + 60,
+                    "files": {"config.toml": {"sha256": "b" * 64, "mode": 0o644}}}
+        (profiles / "current.json").write_text(json.dumps(manifest), encoding="utf-8")
+        result = self.dispatch()
+        self.assertEqual(result.returncode, 4, result.stdout + result.stderr)
+        self.assertIn("本机目标的员工配置副本比本地配置包新；不覆盖较新副本", result.stderr)
+        self.assertEqual(json.loads((profiles / "current.json").read_text(encoding="utf-8")), manifest)
+        self.assertFalse((self.users / "jobs").exists())
+
+    def test_local_target_without_any_config_package_stops_before_dispatch(self):
+        env = dict(self.env, RD_PROFILE_DIR=str(self.root / "absent-profile"))
+        result = self.dispatch(env=env)
+        self.assertEqual(result.returncode, 4, result.stdout + result.stderr)
+        self.assertIn("本机也没有配置包，无法自动同步", result.stderr)
+        self.assertFalse((self.users / "jobs").exists())
+
+    def test_resume_moving_to_the_local_target_keeps_the_original_profile(self):
+        remote_worker = self.root / "remote-worker"
+        local_worker = self.root / "local-worker"
+        (self.bin / "ssh").write_text(FAKE_SSH, encoding="utf-8")
+        (self.bin / "ssh").chmod(0o755)
+        self.write_config(f"[host:self]\nssh = local\nworkdir = {local_worker}\nsync = direct\n"
+                          f"path = {self.bin}:{os.environ['PATH']}\ntimeout = 30\n"
+                          f"[host:remote]\nssh = worker@example.invalid\nworkdir = {remote_worker}\n"
+                          f"sync = direct\npath = {self.bin}:{os.environ['PATH']}\ntimeout = 30\n")
+        env = dict(self.env, PATH=str(self.bin) + os.pathsep + os.environ["PATH"])
+        check = self.cli("profile", "check", "remote", env=env)
+        self.assertEqual(check.returncode, 0, check.stderr)
+        fingerprint = json.loads(
+            (self.state / "profiles" / "employee_a" / "source.json").read_text())["fingerprint"]
+        for host in ("remote", "self"):
+            synced = self.cli("profile", "sync", host, "--confirm-user-id", "employee_a",
+                              "--confirm-version", fingerprint, env=env)
+            self.assertEqual(synced.returncode, 0, synced.stdout + synced.stderr)
+        first = self.dispatch(host="remote", env=env)
+        self.assertEqual(first.returncode, 0, first.stdout + first.stderr)
+        job = self.job_id(first)
+        self.wait_round(job, worker=remote_worker)
+        (self.source / "AGENTS.md").write_text("公司规范\nEMPLOYEE_RULE_MARKER_V2\n", encoding="utf-8")
+        resumed = self.cli("resume", job, "--host", "self", "--force-host",
+                          "--prompt-file", str(self.prompt), env=env)
+        self.assertEqual(resumed.returncode, 0, resumed.stdout + resumed.stderr)
+        self.assertNotIn("已自动同步", resumed.stdout)
+        record = json.loads((self.state / "jobs" / (job + ".json")).read_text(encoding="utf-8"))
+        self.assertEqual((record["host"], record["rounds"]), ("self", 2))
+        self.assertEqual(self.current_profile(worker=local_worker)["fingerprint"], fingerprint)
+        directory = self.wait_round(job, round_no=2, worker=local_worker)
+        self.assertEqual((directory / "exit.r2").read_text(encoding="utf-8").strip(), "0")
+        codex = self.codex_record(directory, round_no=2)
+        self.assertIn("EMPLOYEE_RULE_MARKER", codex["agents"])
+        self.assertNotIn("EMPLOYEE_RULE_MARKER_V2", codex["agents"])
+
+    def test_ssh_target_still_requires_profile_confirmation(self):
+        (self.bin / "ssh").write_text(FAKE_SSH, encoding="utf-8")
+        (self.bin / "ssh").chmod(0o755)
+        self.write_config(f"[host:remote]\nssh = worker@example.invalid\nworkdir = {self.worker}\n"
+                          f"sync = direct\npath = {self.bin}:{os.environ['PATH']}\ntimeout = 30\n")
+        env = dict(self.env, PATH=str(self.bin) + os.pathsep + os.environ["PATH"])
+        result = self.dispatch(host="remote", env=env)
+        self.assertEqual(result.returncode, 4, result.stdout + result.stderr)
+        self.assertIn("此 ID 尚无远端配置；先询问是否同步、确认 ID，再执行 rdispatch profile sync", result.stderr)
+        self.assertNotIn("已自动同步", result.stdout)
+        self.assertFalse((self.users / "profiles").exists())
+        self.assertFalse((self.users / "jobs").exists())
 
 
 if __name__ == "__main__":
