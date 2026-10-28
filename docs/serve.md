@@ -112,6 +112,88 @@ POSIX CPU 使用 1 分钟负载除以核数，Windows 使用 CPU 百分比，不
 没有统计的旧回执继续可读；执行方提供的统计仍需发起方验收。
 SSE 仅读取事件日志，补读包括轮转段；15 秒发一次注释心跳，断线后用最后收到的 ID 重连。
 
+## 常驻 serve（票 04）
+
+`rdispatch service` 用用户级 LaunchAgent 托管常驻 serve，只支持 macOS。
+Label 固定为 `io.github.weicoz.remote-dispatch.serve`，plist 写入
+`~/Library/LaunchAgents/io.github.weicoz.remote-dispatch.serve.plist`。
+常驻 serve 使用默认 socket `$RD_STATE/serve.sock`，plist 不设 `RD_SERVE_SOCKET`，
+App 与 CLI 不带任何环境变量即可连上默认状态目录的 serve。plist 记录安装时的 `RD_STATE`；
+CLI 仍按自己的 `RD_STATE`／`RD_SERVE_SOCKET` 连接，安装时用了自定义状态目录就要在两边保持一致。
+
+```sh
+rdispatch service install     # 生成并加载 plist；开机自启、崩溃拉起
+rdispatch service status      # 加载状态、进程、socket、包版本、合同版本、配置重载结果
+rdispatch service status --json
+rdispatch service restart     # 重新加载 plist，升级 rdispatch 后用
+rdispatch service uninstall   # 卸载并删除 plist，保留状态目录与日志
+```
+
+plist 记录安装时 shell 的 `RD_STATE`、`RD_USER_ID`（未设置时取 `default-user.json`）、
+`RD_CONFIG`（仅当显式设置时写入，否则 serve 用默认配置路径）与 `PATH`
+（launchd 默认 PATH 找不到 `herdr` 等用户级工具）。`ProgramArguments` 是当前运行
+`rdispatch` 的那个入口加 `serve`：经 `rdispatch` 命令调用时写该入口的绝对路径，
+用 `python -m remote_dispatch` 调用时写解释器与 `-m remote_dispatch`。`RunAtLoad` 与
+`KeepAlive` 均为真；标准输出与标准错误分别写到 `$RD_STATE/serve.log` 与
+`$RD_STATE/serve.err.log`；`install` 会先建好状态目录（新建时 0700，已存在时不改权限）。
+
+写入沿用状态目录的原子替换：先写同目录临时文件并落盘，再 `os.replace`；plist 权限 0600，
+只含路径与用户 ID，不含凭据。
+`install` 与 `restart` 都执行 `launchctl bootout gui/$UID/<Label>` 再
+`launchctl bootstrap gui/$UID <plist>`，因此重复 `install` 覆盖旧 plist 并重新加载。
+`bootout` 在未加载时返回非零，按幂等处理；`bootstrap` 失败返回 4
+并保留 plist，便于排查后重试。`uninstall` 在未安装时只做一次 `bootout` 并提示，
+不删状态目录与日志；无法确认 launchd 已卸载（查询失败或仍被列出）时返回 4 和
+`service_unload_failed` 并保留 plist，避免留下没有 plist 的孤儿 serve。
+
+`status` 对已安装的 plist 与 `launchctl list` 求值：`loaded` 为 `true`/`false`/
+`null`（未安装或 launchctl 不可用时为 `null`），`pid` 为 launchd 报告的进程号，
+`running` 表示该进程仍存在。serve 在线时经 plist 的 socket 读取 `GET /v1/version`，
+得到 `package_version`、`contract_version` 与 `config_reload`；serve 不在线时三项为
+`null`，plist 与 launchd 状态照常报告。JSON 键：
+
+| 键 | 含义 |
+| --- | --- |
+| `installed` / `plist` / `label` | 是否安装、plist 路径与固定 Label |
+| `executable` | plist 中 `ProgramArguments` 的第一项（`rdispatch` 入口或 Python 解释器） |
+| `state_dir` / `config` / `socket` | 状态目录、配置文件（未设置时 `null`）、serve 的 socket（plist 不可读或未写 `RD_STATE` 时为 `null`，此时不探测该 socket） |
+| `log` / `error_log` | 标准输出与标准错误日志路径 |
+| `loaded` / `pid` / `running` | launchd 加载状态、进程号、进程是否存活 |
+| `serve_online` | socket 是否响应 `/v1/version` |
+| `package_version` / `contract_version` / `config_reload` | 来自 `/v1/version`；离线时为 `null` |
+| `cli_version` | 当前 CLI 的包版本，用于发现 serve 还是旧代码 |
+| `plist_error` / `launchctl_error` | plist 无法解析、launchd 状态无法读取的原因，正常为 `null` |
+
+文本输出在发现异常时追加一行 `hint`：plist 无法读取时提示重新 `install`；
+serve 在响应但 launchd 未加载本任务时提示 `restart` 交给 launchd；serve 未运行或
+未响应 socket 时给日志路径与 `restart`；serve 版本与当前 CLI 不同时提示 `restart`。
+`--json` 只输出字段，不含提示行。
+
+退出码：`status` 未安装返回 4，并在 stderr 提示 `rdispatch service install`；
+`restart` 未安装返回 4；`install` 写盘或 launchd 失败返回 4；`uninstall` 无法确认
+卸载返回 4；非 macOS 返回 4 和 `service_unsupported`。
+
+dev serve 用独立的 `RD_STATE`（必要时再设 `RD_SERVE_SOCKET`）与常驻 serve 并存，
+两者各自使用状态目录下的默认 socket，互不影响；同一个 `RD_STATE` 由服务锁独占，
+第二个 serve 退出并报告 `serve_already_running`，日志在 `serve.err.log`。
+升级 rdispatch 后 `restart` 会让新代码生效；可执行文件路径变化（例如换安装方式）时
+要重新 `install`。
+
+检查：
+
+```sh
+PYTHONPATH=src python3 -m unittest tests.test_rd_service -v
+```
+
+测试把 `HOME` 指向临时目录，在 `PATH` 前置假 `launchctl`（记录参数、按需返回 `list` 输出）
+与假 `rdispatch`，断言 plist 内容、`launchctl` 调用序列、重复安装覆盖、卸载保留状态与日志、
+未安装时的退出码与提示；在线用例启动真实 `rdispatch serve` 子进程读 `/v1/version`，
+并核对两个状态目录各自使用默认 socket。测试不调用真实 `launchctl`，不写真实
+`~/Library/LaunchAgents`，不启动、停止或替换任何正在运行的 serve。
+真机安装、开机自启与崩溃拉起由编排方在 09 号票执行。
+
+验证记录见 [validation/04-service-subcommand.md](validation/04-service-subcommand.md)。
+
 ## 版本接口（票 02）
 
 `GET /v1/version` 是只读接口，经 Unix socket 读取；已认证的 HTTPS 客户端同样可读：

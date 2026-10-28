@@ -39,6 +39,8 @@ from .rd_serve_cache import LocalFiles
 
 
 WRITE_COMMANDS = {"session-default", "run", "resume", "ack", "review", "stop", "project", "inbox", "keep", "clean"}
+SOCKET_NAME = "serve.sock"
+VERSION_ROUTE = "/v1/version"
 MAX_REQUEST_BYTES = 8 * 1024 * 1024
 # /v1 合同版本：仅在接口不兼容变化或 App 依赖的新增字段出现时递增。
 CONTRACT_VERSION = 1
@@ -88,7 +90,7 @@ class ServeFailed(Exception):
 
 
 def serve_socket_path():
-    return os.environ.get("RD_SERVE_SOCKET") or Path(cli.STATE) / "serve.sock"
+    return os.environ.get("RD_SERVE_SOCKET") or Path(cli.STATE) / SOCKET_NAME
 
 
 def serve_connection(timeout=None):
@@ -331,7 +333,8 @@ class Service:
         self.user_id = cli.require_user()
         # 启动时已成功读完配置；后续自动重载在成功或失败后更新同一结构。
         self.config_reload = self.reload_status(config.loaded_at)
-        self.path = Path(socket_path or os.environ.get("RD_SERVE_SOCKET") or self.state / "serve.sock").absolute()
+        self.path = Path(socket_path or os.environ.get("RD_SERVE_SOCKET")
+                          or self.state / SOCKET_NAME).absolute()
         self.lock = JobLock(self.state, "serve")
         self.lock.path = self.state / "locks" / "serve" / "service.lock"
         if not math.isfinite(poll_interval) or poll_interval <= 0:
@@ -925,7 +928,7 @@ class Service:
         url = urlsplit(target)
         path = unquote(url.path)
         args = parse_qs(url.query)
-        if path == "/v1/version":
+        if path == VERSION_ROUTE:
             return 200, dict(package_version=__version__, contract_version=CONTRACT_VERSION,
                              config_reload=dict(self.config_reload))
         if path == "/v1/reports":
