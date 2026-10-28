@@ -1,5 +1,13 @@
 # 变更记录
 
+## 0.3.0 — 2026-10-28
+
+- **新增 `rdispatch serve`**：本机 Unix socket 上的 HTTP 与事件流，供 App 等客户端读取派单、项目、会话、目标机与网络设置；serve 在运行时 CLI 写命令经 socket 转交给它，不在时 CLI 照旧直接写，两条路径共用 job 级锁。
+- 新增子命令 `project`（项目索引、隐藏与恢复）、`session-default`（会话派单默认值）、`review`（验收与打回续跑）。
+- 结果收取、进度汇报改为追加式并按轮次保留；新增发起来源字段、默认用户 ID、整轮锁与事件日志。
+- serve 提供目标机配置增删改、设备配对与令牌、会话访问总开关、会话终端 WebSocket 等接口，详见 `docs/serve.md` 与 `contracts/v1`。
+- 状态目录与配置兼容 0.2.1：旧版能读新版写过的状态目录并忽略新文件；回退到 0.2.1 后，Claude Code 发起会话收取结果需显式传 `--initiator-session`。
+
 ## 0.2.1 — 2026-10-24
 
 - **交换区不再按已用量拦派单**：macOS 不主动回收冷页，已用量只反映历史累积。探针改为采样 3 秒换入+换出速率（macOS `vm_stat`、Linux `/proc/vmstat`），并上报交换区剩余；超过 `max_swap_io_mb_s`（默认 10 MB/s），或剩余低于 `min_swap_free_gb`（默认 1 GB）且换页不低于 `swap_active_mb_s`（默认 1 MB/s）才判忙。

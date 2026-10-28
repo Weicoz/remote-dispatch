@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "remote-dispatch"
-version = "0.2.1"
+version = "0.3.0"
 description = "把编码代理会话与命令经 SSH 派到另一台机器，或在本机以隔离 worktree 另起一个 harness 会话"
 readme = "README.md"
 requires-python = ">=3.9"
