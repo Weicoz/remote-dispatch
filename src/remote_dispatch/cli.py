@@ -201,6 +201,8 @@ class ConfigError(Exception):
 
 
 class Config:
+    strict = False  # 绕过 __init__ 构造的对象（测试替身）也按非 strict 处理
+
     def __init__(self, strict=False):
         self.strict = strict
         self.cp = configparser.ConfigParser(interpolation=None)
