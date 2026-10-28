@@ -1,5 +1,6 @@
 """Local Unix socket HTTP adapter. Public responses contain display fields only."""
 from contextlib import nullcontext
+import configparser
 import http.client
 import json
 import math
@@ -41,6 +42,10 @@ WRITE_COMMANDS = {"session-default", "run", "resume", "ack", "review", "stop", "
 MAX_REQUEST_BYTES = 8 * 1024 * 1024
 # /v1 合同版本：仅在接口不兼容变化或 App 依赖的新增字段出现时递增。
 CONTRACT_VERSION = 1
+# 配置检查间隔：默认每秒一次；测试或高频采集可用更小的 --poll-interval。
+CONFIG_RELOAD_INTERVAL = 1.0
+# 错误行可能很长；限制进入版本接口与 /v1/hosts 的文本长度。
+CONFIG_RELOAD_ERROR_LIMIT = 1000
 
 
 def file_changes(receipt):
@@ -314,10 +319,18 @@ class Service:
     def __init__(self, config, socket_path=None, *, poll_interval=15, push_sender=None):
         self.config = config
         self.host_config = HostConfigRoutes(self)
+        self.config_path = self.host_config.path
+        self.config_stat_error = None
+        try:
+            self.config_stamp = self.config_file_stamp(self.config_path)
+        except OSError:
+            # Startup already read the config; a transient stat failure must not
+            # turn into a traceback. The reload loop records the next failure.
+            self.config_stamp = None
         self.state = Path(cli.STATE).resolve()
         self.user_id = cli.require_user()
         # 启动时已成功读完配置；后续自动重载在成功或失败后更新同一结构。
-        self.config_reload = dict(ok=True, at=config.loaded_at, error=None)
+        self.config_reload = self.reload_status(config.loaded_at)
         self.path = Path(socket_path or os.environ.get("RD_SERVE_SOCKET") or self.state / "serve.sock").absolute()
         self.lock = JobLock(self.state, "serve")
         self.lock.path = self.state / "locks" / "serve" / "service.lock"
@@ -341,16 +354,15 @@ class Service:
         self.progress = {}
         self.restore_snapshots()
         self.host_last_seen = self.restore_host_last_seen()
-        self.hosts = [dict(name=host["name"], local=cli.is_local(host), reachable=False,
-                           last_seen_at=self.host_last_seen.get(host["name"]),
-                           full=False, probed=False, metrics=host_metrics(host, {}),
-                           **{key: None for key in ("load1", "ncpu", "cpu_pct", "memfree", "disk", "disk_total", "running", "heavy")})
-                      for host in self.config.hosts()]
+        initial_hosts = self.config.hosts()
+        self.hosts = [self.host_row(host) for host in initial_hosts]
+        self.host_fingerprints = {host["name"]: self.host_fingerprint(host) for host in initial_hosts}
         self.network = network.Network(self, push_sender=push_sender)
         self.server = None
         self.thread = None
         self.poller = None
         self.session_poller = None
+        self.config_poller = None
         self.project_routes = ProjectRoutes(self)
         self.sensitive = set()
         self.sessions = Sessions(self)
@@ -396,6 +408,8 @@ class Service:
             self.log_snapshots.start()
             self.session_poller = threading.Thread(target=self.poll_sessions, daemon=True)
             self.session_poller.start()
+            self.config_poller = threading.Thread(target=self.poll_config, daemon=True)
+            self.config_poller.start()
             self.poller = threading.Thread(target=self.poll, daemon=True)
             self.poller.start()
             self.reports.start()
@@ -407,6 +421,9 @@ class Service:
     def close(self):
         self.stop.set()
         self.wake.set()
+        if self.config_poller is not None:
+            self.config_poller.join()
+            self.config_poller = None
         self.network.close()
         if self.session_poller is not None:
             self.session_poller.join()
@@ -582,6 +599,109 @@ class Service:
                     and receipt.get("round") == rec["rounds"] and receipt.get("host") == rec["host"]
                     and query.acknowledgement(rec, receipt))
 
+    @staticmethod
+    def config_file_stamp(path):
+        """Cheap change detector; a missing file is a valid empty configuration."""
+        try:
+            info = path.stat()
+        except FileNotFoundError:
+            return None
+        return (info.st_mtime_ns, info.st_size, info.st_ino, info.st_mode)
+
+    @staticmethod
+    def reload_status(at, error=None):
+        return dict(ok=error is None, at=at, error=error)
+
+    @staticmethod
+    def host_fingerprint(host):
+        return tuple(sorted(host.items()))
+
+    def host_row(self, host, *, reachable=False, full=False, probed=False, metrics=None, **values):
+        return dict(name=host["name"], local=cli.is_local(host), reachable=reachable,
+                    last_seen_at=self.host_last_seen.get(host["name"]),
+                    full=full, probed=probed,
+                    metrics=metrics if metrics is not None else host_metrics(host, {}),
+                    **{key: values.get(key) for key in ("load1", "ncpu", "cpu_pct", "memfree",
+                                                        "disk", "disk_total", "running", "heavy")})
+
+    def record_reload(self, error):
+        raw = str(error).strip() or error.__class__.__name__
+        # Parser errors quote the offending line, so every reload error goes
+        # through the same scrubber as other free text.
+        text = self.redact(raw).strip()
+        if len(text) > CONFIG_RELOAD_ERROR_LIMIT:
+            text = text[:CONFIG_RELOAD_ERROR_LIMIT] + "…"
+        self.config_reload = self.reload_status(messages.utc_now(), text)
+        print("rdispatch: config_reload_failed: " + text, file=sys.stderr)
+
+    def reload_config(self):
+        try:
+            return self._reload_config()
+        except OSError as error:
+            # A stat/read race at any point must not kill the watcher thread.
+            self.record_reload(error)
+            return False
+
+    def _reload_config(self):
+        path = self.config_path
+        try:
+            stamp = self.config_file_stamp(path)
+        except OSError as error:
+            signature = (error.errno, str(error))
+            if signature != self.config_stat_error:
+                self.config_stat_error = signature
+                self.record_reload(error)
+            return False
+        self.config_stat_error = None
+        if stamp == self.config_stamp:
+            return False
+        try:
+            config = cli.Config(strict=True)
+            hosts = config.hosts()
+            execute_timeout = network.positive_setting(config.cp, "execute_timeout", 120)
+            config.cp.getboolean("serve", "session_access", fallback=True)
+            report_window = config.cp.getfloat("monitor", "report_merge_window_seconds", fallback=5)
+            if not math.isfinite(report_window) or report_window < 0:
+                raise ValueError("汇报合并窗口必须为非负秒数。")
+        except (cli.ConfigError, configparser.Error, UnicodeError, ValueError, OSError) as error:
+            self.config_stamp = stamp
+            self.record_reload(error)
+            return False
+        # An editor save or API write may race the read. Keep the old object and
+        # try again on the next tick rather than publish a torn configuration.
+        if self.config_file_stamp(path) != stamp:
+            return False
+        with self.writer:
+            if self.stop.is_set() or self.config_file_stamp(path) != stamp:
+                return False
+            previous = {row["name"]: row for row in self.hosts}
+            previous_fingerprints = self.host_fingerprints
+            fingerprints = {host["name"]: self.host_fingerprint(host) for host in hosts}
+            # Only the validation pass needs strict errors; the live object keeps
+            # the CLI's existing behavior for callers that predate reload.
+            config.strict = False
+            self.config = config
+            self.execute_timeout = execute_timeout
+            self.reports.window = report_window
+            self.host_config.remember_secrets(config.cp)
+            with self.cache_lock:
+                self.hosts = [previous.get(host["name"])
+                              if previous_fingerprints.get(host["name"]) == fingerprints[host["name"]]
+                              else self.host_row(host)
+                              for host in hosts]
+                self.host_fingerprints = fingerprints
+            self.config_stamp = stamp
+            self.config_reload = self.reload_status(config.loaded_at)
+            self.wake.set()
+        return True
+
+    def poll_config(self):
+        while not self.stop.is_set():
+            self.stop.wait(min(CONFIG_RELOAD_INTERVAL, self.poll_interval))
+            if self.stop.is_set():
+                return
+            self.reload_config()
+
     def host_poll_due(self, host):
         # A connection edit is new evidence: do not retain the old circuit.
         connection = tuple(sorted(host.items()))
@@ -613,9 +733,12 @@ class Service:
         log = events.EventLog(self.state)
         while not self.stop.is_set():
             self.wake.clear()
+            # One config generation per cycle: a reload mid-cycle must not
+            # publish a host list computed from the previous configuration.
+            config = self.config
             hosts = []
             available, attempted = set(), set()
-            enabled_hosts = self.config.hosts()
+            enabled_hosts = config.hosts()
             enabled_names = {host["name"] for host in enabled_hosts}
             for host in enabled_hosts:
                 if self.stop.is_set():
@@ -637,20 +760,18 @@ class Service:
                         self.host_poll_failed(host["name"])
                     full = bool(info.get("reachable") and cli.assess(host, info))
                     log.observe_host(host, info, full=full)
-                    hosts.append(dict(name=host["name"], local=cli.is_local(host),
-                                      reachable=bool(info.get("reachable")), full=full, probed=True,
-                                      last_seen_at=self.host_last_seen.get(host["name"]),
-                                      metrics=host_metrics(host, info),
-                                      **{key: info.get(key) for key in ("load1", "ncpu", "cpu_pct", "memfree", "disk", "disk_total", "running", "heavy")}))
+                    hosts.append(self.host_row(host, reachable=bool(info.get("reachable")), full=full,
+                                               probed=True, metrics=host_metrics(host, info),
+                                               **{key: info.get(key) for key in
+                                                  ("load1", "ncpu", "cpu_pct", "memfree", "disk",
+                                                   "disk_total", "running", "heavy")}))
                 except (ValueError, OSError, SystemExit, subprocess.SubprocessError):
                     self.host_poll_failed(host["name"])
-                    hosts.append(dict(name=host["name"], local=cli.is_local(host), reachable=False, full=False, probed=True,
-                                      last_seen_at=self.host_last_seen.get(host["name"]),
-                                      metrics=host_metrics(host, {}),
-                                      **{key: None for key in ("load1", "ncpu", "cpu_pct", "memfree", "disk", "disk_total", "running", "heavy")}))
+                    hosts.append(self.host_row(host, probed=True))
                     print("rdispatch: poll_unavailable: cannot probe a host", file=sys.stderr)
             with self.cache_lock:
-                self.hosts = hosts
+                if self.config is config:
+                    self.hosts = hosts
             try:
                 records = [rec for rec in self.records() if not self.job_refresh_complete(rec)]
             except (ValueError, OSError, SystemExit):
@@ -673,10 +794,10 @@ class Service:
                     continue
                 try:
                     # Disabling new dispatches must not freeze existing jobs.
-                    if (name not in enabled_names and self.config.cp.has_section("host:" + name)
-                            and not self.host_poll_due(self.config.host(name))):
+                    if (name not in enabled_names and config.cp.has_section("host:" + name)
+                            and not self.host_poll_due(config.host(name))):
                         continue
-                    batch = cli.job_states(self.config, group)
+                    batch = cli.job_states(config, group)
                     states.update({rec["job"]: batch.get(rec["job"], {"state": "unreachable"})
                                    for rec in group})
                     if any(batch.get(rec["job"], {}).get("state", "unreachable") == "unreachable" for rec in group):
@@ -704,7 +825,7 @@ class Service:
                             # A delayed target may still expose the previous launch.
                             continue
                         snapshot = dict(snapshot, round=str(number), snapshot_at=messages.utc_now())
-                        progress = cli.remote_report(cli.job_host(self.config, rec), rec, number, "progress") if rec.get("handoff_version") and snapshot.get("state") in ("running", "done") else None
+                        progress = cli.remote_report(cli.job_host(config, rec), rec, number, "progress") if rec.get("handoff_version") and snapshot.get("state") in ("running", "done") else None
                         log.observe_job(rec, snapshot)
                         history = ProgressHistory(self)
                         if progress is not None:
@@ -722,8 +843,8 @@ class Service:
                                             source.pop("worker_platform", None)
                                             source.pop("worker_python", None)
                                     history.collect(rec, prior, cli.remote_report(
-                                        cli.job_host(self.config, source), source, prior, "progress"), final=True)
-                        cli.collect_result(self.config, rec, snapshot)
+                                        cli.job_host(config, source), source, prior, "progress"), final=True)
+                        cli.collect_result(config, rec, snapshot)
                         # Persist only display data, so restart can serve the last
                         # observation while the first remote collection is pending.
                         saved_snapshot = {key: snapshot[key] for key in
@@ -815,7 +936,8 @@ class Service:
         query = self.query()
         if path == "/v1/hosts":
             with self.cache_lock:
-                return 200, {"hosts": list(self.hosts)}
+                return 200, {"hosts": list(self.hosts),
+                             "config_reload": dict(self.config_reload)}
         records = self.records()
         if path == "/v1/jobs":
             return 200, {"jobs": [self.card(rec, query) for rec in records]}

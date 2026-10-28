@@ -14,11 +14,16 @@
 - `version.json`（票 02）：`GET /v1/version` 返回 `package_version`（与
   `rdispatch --version` 一致）、`contract_version`（整数合同版本）和
   `config_reload`（`ok/at/error`）。`at` 是带时区 ISO 8601 时间，`error` 成功时为 null；
-  本票只记录启动时成功加载配置的时间，自动重载后的结果沿用同一字段。
-  接口只读内存状态，重复读取不改变值；样例由 `tests/test_rd_serve_version.py`
-  经真实 serve 子进程校验。
+  票 03 起记录最近一次配置重载：成功是本次读取时间，失败是失败时间；
+  配置未变化时重复读取保持同一个启动加载时间。接口只读内存状态；
+  样例由 `tests/test_rd_serve_version.py` 经真实 serve 子进程校验。
 
 - `hosts.json` / `hosts-populated.json`：空列表与已配置目标机。配置顺序固定；
+  响应顶层另带 `config_reload`，与 `version.json` 同形，成功和失败都返回；
+  它是客户端可忽略的新增字段，合同版本保持 1。
+  票 03 起由真实 serve 子进程在临时配置变化后验证。
+  `hosts-config-reload-error.json` 展示解析或校验失败时的 `config_reload`，
+  此时 `hosts` 继续返回上一次成功加载的目标机。
   `local/reachable/full` 是布尔值，资源值沿用探针的字符串或数字，未采集到为 `null`。
   票 45 追加可选 `cpu_pct`、`disk_total`、`metrics`；新服务固定返回三项指标。
   `metrics.cpu/memory/disk` 各含数值 `value`（未知为 null）、`unit`、数值

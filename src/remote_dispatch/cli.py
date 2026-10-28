@@ -196,11 +196,21 @@ def run(cmd, check=True, capture=True, **kw):
 
 # ---------------------------------------------------------------- config
 
+class ConfigError(Exception):
+    """配置无效；strict 模式供 serve 重载时保留旧配置而不是退出进程。"""
+
+
 class Config:
-    def __init__(self):
+    def __init__(self, strict=False):
+        self.strict = strict
         self.cp = configparser.ConfigParser(interpolation=None)
         self.cp.read(CONFIG, encoding="utf-8")
         self.loaded_at = messages.utc_now()
+
+    def fail(self, message, code=1):
+        if self.strict:
+            raise ConfigError(message)
+        die(message, code)
 
     def _section(self, kind, name):
         key = f"{kind}:{name}"
@@ -211,9 +221,9 @@ class Config:
         try:
             interval = int(value)
         except (ValueError, TypeError):
-            die("RD_REPORT_INTERVAL_SECONDS / [monitor] report_interval_seconds must be a positive integer (seconds)", 4)
+            self.fail("RD_REPORT_INTERVAL_SECONDS / [monitor] report_interval_seconds must be a positive integer (seconds)", 4)
         if interval <= 0:
-            die("RD_REPORT_INTERVAL_SECONDS / [monitor] report_interval_seconds must be a positive integer (seconds)", 4)
+            self.fail("RD_REPORT_INTERVAL_SECONDS / [monitor] report_interval_seconds must be a positive integer (seconds)", 4)
         return interval
 
     def retention_hours(self):
@@ -226,7 +236,7 @@ class Config:
             except (ValueError, TypeError):
                 hours[kind] = -1
             if not hours[kind] >= 0:
-                die(f"RD_RETAIN_{kind.upper()}_HOURS / [retention] {kind}_hours 必须是非负小时数。", 4)
+                self.fail(f"RD_RETAIN_{kind.upper()}_HOURS / [retention] {kind}_hours 必须是非负小时数。", 4)
         return hours
 
     def recovery_limit(self):
@@ -234,9 +244,9 @@ class Config:
         try:
             limit = int(value)
         except (ValueError, TypeError):
-            die("RD_MAX_SAME_FAILURE_RESUMES 必须是非负整数。", 4)
+            self.fail("RD_MAX_SAME_FAILURE_RESUMES 必须是非负整数。", 4)
         if limit < 0:
-            die("RD_MAX_SAME_FAILURE_RESUMES 必须是非负整数。", 4)
+            self.fail("RD_MAX_SAME_FAILURE_RESUMES 必须是非负整数。", 4)
         return limit
 
     def network_stall_seconds(self):
@@ -246,7 +256,7 @@ class Config:
     def host(self, name):
         sec = self._section("host", name)
         if sec is None:
-            die(f"no [host:{name}] in {CONFIG}")
+            self.fail(f"no [host:{name}] in {CONFIG}")
         h = dict(DEFAULTS)
         if self.cp.has_section("defaults"):
             h.update(self.cp["defaults"])
@@ -257,21 +267,21 @@ class Config:
             except (TypeError, ValueError):
                 value = -1
             if not math.isfinite(value) or value < 0:
-                die(f"[host:{name}] {key} 必须是有限的非负数。", 4)
+                self.fail(f"[host:{name}] {key} 必须是有限的非负数。", 4)
             if key in ("warn_free_mem_pct", "warn_cpu_pct") and value > 100:
-                die(f"[host:{name}] {key} 必须在 0 到 100 之间。", 4)
+                self.fail(f"[host:{name}] {key} 必须在 0 到 100 之间。", 4)
         if h["platform"] in ("macos", "linux"):
             h["platform"] = "posix"
         if h["platform"] not in ("posix", "windows"):
-            die("platform 必须是 macos、linux、posix 或 windows。")
+            self.fail("platform 必须是 macos、linux、posix 或 windows。")
         if h["platform"] == "windows":
             h["path"] = sec.get("path", "")
         if not h.get("ssh"):
-            die(f"[host:{name}] needs ssh = user@address (use ssh = local to dispatch on this machine)")
+            self.fail(f"[host:{name}] 缺少 ssh；填 user@address，或把 ssh 设为 local 以在本机派发。")
         if h["ssh"] == "local" and h["platform"] == "windows":
-            die(f"[host:{name}] 本机派发只支持 POSIX；Windows 目标必须通过 SSH。")
+            self.fail(f"[host:{name}] 本机派发只支持 POSIX；Windows 目标必须通过 SSH。")
         if h["ssh"] == "local" and not h["workdir"].startswith(("/", "~", "$HOME")):
-            die(f"[host:{name}] ssh = local 的 workdir 必须是绝对路径或 ~ 开头；相对路径会随发起目录漂移。")
+            self.fail(f"[host:{name}] 本机目标（ssh 为 local）的 workdir 必须是绝对路径或 ~ 开头；相对路径会随发起目录漂移。")
         h["name"] = name
         h["probe_agent"] = getattr(self, "probe_agent", "codex")
         return h
@@ -287,7 +297,7 @@ class Config:
         a = dict(AGENTS.get(name, {}))
         a.update(self._section("agent", name) or {})
         if "start" not in a:
-            die(f"unknown agent '{name}'. Built in: {', '.join(AGENTS)}; add [agent:{name}] to {CONFIG}")
+            self.fail(f"unknown agent '{name}'. Built in: {', '.join(AGENTS)}; add [agent:{name}] to {CONFIG}")
         a.setdefault("session_regex", SESSION_RE)
         a.setdefault("bin", a["start"].split()[0])
         a["kind"] = name
@@ -2638,7 +2648,7 @@ def main(argv=None, *, forwarded=None):
 
     p = sub.add_parser("serve", help="serve local HTTP and events over a Unix socket")
     p.add_argument("--socket", help="Unix socket path (default RD_SERVE_SOCKET or RD_STATE/serve.sock)")
-    p.add_argument("--poll-interval", type=float, default=15, help="background poll interval in seconds (default 15)")
+    p.add_argument("--poll-interval", type=float, default=15, help="background poll interval in seconds; config reload checks every min(1, interval) seconds (default 15)")
     p.set_defaults(fn=cmd_serve)
 
     p = sub.add_parser("project", help="manage persistent project history")
