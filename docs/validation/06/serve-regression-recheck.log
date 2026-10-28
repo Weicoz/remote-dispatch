@@ -1,0 +1,6 @@
+test_current_user_can_read_cards_details_historical_receipt_and_log_tail_without_writes (tests.test_rd_serve.ServeTests.test_current_user_can_read_cards_details_historical_receipt_and_log_tail_without_writes) ... ok
+
+----------------------------------------------------------------------
+Ran 1 test in 1.454s
+
+OK

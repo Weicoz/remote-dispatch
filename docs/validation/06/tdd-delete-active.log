@@ -1,0 +1,6 @@
+test_hosts_offline_delete_rejects_active_dispatches_with_count_and_ids (tests.test_rd_config_cli.ConfigCliTests.test_hosts_offline_delete_rejects_active_dispatches_with_count_and_ids) ... ok
+
+----------------------------------------------------------------------
+Ran 1 test in 0.361s
+
+OK

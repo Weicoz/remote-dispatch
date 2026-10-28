@@ -1,0 +1,6 @@
+test_session_access_rejects_bad_requests_and_preserves_config_on_replace_failure (tests.test_rd_serve_admin.AdminConfigTests.test_session_access_rejects_bad_requests_and_preserves_config_on_replace_failure) ... ok
+
+----------------------------------------------------------------------
+Ran 1 test in 0.599s
+
+OK

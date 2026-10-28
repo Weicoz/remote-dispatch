@@ -1,0 +1,22 @@
+test_hosts_offline_list_add_update_delete_json_backup_and_validation (tests.test_rd_config_cli.ConfigCliTests.test_hosts_offline_list_add_update_delete_json_backup_and_validation) ... FAIL
+
+======================================================================
+FAIL: test_hosts_offline_list_add_update_delete_json_backup_and_validation (tests.test_rd_config_cli.ConfigCliTests.test_hosts_offline_list_add_update_delete_json_backup_and_validation)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/weicoz/remote-dispatch-self/users/weicoz/wt/weicoz-remote-dispatch-u06-20261028-115022-261556000/tests/test_rd_config_cli.py", line 152, in test_hosts_offline_list_add_update_delete_json_backup_and_validation
+    self.assertEqual(bad.returncode, 4, bad.stderr)
+    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: 2 != 4 : usage: rdispatch host add [-h] [--ssh SSH] [--workdir WORKDIR]
+                          [--sync {origin,direct}]
+                          [--platform {posix,macos,linux,windows}]
+                          [--enabled ENABLED] [--launcher {nohup,tmux}]
+                          [--tags TAGS] [--set FIELD=VALUE] [--json]
+                          name
+rdispatch host add: error: argument --sync: invalid choice: 'other' (choose from 'origin', 'direct')
+
+
+----------------------------------------------------------------------
+Ran 1 test in 0.320s
+
+FAILED (failures=1)

@@ -64,6 +64,26 @@ rdispatch fetch <job>           # 把提交取回为 rd/<branch>
 rdispatch resume <job> --prompt-file next.md
 ```
 
+## 会话访问与目标机设置
+
+用 CLI 查看或开关会话访问总开关，增删改目标机，不必打开 App 或手改 `config.ini`：
+
+```sh
+rdispatch session-access                 # 查看，缺省为开
+rdispatch session-access off             # 关闭
+rdispatch session-access on --json       # 打开，JSON 输出
+
+rdispatch host list --json               # 含禁用项，不回显凭据
+rdispatch host add mini --ssh weicoz@192.168.1.20 --workdir ~/remote-dispatch --sync origin
+rdispatch host update mini --set max_heavy=2
+rdispatch host delete mini
+```
+
+serve 在线时，这些命令经 Unix socket 交给 serve，写入立即生效；serve 不在线时直接写
+`config.ini`。两条路径共用同一套校验与写入逻辑：先创建 `config.ini.bak.<标识>` 备份，
+再原子替换配置。删除仍有运行中派单的目标机会失败，并给出数量与派单 ID。
+`rdispatch hosts` 仍用于探测目标机状态；`rdispatch host` 只管理配置。
+
 ## 支持的代理
 
 | 代理 | 状态 | 隔离方式 |

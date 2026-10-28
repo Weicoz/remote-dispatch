@@ -1,0 +1,38 @@
+test_background_collection_exposes_running_progress_and_publishes_the_finished_receipt (tests.test_rd_serve.ServeTests.test_background_collection_exposes_running_progress_and_publishes_the_finished_receipt) ... ok
+test_cli_ack_is_written_by_serve_then_falls_back_after_shutdown_with_same_job_lock (tests.test_rd_serve.ServeTests.test_cli_ack_is_written_by_serve_then_falls_back_after_shutdown_with_same_job_lock) ... ok
+test_cli_forwards_resume_stdin_and_exit_code_without_retry_after_connection_loss (tests.test_rd_serve.ServeTests.test_cli_forwards_resume_stdin_and_exit_code_without_retry_after_connection_loss) ... ok
+test_current_user_can_read_cards_details_historical_receipt_and_log_tail_without_writes (tests.test_rd_serve.ServeTests.test_current_user_can_read_cards_details_historical_receipt_and_log_tail_without_writes) ... FAIL
+test_detail_replays_sorted_progress_from_rotated_log_for_each_round (tests.test_rd_serve.ServeTests.test_detail_replays_sorted_progress_from_rotated_log_for_each_round) ... ok
+test_every_read_response_and_event_omits_configuration_and_scrubs_secrets_in_text (tests.test_rd_serve.ServeTests.test_every_read_response_and_event_omits_configuration_and_scrubs_secrets_in_text) ... ok
+test_forwarded_command_without_a_session_does_not_inherit_the_service_session (tests.test_rd_serve.ServeTests.test_forwarded_command_without_a_session_does_not_inherit_the_service_session) ... ok
+test_forwarded_run_preserves_cwd_stdin_and_origin_and_stop_review_project_writes (tests.test_rd_serve.ServeTests.test_forwarded_run_preserves_cwd_stdin_and_origin_and_stop_review_project_writes) ... ok
+test_hosts_contract_is_readable_and_service_removes_its_private_socket (tests.test_rd_serve.ServeTests.test_hosts_contract_is_readable_and_service_removes_its_private_socket) ... ok
+test_http_and_sse_responses_follow_the_shared_v1_examples (tests.test_rd_serve.ServeTests.test_http_and_sse_responses_follow_the_shared_v1_examples) ... ok
+test_large_history_remains_available_for_prior_round_after_resume (tests.test_rd_serve.ServeTests.test_large_history_remains_available_for_prior_round_after_resume) ... ok
+test_log_endpoint_does_not_follow_a_link_to_a_private_file (tests.test_rd_serve.ServeTests.test_log_endpoint_does_not_follow_a_link_to_a_private_file) ... ok
+test_progress_between_polls_is_complete_sorted_and_survives_restart (tests.test_rd_serve.ServeTests.test_progress_between_polls_is_complete_sorted_and_survives_restart) ... ok
+test_progress_history_new_fields_are_projected_and_sensitive_text_is_scrubbed (tests.test_rd_serve.ServeTests.test_progress_history_new_fields_are_projected_and_sensitive_text_is_scrubbed) ... ok
+test_progress_legacy_latest_and_no_progress_are_read_without_remote_queries (tests.test_rd_serve.ServeTests.test_progress_legacy_latest_and_no_progress_are_read_without_remote_queries) ... rdispatch: poll_unavailable: cannot probe a host
+ok
+test_queries_do_not_attach_a_previous_round_snapshot_or_receipt_to_a_new_round (tests.test_rd_serve.ServeTests.test_queries_do_not_attach_a_previous_round_snapshot_or_receipt_to_a_new_round) ... ok
+test_receipt_and_detail_return_file_changes_or_explicitly_mark_missing_data (tests.test_rd_serve.ServeTests.test_receipt_and_detail_return_file_changes_or_explicitly_mark_missing_data) ... ok
+test_resume_collects_final_progress_of_an_already_cached_prior_round (tests.test_rd_serve.ServeTests.test_resume_collects_final_progress_of_an_already_cached_prior_round) ... ok
+test_running_detail_preserves_full_prompt_and_start_time_without_a_receipt (tests.test_rd_serve.ServeTests.test_running_detail_preserves_full_prompt_and_start_time_without_a_receipt) ... ok
+test_serve_cli_starts_and_terminates_cleanly_and_rejects_invalid_intervals (tests.test_rd_serve.ServeTests.test_serve_cli_starts_and_terminates_cleanly_and_rejects_invalid_intervals) ... ok
+test_service_rejects_a_second_writer_and_recovers_a_stale_socket_without_deleting_files (tests.test_rd_serve.ServeTests.test_service_rejects_a_second_writer_and_recovers_a_stale_socket_without_deleting_files) ... ok
+test_sse_delivers_new_events_and_reconnect_replays_every_missing_sequence (tests.test_rd_serve.ServeTests.test_sse_delivers_new_events_and_reconnect_replays_every_missing_sequence) ... ok
+
+======================================================================
+FAIL: test_current_user_can_read_cards_details_historical_receipt_and_log_tail_without_writes (tests.test_rd_serve.ServeTests.test_current_user_can_read_cards_details_historical_receipt_and_log_tail_without_writes)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/weicoz/remote-dispatch-self/users/weicoz/wt/weicoz-remote-dispatch-u06-20261028-115022-261556000/.rd-context/06-evidence/baseline/tests/test_rd_serve.py", line 153, in test_current_user_can_read_cards_details_historical_receipt_and_log_tail_without_writes
+    self.assertEqual(self.snapshot(), before)
+    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: {'eve[4542 chars], 'reports/fixture.json': (1793160683018290505[1495 chars]b'')} != {'eve[4542 chars], 'results/fixture-job/r1.json': (179316068223[1106 chars]b'')}
+Diff is 9605 characters long. Set self.maxDiff to None to see it.
+
+----------------------------------------------------------------------
+Ran 22 tests in 26.752s
+
+FAILED (failures=1)

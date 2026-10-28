@@ -3,134 +3,19 @@ import configparser
 from copy import copy
 import hashlib
 import json
-import math
-import os
 from pathlib import Path
 import re
-import tempfile
-import uuid
 from urllib.parse import unquote, urlsplit
 
 from . import cli
 from . import rd_messages as messages
+from .rd_host_config import (
+    COLLECTION, PUBLIC_FIELDS, ROUTE, SESSION_ACCESS, InvalidField, active_job_ids,
+    config_digest, effective, host_candidate, load as load_config, replace as replace_config,
+    session_access_candidate, validate, validate_field, validate_name,
+)
 from .rd_idempotency import fingerprint
 from .rd_lock import JobBusy, JobLock
-
-
-SESSION_ACCESS = "/v1/config/session-access"
-COLLECTION = "/v1/config/hosts"
-ROUTE = re.compile(r"/v1/config/hosts(?:/([A-Za-z0-9._-]+))?")
-PUBLIC_FIELDS = set(cli.DEFAULTS) - {"env_file", "codex_auth_file", "dsh_auth_file", "agy_auth_file", "ssh_opts"}
-PUBLIC_FIELDS.add("ssh")
-
-
-class InvalidField(ValueError):
-    def __init__(self, field, reason="invalid_host_field"):
-        self.field, self.reason = field, reason
-
-
-def validate(values):
-    for field in ("ssh", "workdir"):
-        if not values.get(field, "").strip():
-            raise InvalidField(field, "host_field_required")
-    for field, allowed in (("sync", ("origin", "direct")),
-                           ("platform", ("posix", "macos", "linux", "windows")),
-                           ("enabled", ("1", "0", "true", "false", "yes", "no")),
-                           ("launcher", ("nohup", "tmux"))):
-        value = values[field].lower() if field == "enabled" else values[field]
-        if value not in allowed:
-            raise InvalidField(field)
-    if values["ssh"] == "local":
-        if values["platform"] == "windows":
-            raise InvalidField("platform")
-        if not values["workdir"].startswith(("/", "~", "$HOME")):
-            raise InvalidField("workdir")
-    for field in cli.DEFAULTS:
-        if field.startswith(("max_", "min_", "warn_", "swap_")) or field == "timeout":
-            try:
-                number = float(values[field])
-                if field in ("max_heavy", "timeout"):
-                    int(values[field])  # Match the launcher's integer-string parser.
-            except (ValueError, OverflowError):
-                raise InvalidField(field) from None
-            if (not math.isfinite(number) or number < 0
-                    or field.endswith("_pct") and number > 100
-                    or field in ("max_heavy", "timeout") and number < 1):
-                raise InvalidField(field)
-
-
-def parse(text):
-    cp = configparser.ConfigParser(interpolation=None)
-    cp.read_string(text)
-    return cp
-
-
-def effective(cp, name):
-    values = dict(cli.DEFAULTS)
-    if cp.has_section("defaults"):
-        values.update(cp["defaults"])
-    values.update(cp["host:" + name])
-    return values
-
-
-def edit(text, name, fields, *, delete=False, section_name=None):
-    """Follow ConfigParser's indentation rules, retaining untouched raw lines."""
-    newline = "\r\n" if "\r\n" in text else "\n"
-    target = section_name or "host:" + name
-    section, option_indent = None, None
-    found, dropping = False, False
-    result, pending = [], dict(fields)
-
-    def append_pending():
-        if pending and result and not result[-1].endswith("\n"):
-            result[-1] += newline
-        result.extend(f"{key} = {value}{newline}" for key, value in pending.items() if value is not None)
-        pending.clear()
-
-    for line in text.splitlines(keepends=True):
-        stripped = line.strip()
-        if not stripped or stripped.startswith((";", "#")):
-            result.append(line)
-            continue
-        indent = len(line) - len(line.lstrip())
-        # Continuations take precedence over both section and option syntax.
-        if option_indent is not None and indent > option_indent:
-            if not dropping:
-                result.append(line)
-            continue
-        header = configparser.ConfigParser.SECTCRE.match(line.lstrip())
-        if header:
-            if section == target:
-                append_pending()
-            section, option_indent, dropping = header.group("header"), None, False
-            if section == target:
-                found = True
-            if section != target or not delete:
-                result.append(line)
-            else:
-                annotation = line.lstrip()[header.end():].strip()
-                if annotation.startswith((";", "#")):
-                    result.append(annotation + newline)
-            continue
-        option = configparser.ConfigParser.OPTCRE.match(line.lstrip())
-        option_indent = indent if option else None
-        field = option.group("option").rstrip().lower() if option else None
-        dropping = section == target and (delete or field in pending)
-        if dropping:
-            if not delete:
-                value = pending.pop(field)
-                if value is not None:
-                    prefix = line[:indent] + option.group("option") + option.group("vi")
-                    result.append(prefix + value + newline)
-        else:
-            result.append(line)
-    if not found:
-        if result and not result[-1].endswith("\n"):
-            result[-1] += newline
-        result.append("[" + target + "]" + newline)
-    if not found or section == target:
-        append_pending()
-    return "".join(result)
 
 
 class HostConfigRoutes:
@@ -138,14 +23,9 @@ class HostConfigRoutes:
         self.service = service
         self.path = Path(cli.CONFIG).absolute()
 
-    def load(self):
-        if any(path.is_symlink() for path in (self.path, *self.path.parents)):
-            raise OSError("invalid_config_path")
-        try:
-            raw = self.path.read_bytes()
-        except FileNotFoundError:
-            raw = b""
-        return raw, parse(raw.decode("utf-8"))
+    def same_config(self, handler):
+        requested = handler.headers.get("X-Rdispatch-Config-SHA256")
+        return requested is None or requested == config_digest(self.path)
 
     def project(self, cp, name):
         values = effective(cp, name)
@@ -168,13 +48,16 @@ class HostConfigRoutes:
 
     def get(self, handler):
         path = unquote(urlsplit(handler.path).path)
+        if path not in (SESSION_ACCESS, COLLECTION):
+            return False
+        if not self.same_config(handler):
+            handler.json(400, {"error": {"reason": "cli_config_mismatch"}})
+            return True
         if path == SESSION_ACCESS:
             handler.json(200, {"enabled": self.service.sessions.enabled})
             return True
-        if path != COLLECTION:
-            return False
         try:
-            _, cp = self.load()
+            _, cp = load_config(self.path)
             handler.json(200, {"hosts": [self.project(cp, section[5:]) for section in cp.sections()
                                          if section.startswith("host:")]})
         except (OSError, UnicodeError, configparser.Error):
@@ -186,6 +69,9 @@ class HostConfigRoutes:
         match = ROUTE.fullmatch(path)
         if not match and path != SESSION_ACCESS:
             return False
+        if not self.same_config(handler):
+            handler.json(400, {"error": {"reason": "cli_config_mismatch"}})
+            return True
         try:
             key = handler.headers.get("Idempotency-Key", "")
             if not key.strip() or len(key) > 255 or len(handler.headers.get_all("Idempotency-Key", [])) != 1:
@@ -229,16 +115,14 @@ class HostConfigRoutes:
                 return previous["status"], previous["body"]
             if service.stop.is_set():
                 raise OSError("serve_stopping")
-            raw, cp = self.load()
+            raw, cp = load_config(self.path)
             setting = path == SESSION_ACCESS
             if setting:
                 if method != "PUT":
                     return 405, {"error": {"reason": "method_not_allowed"}}
                 if set(body) != {"enabled"} or type(body["enabled"]) is not bool:
                     return 400, {"error": {"reason": "invalid_request"}}
-                text = edit(raw.decode("utf-8"), "", {"session_access": str(body["enabled"]).lower()},
-                            section_name="serve")
-                updated = parse(text)
+                updated, encoded = session_access_candidate(raw, body["enabled"])
                 create = delete = False
             else:
                 create = method == "POST" and name is None
@@ -246,8 +130,7 @@ class HostConfigRoutes:
                 if not create and not delete and not (method == "PUT" and name is not None):
                     return 405, {"error": {"reason": "method_not_allowed"}}
                 name = body.get("name") if create else name
-                if not isinstance(name, str) or not re.fullmatch(r"[A-Za-z0-9._-]{1,128}", name):
-                    raise InvalidField("name")
+                validate_name(name)
                 if create and cp.has_section("host:" + name):
                     return 409, {"error": {"reason": "host_exists", "field": "name"}}
                 if not create and not cp.has_section("host:" + name):
@@ -260,26 +143,20 @@ class HostConfigRoutes:
                     # Include every local registry record, not just the current
                     # user's display list. Unknown/offline execution is unsafe.
                     records = [rec for rec in cli.all_jobs() if rec.get("host") == name]
-                    states = service.query().states(records)
-                    running = sorted({rec["job"] for rec in records
-                                      if states.get(rec["job"], {}).get("state") not in ("done", "dead", "missing")})
+                    running = active_job_ids(records, service.query().states(records))
                     if running:
                         return 409, {"error": {"reason": "host_has_active_dispatches",
                                                "running_count": len(running), "running_job_ids": running[:20]}}
                 fields = {key: value for key, value in body.items() if key != "name"}
                 for field, value in fields.items():
-                    if not re.fullmatch(r"[a-z][a-z0-9_]*", field):
-                        raise ValueError("invalid_field")
-                    if value is not None and (not isinstance(value, str) or any(c in value for c in "\n\r\x00")):
-                        raise InvalidField(field)
-                text = edit(raw.decode("utf-8"), name, fields, delete=delete)
-                updated = parse(text)
+                    validate_field(field, value)
+                updated, encoded = host_candidate(raw, name, fields, delete=delete)
                 if not delete:
                     validate(effective(updated, name))
             pending = dict(status=503, body={"error": {"reason": "host_config_outcome_unknown"}}, fingerprint=request_hash)
             messages.atomic_json(saved, pending)
             self.remember_secrets(updated)
-            self.replace(raw, text.encode("utf-8"))
+            replace_config(self.path, raw, encoded)
             # In-flight readers retain their parser; do not change the parser
             # while Config.hosts() may be traversing its section names.
             refreshed = copy(service.config)
@@ -291,23 +168,3 @@ class HostConfigRoutes:
             status = 201 if create else 200
             messages.atomic_json(saved, dict(status=status, body=reply, fingerprint=request_hash))
             return status, reply
-
-    def replace(self, raw, updated):
-        # Backup is durable before the config replacement. Never overwrite an
-        # earlier backup; secrets in both files remain owner-readable only.
-        backup = self.path.with_name(self.path.name + ".bak." + uuid.uuid4().hex)
-        backup_fd = os.open(backup, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-        with os.fdopen(backup_fd, "wb") as stream:
-            stream.write(raw)
-            stream.flush()
-            os.fsync(stream.fileno())
-        descriptor, temporary = tempfile.mkstemp(prefix="." + self.path.name + ".", dir=self.path.parent)
-        try:
-            with os.fdopen(descriptor, "wb") as stream:
-                stream.write(updated)
-                stream.flush()
-                os.fsync(stream.fileno())
-            os.replace(temporary, self.path)
-        finally:
-            if os.path.exists(temporary):
-                os.unlink(temporary)

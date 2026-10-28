@@ -113,6 +113,9 @@ SSE 仅读取事件日志，补读包括轮转段；15 秒发一次注释心跳�
 本地 CLI 的 `run/resume/ack/review/stop/project`，以及同样会写 RD_STATE 的
 `inbox/keep/clean`，先尝试连接同一 socket。`project rebuild` 也走转交。
 没有 socket 或连接被拒绝时才直接执行现有路径。
+设置类命令 `session-access`、`host` 的写操作在 serve 在线时直接调用
+`/v1/config/session-access` 与 `/v1/config/hosts`，不走本节 `/_cli/v1` 通道；
+连接成功后出错同样不自动改走直接写入。
 连接成功后发生请求、读取或解析错误，CLI 返回 4 和 `cli_forward_failed`，
 **不自动重试，也不改走直接写入**；应先核对状态，避免重复派单或续跑。
 这条私有通道没有跨进程崩溃幂等保证；App 的公开写接口与幂等键留给票 20。
@@ -776,3 +779,60 @@ JSON 数字、布尔值、小数串及小于 1 的值拒绝，400 `invalid_host_
 `network-devices.json`、`network-addresses*.json`、`host-config-active.json` 和
 `host-config-max-heavy-invalid.json`。实现检查及编排方复测步骤见
 [票 73 验证记录](validation/73-serve-admin-gaps.md)。
+
+## 设置类 CLI 子命令（票 06）
+
+不开 App、不手改 `config.ini`，用下列命令管理会话访问总开关和目标机。命令名用
+`serve`／目标机术语，不把 serve 叫“后台服务”。
+
+```sh
+rdispatch session-access            # 查看，缺省为开
+rdispatch session-access show       # 同上
+rdispatch session-access on         # 打开
+rdispatch session-access off        # 关闭
+rdispatch session-access on --json  # {"enabled": true}
+
+rdispatch host list --json          # {"hosts": [{name, values, protected_fields}]}
+rdispatch host add NAME --ssh SSH [--workdir DIR] [--sync origin|direct]
+                       [--platform posix|macos|linux|windows] [--enabled true|false]
+                       [--launcher nohup|tmux] [--tags TAGS] [--set FIELD=VALUE ...] [--json]
+rdispatch host update NAME [同上] [--unset FIELD ...] [--json]
+rdispatch host delete NAME [--json]
+```
+
+`host list` 包含禁用的目标机，返回结构与 `GET /v1/config/hosts` 相同。凭据类字段
+只返回 `protected_fields` 的字段名和是否设置，不回显路径或内容；普通字段中出现其他
+目标机的凭据文本时替换为 `[redacted]`。`host add/update --json` 返回
+`{"host": {...}}`，`host delete --json` 返回 `{"deleted": "名称"}`。
+`--set` 用于设置任意合法字段，`--unset` 只用于修改，表示移除本段覆盖并恢复继承；
+`--set` 与 `--unset` 同时给出同一字段会拒绝。名称用位置参数指定，不能改名。
+
+serve 在线时，以上命令都经 Unix socket 调用现有 `/v1/config/session-access` 与
+`/v1/config/hosts` 接口；写操作立即更新 serve 的运行时配置并唤醒采集，读操作读取
+serve 当前配置。serve 不在线
+（socket 不存在或连接被拒绝）时直接读写 `RD_CONFIG`。CLI 请求带
+`X-Rdispatch-Config-SHA256`（配置绝对路径的 SHA-256，避免非 ASCII 路径无法放进
+HTTP 头）；serve 发现它与自身配置路径不一致时返回 400 `cli_config_mismatch`，
+不写任一配置。在线请求 30 秒超时，超时按 `cli_forward_failed` 退出 4，不自动改走
+直接写入。两条路径共用
+`rd_host_config.py` 的解析、校验、备份和原子替换：先完整校验候选文件，再以 `0600`
+创建独立的 `config.ini.bak.<随机标识>` 并 fsync 原始字节，随后在同目录写临时文件、
+fsync，再原子替换。保留未修改的段落、注释、换行与禁用项。备份失败不写配置；
+替换失败保留原配置与备份并清理临时文件。
+
+删除目标机时检查当前 `RD_STATE` 中全部用户的本地登记任务；有
+starting/running/unreachable 或状态未知的派单时拒绝，退出非零并输出
+`host_has_active_dispatches`、`running_count` 与最多 20 个 `running_job_ids`，
+语义与 serve 的 409 相同。done/dead/missing 不阻止删除。检查只读本地记录与回执，
+不执行远端探测。
+
+serve 在线时写入失败不自动改走直接写入：连接成功后请求、读取或解析失败时退出 4 并
+提示 `cli_forward_failed`，先核对状态再重试。校验错误退出 4；不存在、冲突、忙碌或
+配置不可用退出 1。错误文案保留 serve 的 reason 与字段名，例如
+`invalid_host_field: 字段 sync 取值无效`、`host_config_busy: 配置正在写入，请稍后重试`。
+JSON 输出只用于成功结果，错误仍按 `rdispatch:` 前缀写 stderr。
+
+检查使用临时 `RD_STATE`／`RD_CONFIG`、真实 `rdispatch serve` 子进程和 Unix socket，
+覆盖在线与离线、备份、注释保留、删除保护、JSON 结构、stale socket 回退与连接中断
+不重试；见 `tests/test_rd_config_cli.py` 与
+[票 06 验证记录](validation/06-session-access-host-cli.md)。

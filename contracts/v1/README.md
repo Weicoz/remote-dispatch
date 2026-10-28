@@ -174,3 +174,8 @@ JSON 类型，另用行为断言覆盖实际值、用户隔离、纯查询、锁
   error.running_job_ids 排序且最多 20 项，未知执行状态仍阻止删除。
 - `host-config-max-heavy-invalid.json`：max_heavy 为 >=1 的整数字符串，无 8 的上限，
   非整数或小于 1 返回原 reason、field 和新增可读 text；null 沿用清除覆盖含义。
+
+票 06 的 `rdispatch session-access` 与 `rdispatch host` JSON 输出直接复用
+`session-access-*.json`、`host-config-*.json` 的 HTTP 响应结构，没有新增 HTTP
+路径或字段，因此不增加合同样例。CLI 在线时调用上述接口，离线时用同一套配置读写
+模块；差异只在错误输出走 `rdispatch:` stderr，不改变 HTTP 合同。

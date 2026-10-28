@@ -1,0 +1,6 @@
+test_online_delete_reports_active_dispatch_conflict (tests.test_rd_config_cli.ConfigCliTests.test_online_delete_reports_active_dispatch_conflict) ... ok
+
+----------------------------------------------------------------------
+Ran 1 test in 0.831s
+
+OK
