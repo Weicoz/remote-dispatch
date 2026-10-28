@@ -60,30 +60,83 @@ def file_changes(receipt):
 
 
 class UnixHTTPConnection(http.client.HTTPConnection):
-    def __init__(self, path):
-        super().__init__("localhost")
+    def __init__(self, path, timeout=None):
+        super().__init__("localhost", timeout=timeout)
         self.path = str(path)
 
     def connect(self):
         self.sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         try:
+            self.sock.settimeout(self.timeout)
             self.sock.connect(self.path)
         except BaseException:
             self.sock.close()
             raise
 
 
+class ServeUnavailable(Exception):
+    """The local serve socket is absent or refused the connection."""
+
+
+class ServeFailed(Exception):
+    """The request was sent, but serve returned no complete response."""
+
+
+def serve_socket_path():
+    return os.environ.get("RD_SERVE_SOCKET") or Path(cli.STATE) / "serve.sock"
+
+
+def serve_connection(timeout=None):
+    """Connect to the local serve socket; the caller owns the returned connection."""
+    if not hasattr(socket, "AF_UNIX"):
+        raise FileNotFoundError("Unix sockets are not supported")
+    connection = UnixHTTPConnection(serve_socket_path(), timeout=timeout)
+    try:
+        connection.connect()
+    except BaseException:
+        connection.close()
+        raise
+    return connection
+
+
+def admin_request(method, path, body=None, *, key=None, timeout=10):
+    """Call serve's local admin API; device and pairing state never live in the CLI."""
+    socket_path = serve_socket_path()
+    try:
+        connection = serve_connection(timeout)
+    except (FileNotFoundError, ConnectionRefusedError, NotADirectoryError):
+        raise ServeUnavailable(f"serve socket 不可用（{socket_path}）") from None
+    except OSError as error:
+        raise ServeUnavailable(f"无法连接 serve socket（{socket_path}）：{error}") from None
+    try:
+        headers = {}
+        payload = None
+        if body is not None:
+            payload = json.dumps(body, ensure_ascii=False).encode("utf-8")
+            headers["Content-Type"] = "application/json"
+        if key:
+            headers["Idempotency-Key"] = key
+        try:
+            connection.request(method, path, payload, headers)
+            response = connection.getresponse()
+            raw = response.read()
+            return response.status, json.loads(raw)
+        except (OSError, http.client.HTTPException, ValueError) as error:
+            raise ServeFailed(f"serve 请求失败（{path}）：{error}") from None
+    finally:
+        connection.close()
+
+
 def forward(args, argv):
     """Only absence/refusal before sending permits direct CLI fallback."""
-    path = os.environ.get("RD_SERVE_SOCKET") or Path(cli.STATE) / "serve.sock"
+    path = serve_socket_path()
     if not hasattr(socket, "AF_UNIX") or not Path(path).exists():
         return None
-    connection = UnixHTTPConnection(path)
     try:
-        try:
-            connection.connect()
-        except (FileNotFoundError, ConnectionRefusedError):
-            return None
+        connection = serve_connection()
+    except (FileNotFoundError, ConnectionRefusedError):
+        return None
+    try:
         harness = cli.initiators.harness()
         request = dict(argv=argv, cwd=os.getcwd(), config=str(Path(cli.CONFIG).resolve()),
                        user_id=cli.require_user(), initiator_session=cli.initiator_session(args, harness),

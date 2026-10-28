@@ -64,6 +64,17 @@ rdispatch fetch <job>           # 把提交取回为 rd/<branch>
 rdispatch resume <job> --prompt-file next.md
 ```
 
+## 设备与配对（需要 serve）
+
+设备与配对窗口状态只在 serve 进程里。这组命令经本机 Unix socket 调用 serve，不直接写状态文件；serve 不在线时报错并提示 `rdispatch service install`。
+
+```sh
+rdispatch device list                 # 名称、配对时间、最近在线时间；--json 输出 serve 响应
+rdispatch device revoke <device-id>   # 立即吊销设备
+rdispatch pair open                   # 返回配对码与过期时间（300 秒）；--json 输出 serve 响应
+rdispatch pair close                  # 关闭当前配对窗口，不影响已配对设备
+```
+
 ## 支持的代理
 
 | 代理 | 状态 | 隔离方式 |
