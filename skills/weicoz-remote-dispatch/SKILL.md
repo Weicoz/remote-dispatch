@@ -1,6 +1,6 @@
 ---
 name: weicoz-remote-dispatch
-version: 1.3.1
+version: 1.4.0
 description: 把 Codex、DSH 或 AGY（Antigravity CLI）编码代理会话、测试和构建命令经 SSH 派到另一台机器，或在本机以独立 worktree 另起一个 harness 会话执行，本机只负责派单、看进度和取回提交。只在用户主动要求或明确授权把任务放到别的机器或另一个 harness 上跑时使用，例如“派到另一台机器／远端／mac mini／服务器上跑”“让别的机器跑测试”“用双机／多机跑”“本机派单给其他 harness”“remote dispatch”“rdispatch run”“rd run”，或要求添加、检查目标机器。用户没有要求也没有授权时不要使用：派代理、跑测试默认都在当前会话执行；本机负载高时可以建议派到远端，但要等用户同意。
 ---
 
@@ -89,6 +89,7 @@ rdispatch run --host self --cmd 'make bench'     # 普通命令，不经隔离
 
 - 派单前读 `RD_USER_ID`。缺失时询问员工自选 ID 并暂停派单，不随机生成、不猜登录名。ID 只选配置，不是认证。
 - **首次登记或主动同步必须询问是否同步**，并告知已配置 ID。先跑 `rdispatch profile check <机器>` 展示目标机、ID、清单、变化与版本指纹，用户确认后再 `rdispatch profile sync`。
+- 例外：本机目标（`ssh = local`）派 `codex` 时，配置副本缺失或落后会自动同步并输出一行说明，不需要询问。配置源和目的地是同一台机器、同一个用户；任务仍用独立副本运行。
 - 用户只同意派任务，不代表同意复制个人配置。
 - 内容不同且本地领先远端超过 7×24 小时才询问更新；不同步就沿用原版本。续跑始终用原任务配置。
 
@@ -135,6 +136,49 @@ rdispatch keep <job> --hours 48        # 明确还要续跑时钉住，--hours 0
 - `rdispatch clean <job>` 前先收取回执、确认没有需要保留的产物；删除指定任务的远端 worktree 需用户确认。
 - **过期 worktree 要记得回收**：每次 `rdispatch ack` 收完结果、每次派新单前，在仓库目录跑一次 `rdispatch clean --expired`，把输出里的 clean / keep 各一行报给用户。它只回收同时满足安全条件与保留期的 worktree（命令任务确认即回收；代理任务已合入 24 小时、已取回未合入 7 天；目标机磁盘不足时收紧），不需要逐个确认。判断不了下一步会不会续跑时不要手动删，交给保留期；已经知道还要续跑就先 `rdispatch keep <job> --hours N`。保留期细节见 [缓存保留](https://github.com/Weicoz/remote-dispatch/blob/main/docs/cache-retention.md)。
 - **派单后立即挂巡检**：把 `rdispatch watch <job>` 放进后台作业。它默认 900 秒返回一次：退出码 2＝该报进度、1＝告警、0＝完成。收到 2 时读 `rdispatch status --details` 与 `rdispatch logs` 尾部，向用户报一行真实进展（阶段、文件数、提交、阻塞、执行机资源），再重挂下一次 watch；收到 0／1 时取回结果并验收。任务结束后终结巡检作业。没有定时唤醒能力时改用 `rdispatch wait` 加超时兜底作业，并如实说明边界。
+
+## serve 与设置命令
+
+`rdispatch serve` 是控制端上常驻的 rdispatch 进程，CLI 与其他客户端共用同一份状态和配置。serve 在运行时，CLI 的写命令（`run`、`resume`、`stop`、`ack`、`review` 等）经本机 Unix socket 交给它执行；不在运行时 CLI 直接写，两条路径共用同一把锁。转交失败时提示"命令可能已执行"，先 `rdispatch status` 查状态，不要重试。
+
+```bash
+rdispatch service install              # macOS：用 LaunchAgent 托管常驻 serve，开机自启、崩溃拉起
+rdispatch service status [--json]      # 加载状态、进程、socket、包版本、合同版本、配置重载结果
+rdispatch service restart              # 升级 rdispatch 后执行，新代码才生效
+rdispatch service uninstall            # 卸载并删除 plist，保留状态目录与日志
+```
+
+- serve 每秒检查 `config.ini`，变化后自动重载；配置写坏时继续用旧配置，错误显示在 `rdispatch service status`。
+- 常驻 serve 用默认 socket `$RD_STATE/serve.sock`。临时调试另起 serve 时用独立 `RD_STATE`，不要与常驻 serve 共用状态目录。
+- 只有用户要求时才安装、重启或卸载服务；这些命令会改变本机后台进程。
+
+设置类命令都支持 `--json`：
+
+```bash
+rdispatch session-access [show|on|off]        # 会话访问总开关
+rdispatch host list                           # 配置中的目标机，含禁用项，不回显凭据
+rdispatch host add mini --ssh user@host --workdir ~/remote-dispatch --sync origin
+rdispatch host update mini --set max_heavy=2  # --unset FIELD 恢复继承
+rdispatch host delete mini                    # 有运行中派单时拒绝，并列出派单 ID
+
+rdispatch device list                         # 已配对设备：配对时间、最近在线时间（需要 serve）
+rdispatch device revoke <device-id>           # 立即吊销（需要 serve）
+rdispatch pair open | close                   # 打开或关闭配对窗口（需要 serve）
+```
+
+- `device`、`pair` 的状态只在 serve 进程里；serve 不在线时这两组命令退出 4 并提示 `rdispatch service install`。把提示转告用户，不要自行安装服务。
+- `session-access`、`host` 改的是 `config.ini`：serve 在线时交给 serve，不在线时直接写，写前自动备份。`rdispatch hosts` 仍用于探测目标机状态，`rdispatch host` 只管配置。
+- `pair open` 输出的配对码只给用户本人看，不写进日志、文件或回报。
+- 删除目标机、吊销设备、关闭会话访问都需要用户明确要求。
+
+其他命令：
+
+```bash
+rdispatch review <job> --round 2 --accept            # 发起会话验收本轮
+rdispatch review <job> --round 2 --reject "附言"      # 打回并用附言续跑
+rdispatch session-default <session> --host mini --harness codex   # 会话派单默认值；--clear 改读配置
+rdispatch project hide|show <项目ID>                 # 隐藏或恢复项目；rebuild 从派单与回执重建索引
+```
 
 ## 代理支持
 
