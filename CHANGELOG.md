@@ -2,6 +2,7 @@
 
 ## 未发布
 
+- **工作线接线**：派单模式为 `line` 且带 `--plan-item` 时，前序工作项已验收、harness／模型／权限档位／`--include` 与线一致、不带 `--wip`、分支未指定或等于线分支，新工作项作为前序派单的新轮次追加（复用续跑路径），输出线名、分支、权限档位和基线；任一条件不满足按默认方式派出并写明原因。派单记录新增 `line`（工作项 → 轮次列表、各工作项基线）；`RD_BASE` 按工作项取上一个工作项验收轮回执的 `head`；打回只续跑当前工作项。`[features] line = false` 不接新线，已有线继续。本版会话沿用当前会话。详见 `docs/session-dispatch-defaults.md`。
 - **每轮记录 setup 与主体耗时**：回执 `report` 新增 `setup_seconds`、`body_seconds`（命令派单为命令耗时，`--test` 为测试耗时）；跳过 setup 时 `setup_seconds` 为 0 并带 `setup_note: 已跳过`；setup 失败只有 setup 耗时。POSIX 运行脚本与 Windows 原生 runner 都记录。新增 `rdispatch timings [--project] [--host] [--kind test|command|agent]` 与 `rd_timings.history()` 按项目、目标机查询已保存回执，供门禁选机使用。
 - **可选 rollout 增强**：`[features] rollout_stats = true` 时，Codex 轮次回执附 `rollout_calls`（逐次调用数与用量汇总）；默认关闭，读取失败只记「未记录」。
 - **回执记录实际模型与 token 用量**：回执和 `status --json` 新增 `model`（优先取 harness 输出，其次派单参数）与 `usage`（`input` 不含缓存、`cache_read`、`cache_write`、`output`）。Codex `--json`、Claude／Kimi／AGY `stream-json`、DSH `--json` 在 `rd_usage.py` 集中解析；没有用量或解析失败记「未记录」，老记录同样显示「未记录」。`status --json` 读取已收取的回执，未收取时显示「未记录」。
