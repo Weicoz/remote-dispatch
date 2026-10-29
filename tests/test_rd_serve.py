@@ -120,6 +120,20 @@ class ServeTests(unittest.TestCase):
         return {str(p.relative_to(self.state)): (p.stat().st_mtime_ns, p.read_bytes())
                 for p in self.state.rglob("*") if p.is_file()}
 
+    def quiet_snapshot(self, quiet=0.4):
+        """Background collection and report threads keep writing after the first poll; wait until state stops changing."""
+        deadline = time.monotonic() + 5
+        previous = self.snapshot()
+        stable_since = time.monotonic()
+        while time.monotonic() < deadline:
+            time.sleep(0.05)
+            current = self.snapshot()
+            if current != previous:
+                previous, stable_since = current, time.monotonic()
+            elif time.monotonic() - stable_since >= quiet:
+                return current
+        self.fail("后台写入未在 5 秒内静止")
+
     def test_current_user_can_read_cards_details_historical_receipt_and_log_tail_without_writes(self):
         service = self.seed()
         cards = self.eventually(lambda: self.request("/v1/jobs")[1]["jobs"],
@@ -135,7 +149,7 @@ class ServeTests(unittest.TestCase):
         self.eventually(lambda: self.request("/v1/jobs")[1]["jobs"],
                         lambda rows: rows and rows[0]["outcome"] == "completed"
                         and rows[0]["snapshot_at"] != previous_snapshot_at)
-        before = self.snapshot()
+        before = self.quiet_snapshot()
         detail = self.request("/v1/jobs/fixture-job")[1]
         receipt = self.request("/v1/jobs/fixture-job/rounds/1/receipt")[1]
         logs = self.eventually(lambda: self.request("/v1/jobs/fixture-job/rounds/1/logs?stream=out&tail=2")[1],
