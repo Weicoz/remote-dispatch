@@ -46,6 +46,7 @@ from . import rd_events as events
 from . import rd_plan as plans
 from . import rd_board as board
 from . import rd_line as workline
+from . import rd_suggest as suggestions
 from .rd_lock import JobBusy, JobLock
 from . import rd_initiator as initiators
 from .rd_session_defaults import SessionDefaults, resolve_mode, validate_mode
@@ -1658,6 +1659,22 @@ def cmd_plan(a, cfg):
         project = project_name(local_repo(get_dir(a)))[0]
     store = plans.PlanStore(STATE, uid, project)
     action = a.action
+    if action == "chain":
+        if a.clear or a.revoke_accept:
+            def reset(setting):
+                if a.clear:
+                    setting.update(no_suggest=False, rejections=0)
+                if a.revoke_accept:
+                    setting.update(accept_all=False)
+            setting = store.change_chain(a.line, reset)
+        else:
+            setting = store.chain(a.line)
+        if a.json:
+            print(json.dumps(dict(project=project, line=a.line, **setting), ensure_ascii=False, indent=2))
+        else:
+            print(f"线 {a.line}：本链不再建议={'是' if setting['no_suggest'] else '否'}，拒绝 {setting['rejections']} 次，"
+                  f"常驻同意={'是' if setting['accept_all'] else '否'}")
+        return
     if action == "add":
         store.add(a.item, a.title, a.depends, a.after)
     elif action == "set":
@@ -1784,7 +1801,125 @@ def line_wire(a, cfg, uid, owner, plan_store, item, after, include_paths, prompt
     return True
 
 
-def cmd_run(a, cfg):
+def chain_name(rec):
+    """本链（线）的名字：已成线取线名，否则取第一个工作项。"""
+    return rec["line"]["name"] if rec.get("line") else workline.first_item(rec)
+
+
+def build_suggestion(cfg, a, scope=None, issue=True):
+    """suggest 的核心，全部只读：返回 suggest --json 的结构（serve 也调用它）。
+
+    不建议时 suggest=False 并给出 reason，不生成令牌；全部条件满足时带建议内容、指纹与令牌。
+    issue=False 只重算内容与指纹（接受令牌时用），不发新令牌。严格接线条件复用 line_wiring。
+    """
+    scope = scope or run_scope(a, cfg)
+
+    def refuse(reason, **extra):
+        return dict(suggest=False, reason=reason, **extra)
+    if not scope.plan_item:
+        return refuse("建议需要 --plan-item")
+    store = scope.plan_store
+    items = store.read()
+    previous, reason = workline.predecessor(items, scope.plan_item, scope.after)
+    if previous is None:
+        return refuse(reason)
+    try:
+        rec = load_job(previous)
+    except SystemExit:
+        return refuse(f"前序派单 {previous} 不存在", previous=previous)
+    include = include_list(a, scope.repo)
+    ok, reason, base = line_wiring(cfg, a, scope.uid, scope.owner, rec, scope.plan_item, include)
+    chain = chain_name(rec)
+    if not ok:
+        return refuse(reason, previous=previous, line=chain)
+    if store.chain(chain)["no_suggest"]:
+        return refuse(f"本链 {chain} 已拒绝过建议（本链不再建议）；用 rdispatch plan chain {chain} --clear 恢复",
+                      previous=previous, line=chain)
+    try:
+        host = job_host(cfg, rec)
+        info = probe(host)
+        busy = assess(host, info)
+    except (Exception, SystemExit) as error:
+        return refuse(f"前序目标机 {rec['host']} 探测失败：{error}", previous=previous, line=chain)
+    if busy:
+        return refuse(f"前序目标机 {rec['host']} 离线或暂时无法接单（{'; '.join(busy)}）", previous=previous, line=chain)
+    done = list(rec["line"]["items"]) if rec.get("line") else [workline.first_item(rec)]
+    content = dict(line=chain, previous=previous, host=rec["host"], branch=rec["branch"], harness=rec.get("agent"),
+                   model=rec.get("model"), permission_mode=rec.get("permission_mode"), include=sorted(include),
+                   base=base, items=dict(completed=done, current=scope.plan_item,
+                                         pending=suggestions.descendants(items, scope.plan_item)))
+    result = dict(suggest=True, reason=None, fingerprint=suggestions.fingerprint(content), **content,
+                  accept=f"rdispatch run --line {chain} --accept <令牌> --plan-item {scope.plan_item}（其余参数同本次）",
+                  decline="rdispatch run --no-line --plan-item " + scope.plan_item + "（其余参数同本次；按默认方式派出并记「本链不再建议」）")
+    if issue:
+        token, expires = suggestions.TokenStore(STATE, scope.uid).issue(result["fingerprint"], scope.owner)
+        result.update(token=token, expires_at=time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(expires)))
+    return result
+
+
+def cmd_suggest(a, cfg):
+    result = build_suggestion(cfg, a)
+    if a.json:
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+        return
+    if not result["suggest"]:
+        print("不建议接入工作线：" + result["reason"])
+        return
+    steps = result["items"]
+    print(f"建议接入工作线 {result['line']}（前序派单 {result['previous']}）")
+    print(f"  工作项顺序：已完成 {'、'.join(steps['completed'])}；本项 {steps['current']}；"
+          f"后续待派 {'、'.join(steps['pending']) or '无'}")
+    print(f"  目标机 {result['host']}，分支 {result['branch']}，权限档位 {result['permission_mode'] or '默认'}，基线 {result['base'][:10]}")
+    print(f"  接受：rdispatch run --line {result['line']} --accept {result['token']}（可加 --accept-chain 常驻同意；其余参数同本次）")
+    print(f"  不接受：rdispatch run --no-line（其余参数同本次）")
+    print(f"  令牌 {result['expires_at']} 前单次有效")
+
+
+def line_accept(a, cfg, scope, include_paths, prompt):
+    """run --line：校验令牌或常驻同意后接线；接线条件在接线时再校验一次，不满足就返回 False（按默认方式派出）。"""
+    if not scope.plan_item:
+        die("--line 需要同时指定 --plan-item。", 4)
+    previous, reason = workline.predecessor(scope.plan_store.read(), scope.plan_item, scope.after)
+    if previous is None:
+        die(f"不能接线：{reason}", 4)
+    chain = chain_name(load_job(previous))
+    if a.line != chain:
+        die(f"线名不符：前序派单 {previous} 所在的线是 {chain}，不是 {a.line}。", 4)
+    token = getattr(a, "accept", None)
+    if token:
+        suggestion = build_suggestion(cfg, a, scope, issue=False)
+        if not suggestion["suggest"]:
+            die("建议已失效，拒绝接线：" + suggestion["reason"], 4)
+        try:
+            suggestions.TokenStore(STATE, scope.uid).consume(token, suggestion["fingerprint"], scope.owner)
+        except suggestions.TokenRejected as error:
+            die(str(error), 4)
+        if getattr(a, "accept_chain", False):
+            scope.plan_store.change_chain(chain, lambda setting: setting.update(accept_all=True))
+            print(f"已记录常驻同意：本链 {chain} 后续工作项可用 --line {chain} 直接接线（每次仍校验严格接线条件）。")
+    elif not scope.plan_store.chain(chain)["accept_all"]:
+        die(f"--line 需要有效的建议令牌（--accept）；先运行 rdispatch suggest。本链 {chain} 没有常驻同意。", 4)
+    return line_wire(a, cfg, scope.uid, scope.owner, scope.plan_store, scope.plan_item, scope.after, include_paths, prompt)
+
+
+def line_decline(scope):
+    """run --no-line：只在待派登记里记「本链不再建议」和拒绝次数，不创建任何派单状态。"""
+    previous, _ = workline.predecessor(scope.plan_store.read(), scope.plan_item, scope.after)
+    try:
+        chain = chain_name(load_job(previous)) if previous else None
+    except SystemExit:
+        chain = None
+    if chain is None:
+        print("--no-line：没有可接线的前序派单，无需记录；按默认方式派出。")
+        return
+    setting = scope.plan_store.change_chain(
+        chain, lambda s: s.update(no_suggest=True, rejections=s["rejections"] + 1))
+    print(f"已拒绝建议：本链 {chain} 不再建议（累计拒绝 {setting['rejections']} 次）；"
+          f"用 rdispatch plan chain {chain} --clear 恢复。按默认方式派出。")
+
+
+def run_scope(a, cfg):
+    """run 与 suggest 共用的前置解析：用户、发起会话、派单默认值、项目与待派工作项。不生成派单 ID，不探测目标机。"""
     uid = require_user()
     forwarded_origin = getattr(a, "_forwarded_origin", None)
     origin_harness = forwarded_origin["initiator_harness"] if forwarded_origin else initiators.harness()
@@ -1795,7 +1930,6 @@ def cmd_run(a, cfg):
             else os.environ.get("HERDR_PANE_ID"))
     defaults = SessionDefaults(STATE, uid).get(owner, pane) if owner or pane else {}
     configured = dict(cfg.cp["defaults"]) if cfg.cp.has_section("defaults") else {}
-    # 本票只解析取值；接线行为由后续票据实现。
     a.dispatch_mode = resolve_mode(getattr(a, "dispatch_mode", None),
                                    SessionDefaults(STATE, uid).get_mode(owner, pane) if owner or pane else None, cfg.cp)
     a.host = a.host if a.host is not None else defaults.get("host") or configured.get("host") or "auto"
@@ -1814,6 +1948,7 @@ def cmd_run(a, cfg):
     plan_item, after = getattr(a, "plan_item", None), getattr(a, "after", None) or []
     if after and not plan_item:
         die("--after 需要同时指定 --plan-item。", 4)
+    plan_store = None
     if plan_item:
         plan_store = plans.PlanStore(STATE, uid, project)
         try:
@@ -1822,6 +1957,34 @@ def cmd_run(a, cfg):
             die(str(error), 4)
         for earlier in after:
             load_job(messages.job_id(earlier))
+    return argparse.Namespace(uid=uid, forwarded_origin=forwarded_origin, origin_harness=origin_harness, owner=owner,
+                              repo=repo, project=project, origin_url=origin_url, proj=proj, plan_item=plan_item,
+                              after=after, plan_store=plan_store)
+
+
+def include_list(a, repo):
+    """--include 规范化成仓库内相对路径；缺失或越界直接退出 4。"""
+    include_paths = []
+    missing = []
+    for value in a.include:
+        path = Path(os.path.abspath(os.path.join(repo, value)))
+        if not path.exists():
+            missing.append(f"{value} -> {path}")
+        try:
+            include_paths.append(path.relative_to(repo).as_posix())
+        except ValueError:
+            die(f"--include 路径必须位于仓库内：{value}（仓库根目录：{repo}）", 4)
+    if missing:
+        die("--include 缺少以下路径（相对仓库根目录解析）：\n  " + "\n  ".join(missing), 4)
+    return include_paths
+
+
+def cmd_run(a, cfg):
+    scope = run_scope(a, cfg)
+    uid, forwarded_origin, origin_harness, owner = scope.uid, scope.forwarded_origin, scope.origin_harness, scope.owner
+    repo, project, origin_url, proj = scope.repo, scope.project, scope.origin_url, scope.proj
+    plan_item, after, plan_store = scope.plan_item, scope.after, scope.plan_store
+    test_full = getattr(a, "test_full", False)
     if a.test or test_full:
         # 旧 test 视同 test_full；--test 优先快测，没配快测时回落到全量。
         full = proj.get("test_full") or proj.get("test")
@@ -1855,19 +2018,22 @@ def cmd_run(a, cfg):
             die("--context-from 只用于代理派单。", 4)
         prompt = context_pack(cfg, uid, a.context_from) + "\n" + prompt
 
-    include_paths = []
-    missing = []
-    for value in a.include:
-        path = Path(os.path.abspath(os.path.join(repo, value)))
-        if not path.exists():
-            missing.append(f"{value} -> {path}")
-        try:
-            include_paths.append(path.relative_to(repo).as_posix())
-        except ValueError:
-            die(f"--include 路径必须位于仓库内：{value}（仓库根目录：{repo}）", 4)
-    if missing:
-        die("--include 缺少以下路径（相对仓库根目录解析）：\n  " + "\n  ".join(missing), 4)
-    if a.dispatch_mode == "line":
+    include_paths = include_list(a, repo)
+    line, no_line = getattr(a, "line", None), getattr(a, "no_line", False)
+    if line and no_line:
+        die("--line 与 --no-line 不能同时使用。", 4)
+    if (getattr(a, "accept", None) or getattr(a, "accept_chain", False)) and not line:
+        die("--accept、--accept-chain 需要同时指定 --line。", 4)
+    if getattr(a, "accept_chain", False) and not getattr(a, "accept", None):
+        die("--accept-chain 需要同时指定 --accept。", 4)
+    if no_line:
+        if not plan_item:
+            die("--no-line 需要同时指定 --plan-item。", 4)
+        line_decline(scope)
+    elif line:
+        if line_accept(a, cfg, scope, include_paths, prompt):
+            return
+    elif a.dispatch_mode == "line":
         if not plan_item:
             print("工作线未接线：line 模式需要 --plan-item；按默认方式派出。")
         elif line_wire(a, cfg, uid, owner, plan_store, plan_item, after, include_paths, prompt):
@@ -3484,35 +3650,48 @@ def main(argv=None, *, forwarded=None):
     p.add_argument("--agent", action="append", help="require this agent (repeatable)")
     p.set_defaults(fn=cmd_doctor)
 
+    def add_run_options(p):
+        """run 与 suggest 共用的参数。"""
+        p.add_argument("--agent", "--harness", help=f"agent to run ({', '.join(agents.SPECS)}); [agent:NAME] in the config only overrides their templates")
+        p.add_argument("--prompt-file", help="prompt for the agent ('-' reads stdin)")
+        p.add_argument("--cmd", help="shell command to run instead of an agent")
+        p.add_argument("--test", action="store_true", help="run the project's quick test command (falls back to test_full / test)")
+        p.add_argument("--test-full", action="store_true", help="run the project's full test command (queued as heavy)")
+        p.add_argument("--heavy", action="store_true", help="hold a heavy slot while the command runs")
+        p.add_argument("--host", help="目标机，或 auto；默认按会话派单默认值、[defaults] host、auto 取值")
+        p.add_argument("--force-host", action="store_true", help="skip the load check for --host")
+        p.add_argument("--tag", action="append", default=[], help="only machines with this tag (repeatable)")
+        p.add_argument("--ref", default="HEAD", help="commit to send (default HEAD)")
+        p.add_argument("--wip", action="store_true", help="apply tracked working-tree differences from --ref to the remote index; fail if empty")
+        p.add_argument("--branch", help="branch the job works on (default rd/<RD_USER_ID>/<name>-<time>)")
+        p.add_argument("--name", help="short label used in the job id")
+        p.add_argument("--project", help="project name (default: name of the origin repository)")
+        p.add_argument("--workdir", help="临时覆盖目标机的工作根目录（默认读取 host 配置的 workdir）")
+        p.add_argument("--include", action="append", default=[], help="extra path inside repository to copy, relative to repository root (repeatable)")
+        p.add_argument("--context-from", action="append", default=[], metavar="JOB",
+                       help="把前序派单的上下文包放在提示词前面（可重复；须是本用户 ID 且已有回执）")
+        p.add_argument("--model")
+        p.add_argument("--effort")
+        p.add_argument("--permission-mode", choices=list(agents.AGY_PERMISSIONS),
+                       help="AGY 必填：plan/accept-edits/auto/skip；无人值守只有 skip 能执行命令和 git 提交")
+        p.add_argument("--timeout", type=int, help="seconds before the job is killed")
+        p.add_argument("--initiator-session", help="发起方会话ID；默认 RD_INITIATOR_SESSION，再读取父进程链识别的 harness 会话变量")
+        p.add_argument("--dispatch-mode", help="派单模式：suggest、line、ticket；默认读会话默认值，再读 [defaults] dispatch_mode")
+        p.add_argument("--plan-item", help="把本次派单关联到待派登记（rdispatch plan）里的工作项")
+        p.add_argument("--after", action="append", default=[], help="本工作项依赖的前序派单 ID（可重复）；需要 --plan-item")
+
     p = sub.add_parser("run", parents=[repo_parser], help="dispatch an agent session or a command")
-    p.add_argument("--agent", "--harness", help=f"agent to run ({', '.join(agents.SPECS)}); [agent:NAME] in the config only overrides their templates")
-    p.add_argument("--prompt-file", help="prompt for the agent ('-' reads stdin)")
-    p.add_argument("--cmd", help="shell command to run instead of an agent")
-    p.add_argument("--test", action="store_true", help="run the project's quick test command (falls back to test_full / test)")
-    p.add_argument("--test-full", action="store_true", help="run the project's full test command (queued as heavy)")
-    p.add_argument("--heavy", action="store_true", help="hold a heavy slot while the command runs")
-    p.add_argument("--host", help="目标机，或 auto；默认按会话派单默认值、[defaults] host、auto 取值")
-    p.add_argument("--force-host", action="store_true", help="skip the load check for --host")
-    p.add_argument("--tag", action="append", default=[], help="only machines with this tag (repeatable)")
-    p.add_argument("--ref", default="HEAD", help="commit to send (default HEAD)")
-    p.add_argument("--wip", action="store_true", help="apply tracked working-tree differences from --ref to the remote index; fail if empty")
-    p.add_argument("--branch", help="branch the job works on (default rd/<RD_USER_ID>/<name>-<time>)")
-    p.add_argument("--name", help="short label used in the job id")
-    p.add_argument("--project", help="project name (default: name of the origin repository)")
-    p.add_argument("--workdir", help="临时覆盖目标机的工作根目录（默认读取 host 配置的 workdir）")
-    p.add_argument("--include", action="append", default=[], help="extra path inside repository to copy, relative to repository root (repeatable)")
-    p.add_argument("--context-from", action="append", default=[], metavar="JOB",
-                   help="把前序派单的上下文包放在提示词前面（可重复；须是本用户 ID 且已有回执）")
-    p.add_argument("--model")
-    p.add_argument("--effort")
-    p.add_argument("--permission-mode", choices=list(agents.AGY_PERMISSIONS),
-                   help="AGY 必填：plan/accept-edits/auto/skip；无人值守只有 skip 能执行命令和 git 提交")
-    p.add_argument("--timeout", type=int, help="seconds before the job is killed")
-    p.add_argument("--initiator-session", help="发起方会话ID；默认 RD_INITIATOR_SESSION，再读取父进程链识别的 harness 会话变量")
-    p.add_argument("--dispatch-mode", help="派单模式：suggest、line、ticket；默认读会话默认值，再读 [defaults] dispatch_mode")
-    p.add_argument("--plan-item", help="把本次派单关联到待派登记（rdispatch plan）里的工作项")
-    p.add_argument("--after", action="append", default=[], help="本工作项依赖的前序派单 ID（可重复）；需要 --plan-item")
+    add_run_options(p)
+    p.add_argument("--line", help="接入工作线（线名）；需要 --accept 令牌，或该线已有常驻同意")
+    p.add_argument("--accept", metavar="令牌", help="接受 rdispatch suggest 给出的建议令牌（需要 --line）")
+    p.add_argument("--accept-chain", action="store_true", help="接受时同时设为「本链后续工作项都接受」（常驻同意，每次仍校验严格接线条件）")
+    p.add_argument("--no-line", action="store_true", help="拒绝建议：按默认方式派出，并在待派登记里记「本链不再建议」")
     p.set_defaults(fn=cmd_run)
+
+    p = sub.add_parser("suggest", parents=[repo_parser], help="只读：判断本工作项能否接入工作线，给出建议与令牌（参数同 run）")
+    add_run_options(p)
+    p.add_argument("--json", action="store_true", help="输出结构化 JSON")
+    p.set_defaults(fn=cmd_suggest)
 
     p = sub.add_parser("plan", parents=[repo_parser], help="待派登记：登记还没派出的工作项及其依赖")
     p.add_argument("--project", help="项目名；默认当前仓库的 origin 仓库名")
@@ -3527,6 +3706,11 @@ def main(argv=None, *, forwarded=None):
         q.add_argument("--after", action="append", default=None if name == "set" else [], help="依赖的前序派单 ID（可重复）；set 时传空串清空")
     for name, text in (("done", "标记完成"), ("cancel", "标记取消"), ("remove", "删除（不得被其他工作项依赖）")):
         actions.add_parser(name, help=text).add_argument("item")
+    q = actions.add_parser("chain", help="查看或清除某条链（线）的建议设置：本链不再建议、拒绝次数、常驻同意")
+    q.add_argument("line", help="线名")
+    q.add_argument("--clear", action="store_true", help="清除「本链不再建议」和拒绝次数，恢复建议")
+    q.add_argument("--revoke-accept", action="store_true", help="撤销「本链后续工作项都接受」的常驻同意")
+    q.add_argument("--json", action="store_true")
     p.set_defaults(fn=cmd_plan)
 
     p = sub.add_parser("session-default", help="读取、设置或清除会话派单默认值")

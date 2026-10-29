@@ -70,13 +70,37 @@ class PlanStore:
         """持锁读取、修改、校验无环后原子写回；change 返回要给调用方的值。"""
         lock = self.lock()
         try:
-            items = self.read()
+            data = messages.read_json(self.path, limit=None) or {}
+            items = data.get("items", {})
             result = change(items)
             cycle = find_cycle(items)
             if cycle:
                 raise ValueError("工作项依赖成环：" + " -> ".join(cycle))
-            messages.atomic_json(self.path, {"items": items}, limit=None)
+            messages.atomic_json(self.path, dict(data, items=items), limit=None)
             return result
+        finally:
+            lock.release()
+
+    def chain(self, name):
+        """某条链（线名）的建议设置：本链不再建议、拒绝次数、常驻同意。读不到按默认值。"""
+        saved = ((messages.read_json(self.path, limit=None) or {}).get("chains") or {}).get(name) or {}
+        return dict(no_suggest=bool(saved.get("no_suggest")), rejections=int(saved.get("rejections") or 0),
+                    accept_all=bool(saved.get("accept_all")))
+
+    def change_chain(self, name, change):
+        """持锁修改某条链的设置；change 接收设置字典并原地修改，返回修改后的设置。"""
+        lock = self.lock()
+        try:
+            data = messages.read_json(self.path, limit=None) or {}
+            chains = data.setdefault("chains", {})
+            setting = chains.get(name) or {}
+            setting = dict(no_suggest=bool(setting.get("no_suggest")), rejections=int(setting.get("rejections") or 0),
+                           accept_all=bool(setting.get("accept_all")))
+            change(setting)
+            chains[name] = setting
+            data.setdefault("items", {})
+            messages.atomic_json(self.path, data, limit=None)
+            return setting
         finally:
             lock.release()
 

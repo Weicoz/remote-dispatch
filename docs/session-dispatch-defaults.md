@@ -51,6 +51,23 @@ harness = codex
 打回只续跑当前工作项，新轮次记入同一工作项。本版会话沿用当前会话。
 判定集中在 `rd_line.decide`，由 `cli.line_wiring` 收集事实后调用，后续 `suggest` 复用。
 
+### `suggest` 与建议令牌
+
+`rdispatch suggest`（参数同 `run`，另有 `--json`）只读判断本工作项能否接线，退出码恒为 0。判断在生成派单 ID 和代理预检之前，
+条件为：严格接线条件（`rd_line.decide`，经 `cli.line_wiring`，不另写一份）、本链未拒绝过建议、前序派单所在目标机在线且可接单
+（只读探测）。integration 同步预检不在本版。不满足时输出原因，不生成令牌。
+
+满足时输出工作项顺序（已完成、本项、后续待派，按依赖拓扑排序）、线名、目标机、分支、权限档位、基线、不接受时的派法和令牌。
+令牌绑定建议内容指纹、用户 ID 和发起会话，30 分钟内单次有效，存于控制端 `state/suggest/<用户ID>/`。
+`cli.build_suggestion(cfg, args)` 返回 `suggest --json` 的结构，serve 可直接调用。
+
+- 接受：`run --line <线名> --accept <令牌>`；加 `--accept-chain` 同时记「本链后续工作项都接受」。接受时重算指纹，
+  过期、已用、内容变化、用户或会话不符一律退出码 4，不消耗令牌以外的状态。
+- 常驻同意：该线有常驻同意时，`run --line <线名>` 免令牌；每次仍校验严格接线条件，不满足就按默认方式派出并写明原因。
+  `--line` 既无有效令牌又无常驻同意，退出码 4。
+- 拒绝：`run --no-line` 按默认方式派出，只在待派登记里记「本链不再建议」和拒绝次数。
+- 管理：`rdispatch plan chain <线名>` 查看；`--clear` 清除拒绝设置并恢复建议；`--revoke-accept` 撤销常驻同意。
+
 ```sh
 rdispatch session-default <会话> --dispatch-mode line
 rdispatch session-default <会话> --clear-dispatch-mode
