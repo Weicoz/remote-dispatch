@@ -2,6 +2,7 @@
 
 ## 未发布
 
+- **工作线生命周期**：线上有待派工作项且无人推进超过 `RD_LINE_STALE_DAYS`／`[line] stale_days`（默认 7 天）或发起会话缺失时，看板显示「停滞」；再过同样天数 `clean --expired` 按已取回未合入的保留期回收。新工作项接入前记录 worktree 未跟踪文件清单，写入回执 `residue` 与看板，不删除。新增 `rdispatch takeover JOB`：同一用户 ID 的其他发起会话接手工作线并记录，跨用户 ID 与非工作线退出码 4。`resume --host` 换机时换新会话并附交接包，输出提示先瘦身。详见 `docs/session-dispatch-defaults.md`。
 - **看板 `rdispatch board`**：一屏显示已派、运行中、待派、阻塞四个数字，及每个派单的工作单元、目标机、harness 与模型、派出时刻、已运行时长、轮次、最新进度、状态、回收阻塞原因和可再生目录大小（有记录时）。默认当前发起会话，`--all` 为该用户全部派单；支持 `--json`。serve 新增只读 `GET /v1/board`，结构相同。不写状态。详见 `docs/board.md`。
 - **上下文包 `run --context-from <派单>`**（可重复，仅代理派单）：rdispatch 从前序派单最新验收轮（没有验收轮时取最新回执）的结构化数据拼装上下文包，放在提示词前面：回执摘要、提交列表、改动文件（取回后才有提交列表）、决策与未完成项（执行方用 `rd-report result --decision/--unfinished`（可重复）写入回执 `report.decisions`、`report.unfinished`，没有则省略）。不调用模型；约 4k token 上限，超出时按「摘要 > 未完成项 > 决策 > 提交 > 改动文件」截断并注明。前序派单不属于当前用户 ID 或没有回执时退出码 4。拼装与截断集中在 `rd_context_pack.build()`，工作线交接包复用它。
 - **工作线接线**：派单模式为 `line` 且带 `--plan-item` 时，前序工作项已验收、harness／模型／权限档位／`--include` 与线一致、不带 `--wip`、分支未指定或等于线分支，新工作项作为前序派单的新轮次追加（复用续跑路径），输出线名、分支、权限档位和基线；任一条件不满足按默认方式派出并写明原因。派单记录新增 `line`（工作项 → 轮次列表、各工作项基线）；`RD_BASE` 按工作项取上一个工作项验收轮回执的 `head`；打回只续跑当前工作项。`[features] line = false` 不接新线，已有线继续。本版会话沿用当前会话。详见 `docs/session-dispatch-defaults.md`。

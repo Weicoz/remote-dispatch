@@ -3,8 +3,10 @@
 CLI `board --json` 与 serve `GET /v1/board` 共用 build() 的返回结构。
 只通过纯查询层读取，不写状态、不收取回执、不创建目录。
 """
+import os
 import time
 
+from . import rd_line as workline
 from . import rd_plan as plans
 from . import rd_usage as usage
 
@@ -79,7 +81,27 @@ def elapsed_seconds(rec, snapshot, receipt, now):
     return UNRECORDED
 
 
-def row_for(query, rec, snapshot, project_row, unit, referrers, now):
+def last_activity(state, query, rec):
+    """最后一次推进：回执确认或登记更新的最晚时间（只读，与 clean --expired 的口径一致）。"""
+    times = []
+    for path in (query.result_path(rec, 1).parent.glob("r*.ack.json")):
+        times.append(path.stat().st_mtime)
+    if not times:
+        times.append(os.path.getmtime(os.path.join(str(state), "jobs", rec["job"] + ".json")))
+    return max(times)
+
+
+def line_stale(state, query, rec, referrers, now, days):
+    """停滞原因或 None；读不到时间时按未停滞处理。"""
+    if not referrers:
+        return None
+    activity = safe(lambda: last_activity(state, query, rec), None)
+    if activity is None:
+        return workline.stale(rec, referrers, now, now, days)
+    return workline.stale(rec, referrers, activity, now, days)
+
+
+def row_for(query, rec, snapshot, project_row, unit, referrers, now, stale=None):
     number = int(snapshot.get("round") or 0) or rec["rounds"]
     # 回执在断线、读取失败时记为没有，行里相应字段显示「未记录」。
     receipt = safe(lambda: query.result(rec, number, snapshot))
@@ -98,10 +120,16 @@ def row_for(query, rec, snapshot, project_row, unit, referrers, now):
                reclaim_block=reclaim_block(query, rec, snapshot, receipt, referrers))
     if isinstance(sizes, dict) and sizes:
         row["regenerable_kb"] = sizes
+    if stale:
+        row["stale"] = stale
+    residue = workline.current_residue(rec)
+    if residue:
+        row["residue"] = residue
     return row
 
 
-def build(state, query, records, states, *, user_id, scope="all", initiator_session=None, now=None):
+def build(state, query, records, states, *, user_id, scope="all", initiator_session=None, now=None,
+          stale_days=workline.STALE_DAYS):
     """records 已按范围筛好；states 是 {job: 执行快照}。返回看板数据结构。"""
     now = time.time() if now is None else now
     user_plans = plans.user_rows(state, user_id)
@@ -112,7 +140,8 @@ def build(state, query, records, states, *, user_id, scope="all", initiator_sess
         snapshot = states.get(rec["job"], {})
         project = project_rows[rec["job"]]
         referrers = plans.PlanStore(state, user_id, rec["project"]).referrers(rec["job"]) if rec.get("project") else []
-        rows.append(row_for(query, rec, snapshot, project, unit_of.get(rec["job"]) or rec["job"], referrers, now))
+        stale = line_stale(state, query, rec, referrers, now, stale_days)
+        rows.append(row_for(query, rec, snapshot, project, unit_of.get(rec["job"]) or rec["job"], referrers, now, stale))
     rows.sort(key=lambda row: (row["created"] if row["created"] != UNRECORDED else "", row["job"]))
     counts = dict.fromkeys((plans.PENDING, plans.BLOCKED), 0)
     for plan_rows in user_plans.values():
@@ -146,7 +175,13 @@ def render(board):
         progress = row["progress"]
         text = f"{progress['phase'] or ''} {progress['summary'] or ''}".strip() if progress else "无进度"
         lines.append(f"{row['unit']}  [{row['host']}]  {row['harness']}/{row['model']}  派出 {row['created']}  "
-                     f"已运行 {duration(row['elapsed_seconds'])}  第{row['rounds']}轮  {row['state']}  {text}")
+                     f"已运行 {duration(row['elapsed_seconds'])}  第{row['rounds']}轮  {row['state']}"
+                     f"{'  停滞' if row.get('stale') else ''}  {text}")
+        if row.get("stale"):
+            lines.append("    停滞提醒：" + row["stale"] + "；推进、接手或取消这些工作项，否则将按已取回未合入的保留期回收")
+        if row.get("residue"):
+            residue = row["residue"]
+            lines.append(f"    残留未跟踪文件 {residue['total']} 个（未删除）：" + "、".join(residue["files"][:5]))
         if row["reclaim_block"]:
             lines.append(f"    回收阻塞 [{row['reclaim_block']['code']}]：{row['reclaim_block']['reason']}")
         if row.get("regenerable_kb"):

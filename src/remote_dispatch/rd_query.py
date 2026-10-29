@@ -7,6 +7,7 @@ import hashlib
 import json
 from pathlib import Path
 
+from . import rd_line as workline
 from . import rd_messages as messages
 from . import rd_usage as usage
 from .rd_projects import ProjectIndex, project_fields
@@ -99,6 +100,9 @@ class Query:
                        needs_initiator_review=True)
         receipt.update({key: rec[key] for key in ("user_id", "project", "origin", "created", "agent", "model", "gate") if key in rec})
         receipt.update(self.measured(rec, number))
+        residue = workline.residue_for(rec, number)
+        if residue:
+            receipt["residue"] = residue
         receipt["receipt_id"] = receipt_id(receipt)
         receipt["captured_at"] = messages.utc_now()
         return dict(receipt, **self.review(rec, number))
