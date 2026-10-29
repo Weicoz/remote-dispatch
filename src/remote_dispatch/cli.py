@@ -1883,7 +1883,12 @@ def line_sync_apply(cfg, rec, repo, plan):
         return False, "推送 integration 新头到目标机失败：" + (pushed.stderr or "").strip(), None
     script = (f'cd "$ROOT/wt/{rec["job"]}" 2>/dev/null || {{ echo status=missing; exit 0; }}\n'
               f'pre=$(git rev-parse HEAD)\n'
-              f'[ "$pre" = {shlex.quote(plan["from_head"])} ] || {{ echo status=moved; exit 0; }}\n'
+              f'if [ "$pre" != {shlex.quote(plan["from_head"])} ]; then\n'
+              # 上次同步已成功、之后 resume 失败：worktree 已含验收提交与 integration 新头，重试按已同步处理。
+              f'  if git merge-base --is-ancestor {shlex.quote(plan["from_head"])} "$pre" 2>/dev/null && '
+              f'git merge-base --is-ancestor {shlex.quote(plan["integration"])} "$pre" 2>/dev/null; '
+              f'then echo status=merged; echo head=$pre; else echo status=moved; fi\n'
+              f'  exit 0\nfi\n'
               f'[ -z "$(git status --porcelain --untracked-files=no)" ] || {{ echo status=dirty; exit 0; }}\n'
               f'if git -c user.name=rdispatch -c user.email=rdispatch@localhost merge --no-edit -q '
               f'{shlex.quote(plan["integration"])} >/dev/null 2>&1; then echo status=merged\n'

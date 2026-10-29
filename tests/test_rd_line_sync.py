@@ -75,6 +75,26 @@ class LineSyncTests(unittest.TestCase):
         receipt = rd.queries(self.cfg).result(saved, 2, {"state": "done", "round": 2, "head": merged})
         self.assertEqual(receipt["integration_sync"]["integration"], integration)
 
+    def test_retry_after_resume_failure_reuses_the_already_synced_worktree(self):
+        """同步（写）成功后 resume 失败：重试不能被「worktree 已偏离验收提交」拒绝，也不重复合并。"""
+        self.patch_probe()
+        record, head = self.accepted_first()
+        self.advance_integration("other.txt", "integration\n")
+        token = self.suggest()["token"]
+        with patch.object(rd, "resume_job", side_effect=SystemExit(1)):
+            self.rerun("b", expect=1, line="a", accept=token)
+        merged = self.worktree_head(record)
+        self.assertNotEqual(merged, head)
+        self.assertEqual(rd.load_job(record["job"])["rounds"], 1)
+        retry = self.suggest()
+        self.assertTrue(retry["suggest"], retry)
+        added, output, _ = self.accept(token=retry["token"])
+        self.assertEqual(added, [])
+        self.assertNotIn("偏离验收提交", output)
+        self.assertEqual(self.worktree_head(record), merged)
+        saved = rd.load_job(record["job"])
+        self.assertEqual((saved["rounds"], saved["line"]["bases"]["b"]), (2, merged))
+
     def test_precheck_conflict_gives_no_suggestion_and_names_the_files(self):
         self.patch_probe()
         self.accepted_first()
