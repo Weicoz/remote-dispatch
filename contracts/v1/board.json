@@ -2,6 +2,7 @@
   "scope": "all",
   "initiator_session": null,
   "summary": {"dispatched": 1, "running": 1, "pending": 1, "blocked": 0},
+  "chains": [{"project": "demo", "line": "api", "suggested": 2, "accepted": 1, "rejected": 1}],
   "rows": [
     {
       "unit": "api",
@@ -16,6 +17,13 @@
       "state": "running",
       "progress": {"phase": "implementing", "summary": "实现中", "updated_at": "2026-10-25T00:09:00Z"},
       "initiator_session": "original-session",
+      "mode": "line",
+      "line": "api",
+      "branch": "rd/employee_a/codex-20261025-000000",
+      "line_items": ["api", "web"],
+      "pending_items": 1,
+      "shared_branch": true,
+      "line_hint": null,
       "reclaim_block": {"code": "running", "reason": "任务运行中"},
       "regenerable_kb": {"target": 5120}
     }

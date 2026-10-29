@@ -154,7 +154,7 @@ class LineTests(unittest.TestCase):
             with self.subTest(mode):
                 added, output = self.run_item("b", dispatch_mode=mode)
                 self.assertEqual(len(added), 1)
-                self.assertNotIn("工作线", output)
+                self.assertNotIn("工作线 a：工作项", output)  # 接线成功提示；suggest 的「本可接入」提示不算
                 self.assertEqual(rd.load_job(record["job"])["rounds"], 1)
                 self.reset_item("b", added[0])
 

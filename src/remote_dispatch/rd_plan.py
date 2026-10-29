@@ -81,11 +81,23 @@ class PlanStore:
         finally:
             lock.release()
 
-    def chain(self, name):
-        """某条链（线名）的建议设置：本链不再建议、拒绝次数、常驻同意。读不到按默认值。"""
-        saved = ((messages.read_json(self.path, limit=None) or {}).get("chains") or {}).get(name) or {}
+    @staticmethod
+    def chain_setting(saved):
+        """链设置的规范化：缺字段按默认值；建议与接受次数用于看板统计。"""
+        saved = saved or {}
         return dict(no_suggest=bool(saved.get("no_suggest")), rejections=int(saved.get("rejections") or 0),
-                    accept_all=bool(saved.get("accept_all")))
+                    accept_all=bool(saved.get("accept_all")), suggested=int(saved.get("suggested") or 0),
+                    accepted=int(saved.get("accepted") or 0))
+
+    def chain(self, name):
+        """某条链（线名）的建议设置：本链不再建议、拒绝次数、常驻同意、建议与接受次数。读不到按默认值。"""
+        saved = ((messages.read_json(self.path, limit=None) or {}).get("chains") or {}).get(name)
+        return self.chain_setting(saved)
+
+    def chains(self):
+        """只读：全部记录过的链 {线名: 设置}。"""
+        saved = (messages.read_json(self.path, limit=None) or {}).get("chains") or {}
+        return {name: self.chain_setting(value) for name, value in sorted(saved.items())}
 
     def change_chain(self, name, change):
         """持锁修改某条链的设置；change 接收设置字典并原地修改，返回修改后的设置。"""
@@ -93,9 +105,7 @@ class PlanStore:
         try:
             data = messages.read_json(self.path, limit=None) or {}
             chains = data.setdefault("chains", {})
-            setting = chains.get(name) or {}
-            setting = dict(no_suggest=bool(setting.get("no_suggest")), rejections=int(setting.get("rejections") or 0),
-                           accept_all=bool(setting.get("accept_all")))
+            setting = self.chain_setting(chains.get(name))
             change(setting)
             chains[name] = setting
             data.setdefault("items", {})

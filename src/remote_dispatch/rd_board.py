@@ -6,6 +6,7 @@ CLI `board --json` 与 serve `GET /v1/board` 共用 build() 的返回结构。
 import time
 
 from . import rd_plan as plans
+from . import rd_suggest as suggestions
 from . import rd_usage as usage
 
 UNRECORDED = usage.UNRECORDED
@@ -79,7 +80,18 @@ def elapsed_seconds(rec, snapshot, receipt, now):
     return UNRECORDED
 
 
-def row_for(query, rec, snapshot, project_row, unit, referrers, now):
+def line_view(rec, plan_items):
+    """派单的模式与工作线信息：单项或线、所属线、分支、线上工作项顺序、后续待派数、是否共用一个任务分支。"""
+    line = rec.get("line")
+    order = sorted(line["items"], key=lambda item: min(line["items"][item] or [0])) if line else []
+    current = line["current"] if line else rec.get("plan_item")
+    pending = len(suggestions.descendants(plan_items, current)) if current and plan_items else 0
+    return dict(mode="line" if line else "single", line=line["name"] if line else None, branch=rec.get("branch"),
+                line_items=order, pending_items=pending, shared_branch=len(order) > 1,
+                line_hint=rec.get("line_hint"))
+
+
+def row_for(query, rec, snapshot, project_row, unit, referrers, now, plan_items=None):
     number = int(snapshot.get("round") or 0) or rec["rounds"]
     # 回执在断线、读取失败时记为没有，行里相应字段显示「未记录」。
     receipt = safe(lambda: query.result(rec, number, snapshot))
@@ -95,7 +107,8 @@ def row_for(query, rec, snapshot, project_row, unit, referrers, now):
                progress=dict(phase=progress.get("phase"), summary=progress.get("summary"),
                              updated_at=progress.get("updated_at")) if progress else None,
                initiator_session=rec.get("initiator_session"),
-               reclaim_block=reclaim_block(query, rec, snapshot, receipt, referrers))
+               reclaim_block=reclaim_block(query, rec, snapshot, receipt, referrers),
+               **line_view(rec, plan_items))
     if isinstance(sizes, dict) and sizes:
         row["regenerable_kb"] = sizes
     return row
@@ -107,12 +120,14 @@ def build(state, query, records, states, *, user_id, scope="all", initiator_sess
     user_plans = plans.user_rows(state, user_id)
     unit_of = {job: item["id"] for rows in user_plans.values() for item in rows for job in item["jobs"]}
     project_rows = {row["job"]: row for row in query.jobs(records, states, user_id=user_id)}
-    rows = []
+    rows, plan_items_of = [], {}
     for rec in records:
         snapshot = states.get(rec["job"], {})
         project = project_rows[rec["job"]]
         referrers = plans.PlanStore(state, user_id, rec["project"]).referrers(rec["job"]) if rec.get("project") else []
-        rows.append(row_for(query, rec, snapshot, project, unit_of.get(rec["job"]) or rec["job"], referrers, now))
+        plan_items = plan_items_of.setdefault(rec.get("project"), plans.PlanStore(state, user_id, rec["project"]).read()
+                                              if rec.get("project") else {})
+        rows.append(row_for(query, rec, snapshot, project, unit_of.get(rec["job"]) or rec["job"], referrers, now, plan_items))
     rows.sort(key=lambda row: (row["created"] if row["created"] != UNRECORDED else "", row["job"]))
     counts = dict.fromkeys((plans.PENDING, plans.BLOCKED), 0)
     for plan_rows in user_plans.values():
@@ -121,7 +136,10 @@ def build(state, query, records, states, *, user_id, scope="all", initiator_sess
                 counts[item["state"]] += 1
     summary = dict(dispatched=len(rows), running=sum(row["state"] in RUNNING_STATES for row in rows),
                    pending=counts[plans.PENDING], blocked=counts[plans.BLOCKED])
-    return dict(scope=scope, initiator_session=initiator_session, summary=summary, rows=rows)
+    chains = [dict(project=project, line=name, suggested=setting["suggested"], accepted=setting["accepted"],
+                   rejected=setting["rejections"])
+              for project in sorted(user_plans) for name, setting in plans.PlanStore(state, user_id, project).chains().items()]
+    return dict(scope=scope, initiator_session=initiator_session, summary=summary, chains=chains, rows=rows)
 
 
 def duration(value):
@@ -147,8 +165,17 @@ def render(board):
         text = f"{progress['phase'] or ''} {progress['summary'] or ''}".strip() if progress else "无进度"
         lines.append(f"{row['unit']}  [{row['host']}]  {row['harness']}/{row['model']}  派出 {row['created']}  "
                      f"已运行 {duration(row['elapsed_seconds'])}  第{row['rounds']}轮  {row['state']}  {text}")
+        if row["mode"] == "line":
+            shared = "，多个工作项共用任务分支" if row["shared_branch"] else ""
+            lines.append(f"    工作线 {row['line']}：{' -> '.join(row['line_items'])}（分支 {row['branch']}，待派 {row['pending_items']}{shared}）")
+        else:
+            lines.append(f"    单项（分支 {row['branch']}，待派 {row['pending_items']}）")
+        if row.get("line_hint"):
+            lines.append("    提示：" + row["line_hint"]["message"])
         if row["reclaim_block"]:
             lines.append(f"    回收阻塞 [{row['reclaim_block']['code']}]：{row['reclaim_block']['reason']}")
         if row.get("regenerable_kb"):
             lines.append("    可再生目录：" + size_text(row["regenerable_kb"]))
+    for chain in board.get("chains") or []:
+        lines.append(f"线 {chain['project']}/{chain['line']}：建议 {chain['suggested']} 次，接受 {chain['accepted']} 次，拒绝 {chain['rejected']} 次")
     return "\n".join(lines)
