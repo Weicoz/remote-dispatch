@@ -45,6 +45,7 @@ from . import rd_context_pack as context_packs
 from . import rd_events as events
 from . import rd_plan as plans
 from . import rd_board as board
+from . import rd_line as workline
 from .rd_lock import JobBusy, JobLock
 from . import rd_initiator as initiators
 from .rd_session_defaults import SessionDefaults, resolve_mode, validate_mode
@@ -256,6 +257,10 @@ class Config:
     def rollout_stats(self):
         """[features] rollout_stats：读取 Codex rollout 逐次调用用量，默认关闭；取值无效按关闭处理。"""
         return self.cp.get("features", "rollout_stats", fallback="false").strip().lower() in ("1", "true", "yes", "on")
+
+    def line_enabled(self):
+        """[features] line：显式写 false 才关闭；关闭后不接新线，已有线继续。"""
+        return workline.feature_enabled(self.cp)
 
     def retention_hours(self):
         """过期回收的保留时长（小时），从最后一次回执确认算起；环境变量优先。"""
@@ -1349,7 +1354,7 @@ def build_run_script(host, rec, round_no, timeout):
                          'if command -v python3 >/dev/null 2>&1; then python3 "$RD_REPORTER" finish --exit "$rc" '
                          '>> "$RD_JOB_DIR/report.r$RD_ROUND.log" 2>&1; fi')
     rollout_env = "export RD_ROLLOUT_STATS=1" if str(host.get("rollout_stats", "0")).lower() in ("1", "true", "yes") else ""
-    subs = {"JOB": rec["job"], "BASE": shlex.quote(rec.get("base") or ""), "ROLLOUT_ENV": rollout_env, "ROUND": str(round_no), "PATH": host["path"], "ROOT": root_expr(host),
+    subs = {"JOB": rec["job"], "BASE": shlex.quote(workline.round_base(rec, round_no) or ""), "ROLLOUT_ENV": rollout_env, "ROUND": str(round_no), "PATH": host["path"], "ROOT": root_expr(host),
             "MAX_HEAVY": host["max_heavy"], "ENV_FILE": env_file, "KILLTREE": KILLTREE,
             "TIMEOUT": str(int(timeout)), "PUSH": push, "SHARED_ROOT": root_expr(shared),
             "CACHE_ENV": cache_env_script(host, rec.get("user_id")), "IDENTITY": identity, "EXEC": command, "REPORT_ENV": report_env, "REPORT_FINISH": report_finish}
@@ -1427,7 +1432,7 @@ def launch(host, rec, round_no, cmd_text, prompt_text, timeout):
             put_file(host, f"jobs/{j}/rd_cache.py", stream.read(), "600")
         put_file(host, f"jobs/{j}/reports/dispatch.r{round_no}.json", json.dumps(dict(job=j, round=round_no, initiator_session=rec.get("initiator_session"))), "600")
     if host["platform"] == "windows":
-        spec = dict(rec, round=round_no, timeout=int(timeout), max_heavy=int(host["max_heavy"]),
+        spec = dict(rec, round=round_no, base=workline.round_base(rec, round_no), timeout=int(timeout), max_heavy=int(host["max_heavy"]),
                     auth_file=host["codex_auth_file"], env_file=host["env_file"],
                     rollout_stats=host.get("rollout_stats", "0"),
                     cache_env=cache_env(host, rec.get("user_id")))
@@ -1724,6 +1729,61 @@ def cmd_gate(a, cfg):
     cmd_run(run_args, cfg)
 
 
+def line_facts(cfg, rec):
+    """接线判定要用的目标机与验收事实；全部只读，读不到按缺失处理。"""
+    facts = dict(state=None, review_state=None, session=None, head=None)
+    try:
+        snapshot = job_states(cfg, [rec]).get(rec["job"], {})
+        facts["state"] = snapshot.get("state")
+        facts["review_state"] = reviews.read(STATE, rec, rec["rounds"])["review_state"]
+        if facts["review_state"] == "accepted":
+            receipt = messages.read_json(result_path(rec, rec["rounds"])) or queries(cfg).result(rec, rec["rounds"])
+            facts["head"] = (receipt or {}).get("head")
+        host = job_host(cfg, rec)
+        facts["session"] = rec.get("receiver_session") or find_session(
+            host, rec, rec.get("agent_config") or cfg.agent(rec["agent"]))
+    except (Exception, SystemExit):
+        pass
+    return facts
+
+
+def line_wiring(cfg, a, uid, owner, rec, item, include_paths):
+    """判定本次派单能否作为 rec 所在线的新工作项：(可接线, 原因, 基线)。只读，供 run 自动接线与后续 suggest 复用。"""
+    facts = line_facts(cfg, rec)
+    request = dict(uid=uid, owner=owner, agent=a.agent, model=a.model, permission=getattr(a, "permission_mode", None),
+                   include=include_paths, wip=a.wip, branch=a.branch, host=a.host, item=item,
+                   enabled=cfg.line_enabled())
+    ok, reason = workline.decide(rec, request, facts)
+    return ok, reason, facts.get("head")
+
+
+def line_wire(a, cfg, uid, owner, plan_store, item, after, include_paths, prompt):
+    """line 模式：满足严格接线条件就把本工作项作为前序派单的新轮次追加，返回 True；否则打印原因返回 False。"""
+    previous, reason = workline.predecessor(plan_store.read(), item, after)
+    if previous is None:
+        print(f"工作线未接线：{reason}；按默认方式派出。")
+        return False
+    try:
+        with JobLock(STATE, previous):
+            rec = load_job(previous)
+            ok, reason, base = line_wiring(cfg, a, uid, owner, rec, item, include_paths)
+            if not ok:
+                print(f"工作线未接线：{reason}；按默认方式派出。")
+                return False
+            resume_args = argparse.Namespace(
+                job=previous, agent=None, session=None, host=None, model=a.model, effort=a.effort,
+                timeout=a.timeout, force_host=a.force_host, permission_mode=getattr(a, "permission_mode", None),
+                prompt_file=None, new_context=False, retry_after_repair=None, initiator_session=owner)
+            resume_job(resume_args, cfg, rec, prompt=prompt, line_item=dict(item=item, base=base),
+                       before_launch=lambda: plan_store.attach_job(item, previous, after))
+    except JobBusy:
+        die("round_in_progress: round in progress; another operation holds the job lock; retry after it finishes", 4)
+    line = rec["line"]
+    print(f"工作线 {line['name']}：工作项 {item} 接入 {previous}（分支 {rec['branch']}，权限档位 "
+          f"{rec.get('permission_mode') or '默认'}，基线 {base[:10]}）")
+    return True
+
+
 def cmd_run(a, cfg):
     uid = require_user()
     forwarded_origin = getattr(a, "_forwarded_origin", None)
@@ -1807,6 +1867,11 @@ def cmd_run(a, cfg):
             die(f"--include 路径必须位于仓库内：{value}（仓库根目录：{repo}）", 4)
     if missing:
         die("--include 缺少以下路径（相对仓库根目录解析）：\n  " + "\n  ".join(missing), 4)
+    if a.dispatch_mode == "line":
+        if not plan_item:
+            print("工作线未接线：line 模式需要 --plan-item；按默认方式派出。")
+        elif line_wire(a, cfg, uid, owner, plan_store, plan_item, after, include_paths, prompt):
+            return
     sha = git(["rev-parse", "--verify", a.ref + "^{commit}"], repo).stdout.strip()
     source = git(["symbolic-ref", "--quiet", "HEAD"], repo, check=False)
     source_branch = source.stdout.strip()[len("refs/heads/"):] if source.returncode == 0 else None
@@ -2311,7 +2376,7 @@ def cmd_resume(a, cfg):
     resume_job(a, cfg, rec)
 
 
-def resume_job(a, cfg, rec, *, prompt=None, before_launch=None, rollback_stack=None):
+def resume_job(a, cfg, rec, *, prompt=None, before_launch=None, rollback_stack=None, line_item=None):
     if getattr(a, "agent", None) and a.agent != rec.get("agent"):
         die("harness_change_not_allowed: 续跑不能换 harness；请另派一单。", 4)
     require_user()
@@ -2373,6 +2438,10 @@ def resume_job(a, cfg, rec, *, prompt=None, before_launch=None, rollback_stack=N
     rec["permission_mode"] = permission
     rec["receiver_session"] = session
     rec["rounds"] += 1
+    if line_item:
+        workline.start_item(rec, line_item["item"], rec["rounds"], line_item["base"])
+    else:
+        workline.note_round(rec, rec["rounds"])
     rec["session"] = session
     rec["model"] = a.model or rec.get("model")
     rec["effort"] = a.effort or rec.get("effort")
