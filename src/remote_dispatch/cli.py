@@ -1933,8 +1933,10 @@ def describe(rec, st):
     return line
 
 
-def scoped_jobs(a, cfg=None, *, include_legacy=False):
-    """跨发起会话查当前员工；项目显式指定，否则在当前仓库内筛选。"""
+def scoped_jobs(a, cfg=None, *, include_legacy=False, by_project=False):
+    """跨发起会话查当前员工；项目显式指定，否则在当前仓库内筛选。
+
+    by_project：不指定 --project 时取当前仓库的项目 ID 选择派单（同项目其他 worktree 派出的派单也在内）。"""
     uid = require_user()
     recs = [load_job(a.job)] if getattr(a, "job", None) else all_jobs()
     recs = [r for r in recs if r.get("user_id") == uid or (include_legacy and not r.get("user_id"))]
@@ -1947,7 +1949,13 @@ def scoped_jobs(a, cfg=None, *, include_legacy=False):
         probe = run(["git", "-C", directory or os.getcwd(), "rev-parse", "--show-toplevel"], check=False)
         if probe.returncode == 0:
             repo = Path(probe.stdout.strip()).resolve()
-            recs = [r for r in recs if Path(r["repo"]).resolve() == repo]
+            if by_project:
+                if not project:
+                    name = project_name(str(repo))[0]
+                    inferred = queries(cfg).jobs(recs, {}, user_id=uid)
+                    recs = [rec for rec, row in zip(recs, inferred) if row["project"] == name]
+            else:
+                recs = [r for r in recs if Path(r["repo"]).resolve() == repo]
         elif directory:
             die("指定目录不是 Git 仓库。", 4)
     return recs
@@ -2411,7 +2419,7 @@ def backup_reports(host, rec):
 
 
 def worktree_changes(host, rec):
-    """实时读取 head 和完整路径，NUL 分隔保留空格、换行及重命名两端。"""
+    """实时读取 head 和完整状态条目 [(XY, 路径)]，NUL 分隔保留空格、换行及重命名两端。"""
     if host["platform"] == "windows":
         info = native.request(host, "clean-check", {"job": rec["job"], "detailed": True})
         head, status = info["head"], info["status"]
@@ -2432,13 +2440,20 @@ def worktree_changes(host, rec):
             continue
         if len(entry) < 4 or entry[2] != " ":
             raise ValueError("worktree 路径状态无效")
-        paths.append(entry[3:])
+        paths.append((entry[:2], entry[3:]))
         if "R" in entry[:2] or "C" in entry[:2]:
             original = next(entries, "")
             if not original:
                 raise ValueError("worktree 重命名路径状态无效")
-            paths.append(original)
+            paths.append((entry[:2], original))
     return head, paths
+
+
+def blocking_entries(rec, entries):
+    """去掉已声明为可再生的未跟踪路径；已跟踪文件的改动和未声明的未跟踪文件仍然算未提交内容。"""
+    declared = rec.get("regenerable_paths") or []
+    return [path for code, path in entries
+            if not (code == "??" and any(path == item or path.startswith(item + "/") for item in declared))]
 
 
 def pending_results(cfg, rec, snapshot):
@@ -2574,6 +2589,11 @@ def reclaim_check(cfg, rec, snapshot, host, *, single=False, force=False, a=None
         if orphan:
             return BLOCK_ORPHAN, (f"{j} 的 worktree 目录已不在 git worktree 登记中或无法读取，无法核验其中是否有未提交内容。"
                                   "确认可以丢弃后用 --force。"), head, []
+        if dirty.strip() != "0" and rec.get("regenerable_paths"):
+            try:
+                dirty = str(len(blocking_entries(rec, worktree_changes(host, rec)[1])))
+            except (OSError, ValueError, subprocess.SubprocessError) as error:
+                return BLOCK_UNVERIFIABLE, f"核验未提交内容失败，保留未删除内容与登记：{error}", head, []
         if dirty.strip() != "0":
             return BLOCK_DIRTY, f"{dirty.strip()} uncommitted file(s) in the remote worktree would be lost. Check them, or --force.", head, []
         if confirmed:
@@ -2593,7 +2613,8 @@ def reclaim_check(cfg, rec, snapshot, host, *, single=False, force=False, a=None
     if not Path(rec["repo"]).is_dir():
         return BLOCK_NEEDS_CONFIRM, source_missing_report(host, rec) + "批量清理不代为确认；改用 rdispatch clean JOB。", None, []
     try:
-        head, paths = worktree_changes(host, rec)
+        head, entries = worktree_changes(host, rec)
+        paths = blocking_entries(rec, entries)
         reasons = merge_check(rec, head, into)
     except (OSError, ValueError, SystemExit, subprocess.SubprocessError) as error:
         return BLOCK_UNVERIFIABLE, f"核验或清理失败，保留未删除内容与登记：{error}", None, []
@@ -2637,7 +2658,7 @@ def cmd_clean_batch(a, cfg, mode):
     as_json = getattr(a, "json", False)
     if as_json and not getattr(a, "dry_run", False):
         die("--json 只能与 --dry-run 一起使用。", 4)
-    recs = scoped_jobs(a, cfg)
+    recs = scoped_jobs(a, cfg, by_project=True)
     if not recs:
         print("[]" if as_json else "no jobs.")
         return
@@ -3448,7 +3469,7 @@ def main(argv=None, *, forwarded=None):
     p.add_argument("--into", help="合入目标 REF；默认各 job 的 source_branch")
     p.add_argument("--dry-run", action="store_true", help="只列出 --merged / --expired 计划，不删除")
     p.add_argument("--json", action="store_true", help="与 --dry-run 合用：输出每个派单的 job、reclaimable、code、reason")
-    p.add_argument("--project", help="限定项目；未指定时 --merged / --expired 在当前仓库内筛选")
+    p.add_argument("--project", help="限定项目；未指定时 --merged / --expired 取当前仓库的项目 ID")
     p.add_argument("--delete-branch", action="store_true", help="also delete the job branch (worker and origin)")
     p.add_argument("--force", action="store_true", help="discard uncommitted or unfetched work")
     p.add_argument("--discard-reports", action="store_true", help="skip local reports backup before deleting the remote job")
