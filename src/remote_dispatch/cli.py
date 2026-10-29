@@ -1950,6 +1950,7 @@ def line_wire(a, cfg, uid, owner, plan_store, item, after, include_paths, prompt
     line = rec["line"]
     print(f"工作线 {line['name']}：工作项 {item} 接入 {previous}（分支 {rec['branch']}，权限档位 "
           f"{rec.get('permission_mode') or '默认'}，基线 {base[:10]}）")
+    print(workline.wired_marker(previous, line["name"]))
     return True
 
 

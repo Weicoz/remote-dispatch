@@ -4,12 +4,34 @@
 后续的 suggest、会话轮换与建议令牌都复用同一个 decide，避免条件各写一份。
 """
 
+import json
 import os
+import re
 import time
 
 FALSE_VALUES = ("0", "false", "no", "off")
 # 线上有待派工作项时，无人推进超过这个天数即停滞；再过同样天数视为无人处理，按「已取回未合入」的保留期处理。
 STALE_DAYS = 7
+# 接线成功时 run 在 stdout 单独输出的机器可读标记行，serve 只解析它，不匹配中文提示文案。
+WIRED_MARKER = "RD_LINE_WIRED "
+
+
+def wired_marker(job, line):
+    return WIRED_MARKER + json.dumps(dict(job=job, line=line), ensure_ascii=False, sort_keys=True)
+
+
+def parse_wired_marker(stdout):
+    """从 run 的 stdout 取接线标记行，返回 (job, line)；没有或格式不对返回 None。"""
+    match = re.search(r"^" + re.escape(WIRED_MARKER) + r"(\{.*\})\s*$", stdout or "", re.MULTILINE)
+    try:
+        data = json.loads(match[1]) if match else None
+    except ValueError:
+        return None
+    if isinstance(data, dict) and isinstance(data.get("job"), str) and isinstance(data.get("line"), str):
+        return data["job"], data["line"]
+    return None
+
+
 # 残留清单写入回执与看板的条数上限；超出只记总数。
 RESIDUE_LIMIT = 50
 

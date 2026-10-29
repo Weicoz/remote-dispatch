@@ -436,7 +436,7 @@ class ServeWriteTests(unittest.TestCase):
             if command == "run":
                 calls.append(request["argv"])
                 if "--line=a" in request["argv"]:
-                    return subprocess.CompletedProcess(argv, 0, "工作线 a：工作项 b 接入 fixture-job（分支 x）\n", "")
+                    return subprocess.CompletedProcess(argv, 0, "文案可以任意改动\nRD_LINE_WIRED {\"job\": \"fixture-job\", \"line\": \"a\"}\n", "")
                 return subprocess.CompletedProcess(argv, 0, "started. job id: fixture-new\n", "")
             return original(argv, *args, **kwargs)
         patcher = patch.object(subprocess, "run", side_effect=run)
@@ -478,6 +478,20 @@ class ServeWriteTests(unittest.TestCase):
         self.assertIn("--line=a", calls[-1])
         self.assertIn("--accept=tok-1", calls[-1])
         self.assertNotIn("--no-line", calls[-1])
+
+    def test_prose_without_the_marker_line_is_not_treated_as_wired(self):
+        self.prepare_run_project()
+        self.fake_cli(self.SUGGESTION)
+        self.post("/v1/runs", self.run_body(), "first")
+        original = subprocess.run
+
+        def run(argv, *args, **kwargs):
+            if isinstance(kwargs.get("input"), str) and '"run"' in kwargs["input"]:
+                return subprocess.CompletedProcess(argv, 0, "工作线 a：工作项 b 接入 fixture-job（分支 x）\n", "")
+            return original(argv, *args, **kwargs)
+        with patch.object(subprocess, "run", side_effect=run):
+            accept = self.run_body(suggestion=dict(action="accept", line="a", token="tok-1"))
+            self.assertEqual(self.post("/v1/runs", accept, "second")[1]["error"]["reason"], "write_outcome_unknown")
 
     def test_declining_dispatches_the_default_way_and_records_no_line(self):
         self.prepare_run_project()

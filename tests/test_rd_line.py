@@ -93,6 +93,15 @@ class LineTests(unittest.TestCase):
         self.assertEqual(self.rows()["b"]["jobs"], [record["job"]])
         for expected in ("工作线 a", record["branch"], "权限档位 默认", head[:10]):
             self.assertIn(expected, output)
+        # 机器可读契约：serve 只解析这一行，不依赖上面的中文提示。
+        self.assertEqual(rd.workline.parse_wired_marker(output), (record["job"], "a"))
+
+    def test_wired_marker_parser_ignores_prose_and_malformed_lines(self):
+        parse = rd.workline.parse_wired_marker
+        self.assertIsNone(parse("工作线 a：工作项 b 接入 fixture-job（分支 x）\n"))
+        self.assertIsNone(parse("RD_LINE_WIRED not-json\n"))
+        self.assertIsNone(parse('RD_LINE_WIRED {"job": 1, "line": "a"}\n'))
+        self.assertEqual(parse('x\nRD_LINE_WIRED {"job": "j-1", "line": "线 a"}\n'), ("j-1", "线 a"))
 
     def test_same_branch_as_the_line_still_wires(self):
         record, _ = self.accepted_first()

@@ -10,6 +10,7 @@ import threading
 from urllib.parse import unquote, urlsplit
 
 from . import cli
+from . import rd_line as workline
 from . import rd_messages as messages
 from .rd_idempotency import fingerprint
 
@@ -272,8 +273,8 @@ class Writes:
             match = re.search(r"started\. job id: ([A-Za-z0-9._-]+)", result["stdout"])
             if match is None:
                 # 接受建议后接线：新工作项作为前序派单的新轮次，不创建新 job。
-                wired = re.search(r"工作线 (\S+)：工作项 \S+ 接入 ([A-Za-z0-9._-]+)（", result["stdout"])
-                current = wired and next((saved for saved in service.records() if saved["job"] == wired[2]), None)
+                wired = workline.parse_wired_marker(result["stdout"])
+                current = wired and next((saved for saved in service.records() if saved["job"] == wired[0]), None)
                 if not current:
                     return error(503, "write_outcome_unknown")
                 return 201, dict(job=current["job"], round=current["rounds"], line=wired[1])
