@@ -1115,6 +1115,91 @@ class DispatchTests(unittest.TestCase):
         self.assertTrue((self.worker / "wt" / record["job"]).exists())
         self.assertIn("cleaned ", self.capture(rd.cmd_clean, self.bulk_args(into=record["base"])))
 
+    def verdict(self, record, **overrides):
+        """dry-run --json 的单个派单判定。"""
+        overrides = dict(dict(dry_run=True, json=True), **overrides)
+        mode = dict(merged=False, expired=True) if overrides.pop("expired", False) else {}
+        with patch.object(rd, "disk_low", return_value=False):
+            rows = json.loads(self.capture(rd.cmd_clean, self.bulk_args(**mode, **overrides)))
+        return {row["job"]: row for row in rows}[record["job"]]
+
+    def test_clean_dry_run_json_reports_ready_job_as_ok_and_text_has_code(self):
+        record = self.dispatch()
+        self.remote_head(record)
+        self.acknowledge(record)
+        row = self.verdict(record)
+        self.assertEqual((row["reclaimable"], row["code"]), (True, "ok"))
+        text = self.capture(rd.cmd_clean, self.bulk_args(dry_run=True))
+        self.assertIn(f"would clean {record['job']} [ok]", text)
+        self.assertTrue(Path(rd.job_path(record["job"])).exists())
+
+    def test_clean_json_requires_dry_run(self):
+        with self.assertRaises(SystemExit):
+            rd.cmd_clean(self.bulk_args(json=True), self.cfg)
+
+    def test_clean_dry_run_json_state_blocks(self):
+        record = self.dispatch()
+        self.remote_head(record)
+        self.acknowledge(record)
+        for state, dispatch_state, code in (
+            ("running", "started", "running"),
+            ("starting", "started", "preparing"),
+            ("unreachable", "started", "unreachable"),
+            ("unknown", "started", "not_finished"),
+        ):
+            with self.subTest(code=code):
+                record["dispatch_state"] = dispatch_state
+                rd.save_job(record)
+                with patch.object(rd, "job_states", return_value={record["job"]: {"state": state}}):
+                    row = self.verdict(record)
+                self.assertEqual((row["reclaimable"], row["code"]), (False, code))
+                with patch.object(rd, "job_states", return_value={record["job"]: {"state": state}}):
+                    text = self.capture(rd.cmd_clean, self.bulk_args(dry_run=True))
+                self.assertIn(f"skip {record['job']} [{code}]", text)
+
+    def test_clean_dry_run_json_worktree_and_merge_blocks(self):
+        record = self.dispatch()
+        self.remote_head(record, commit=True)
+        self.acknowledge(record)
+        self.assertEqual(self.verdict(record)["code"], "not_fetched")
+        self.remote_head(record, fetch=True)
+        self.assertEqual(self.verdict(record)["code"], "not_merged")
+        missing_ref = record["source_branch"] + "-" + record["job"]
+        self.assertEqual(self.verdict(record, into=missing_ref)["code"], "ref_invalid")
+        with patch.object(rd, "worktree_changes", side_effect=ValueError("无法核验 worktree")):
+            self.assertEqual(self.verdict(record)["code"], "unverifiable")
+        legacy = dict(record)
+        legacy.pop("source_branch")
+        rd.save_job(legacy)
+        self.assertEqual(self.verdict(record)["code"], "into_required")
+
+    def test_clean_dry_run_json_receipt_dirty_and_source_missing_blocks(self):
+        record = self.dispatch(include=["tracked.txt"])
+        self.remote_head(record)
+        self.assertEqual(self.verdict(record)["code"], "receipt_pending")
+        self.acknowledge(record)
+        wt = self.worker / "wt" / record["job"]
+        (wt / "stray.txt").write_text("outside include")
+        self.assertEqual(self.verdict(record)["code"], "uncommitted")
+        (wt / "stray.txt").unlink()
+        gone = dict(record, repo=str(self.root / "deleted-repo"))
+        rd.save_job(gone)
+        row = self.verdict(record, dir=None, project=record["project"])
+        self.assertEqual((row["reclaimable"], row["code"]), (False, "source_missing"))
+
+    def test_clean_dry_run_json_expired_pinned_and_retention_blocks(self):
+        record = self.agent_job(self.dispatch())
+        self.remote_head(record, commit=True, fetch=True)
+        self.acknowledge(record)
+        self.age_ack(record, 1)
+        self.assertEqual(self.verdict(record, expired=True)["code"], "retention_not_expired")
+        rd.cmd_keep(argparse.Namespace(job=record["job"], hours=2), self.cfg)
+        self.assertEqual(self.verdict(record, expired=True)["code"], "pinned")
+        rd.cmd_keep(argparse.Namespace(job=record["job"], hours=0), self.cfg)
+        self.age_ack(record, 30 * 24)
+        row = self.verdict(record, expired=True)
+        self.assertEqual((row["reclaimable"], row["code"]), (True, "ok"))
+
     def test_bulk_cli_rejects_unsafe_combinations(self):
         for option in (dict(force=True), dict(delete_branch=True), dict(discard_reports=True), dict(job="fixture-job")):
             with self.subTest(option=option), self.assertRaises(SystemExit):
