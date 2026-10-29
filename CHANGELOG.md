@@ -1,5 +1,10 @@
 # 变更记录
 
+## 未发布
+
+- **回执记录实际模型与 token 用量**：回执和 `status --json` 新增 `model`（优先取 harness 输出，其次派单参数）与 `usage`（`input` 不含缓存、`cache_read`、`cache_write`、`output`）。Codex `--json`、Claude／Kimi／AGY `stream-json`、DSH `--json` 在 `rd_usage.py` 集中解析；没有用量或解析失败记「未记录」，老记录同样显示「未记录」。`status --json` 读取已收取的回执，未收取时显示「未记录」。
+- 派单缺发起会话时 stderr 输出警告，退出码不变。
+
 ## 0.3.1 — 2026-10-28
 
 - **新增 `rdispatch service`**：`install | uninstall | restart | status` 用用户级 LaunchAgent 托管常驻 serve，开机自启、崩溃拉起，日志写状态目录；`status` 报告 launchd 加载状态、进程、socket、包版本、合同版本与最近一次配置重载结果，支持 `--json`，未安装时非零退出并提示安装。只支持 macOS，详见 `docs/serve.md`。

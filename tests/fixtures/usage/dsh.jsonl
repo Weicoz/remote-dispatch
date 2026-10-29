@@ -1,0 +1,2 @@
+{"type":"session","session_id":"d-1","model":"deepseek-v4"}
+{"type":"result","session_id":"d-1","usage":{"prompt_tokens":2000,"prompt_cache_hit_tokens":1500,"completion_tokens":250}}

@@ -1091,10 +1091,21 @@ def remote_report(host, rec, number, kind):
     return messages.validate_report(json.loads(reply.stdout), rec["job"], number, kind)
 
 
+def round_output(host, rec, number):
+    """读本轮 harness 输出日志的尾部（用量事件在末尾）；读不到返回 None。"""
+    number = messages.round_id(number)
+    if host["platform"] == "windows":
+        return native.request(host, "logs", dict(job=rec["job"], file=f"stdout.r{number}.log", lines=2000))
+    reply = ssh(host, f'tail -c 1048576 "$ROOT/jobs/{messages.job_id(rec["job"])}/stdout.r{number}.log" 2>/dev/null',
+                check=False, timeout=30)
+    return reply.stdout if reply is not None and not reply.returncode else None
+
+
 def queries(cfg):
     """Adapt target reads to the reusable, write-free query interface."""
     return query.Query(STATE, states=lambda recs: job_states(cfg, recs),
                        report=lambda rec, number, kind: remote_report(job_host(cfg, rec), rec, number, kind),
+                       output=lambda rec, number: round_output(job_host(cfg, rec), rec, number) if cfg else None,
                        receiver=lambda rec: find_session(job_host(cfg, rec), rec,
                                                          rec.get("agent_config") or cfg.agent(rec["agent"])),
                        project_names=[section.split(":", 1)[1] for section in cfg.cp.sections()
@@ -1426,6 +1437,8 @@ def cmd_run(a, cfg):
     forwarded_origin = getattr(a, "_forwarded_origin", None)
     origin_harness = forwarded_origin["initiator_harness"] if forwarded_origin else initiators.harness()
     owner = initiator_session(a, origin_harness)
+    if not owner:
+        print("警告：没有发起会话，结果和续派无法归属到某个会话；用 --initiator-session 或 RD_INITIATOR_SESSION 指定。", file=sys.stderr)
     pane = ((forwarded_origin.get("initiator_herdr") or {}).get("pane_id") if forwarded_origin
             else os.environ.get("HERDR_PANE_ID"))
     defaults = SessionDefaults(STATE, uid).get(owner, pane) if owner or pane else {}
