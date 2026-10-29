@@ -40,7 +40,7 @@ from . import rd_review as reviews
 from . import rd_events as events
 from .rd_lock import JobBusy, JobLock
 from . import rd_initiator as initiators
-from .rd_session_defaults import SessionDefaults
+from .rd_session_defaults import SessionDefaults, resolve_mode, validate_mode
 from .rd_reports import read_reports
 
 CONFIG = os.environ.get("RD_CONFIG") or os.path.expanduser("~/.config/remote-dispatch/config.ini")
@@ -1425,10 +1425,18 @@ def cmd_session_default(a, cfg):
             values[key] = getattr(a, key)
     store = SessionDefaults(STATE, require_user())
     session, pane = (None, a.session) if a.pane else (a.session, None)
+    mode_touched = a.clear_dispatch_mode or a.dispatch_mode is not None
+    if mode_touched:
+        validate_mode(a.dispatch_mode)  # 非法取值经 main 的 ValueError 处理，退出码 4
     if values:
         _, result = store.update(values, session=session, pane=pane)
     else:
         result = store.get(session=session, pane=pane)
+    if mode_touched:
+        store.update_mode(None if a.clear_dispatch_mode else a.dispatch_mode, session=session, pane=pane)
+    mode = store.get_mode(session=session, pane=pane)
+    if mode_touched or mode is not None:
+        result = dict(result, dispatch_mode=mode)
     print(json.dumps(result, ensure_ascii=False))
 
 
@@ -1443,6 +1451,9 @@ def cmd_run(a, cfg):
             else os.environ.get("HERDR_PANE_ID"))
     defaults = SessionDefaults(STATE, uid).get(owner, pane) if owner or pane else {}
     configured = dict(cfg.cp["defaults"]) if cfg.cp.has_section("defaults") else {}
+    # 本票只解析取值；接线行为由后续票据实现。
+    a.dispatch_mode = resolve_mode(getattr(a, "dispatch_mode", None),
+                                   SessionDefaults(STATE, uid).get_mode(owner, pane) if owner or pane else None, cfg.cp)
     a.host = a.host if a.host is not None else defaults.get("host") or configured.get("host") or "auto"
     # A command/test dispatch remains a command even when the session has a harness default.
     if not a.agent and not a.cmd and not a.test:
@@ -2862,6 +2873,7 @@ def main(argv=None, *, forwarded=None):
                    help="AGY 必填：plan/accept-edits/auto/skip；无人值守只有 skip 能执行命令和 git 提交")
     p.add_argument("--timeout", type=int, help="seconds before the job is killed")
     p.add_argument("--initiator-session", help="发起方会话ID；默认 RD_INITIATOR_SESSION，再读取父进程链识别的 harness 会话变量")
+    p.add_argument("--dispatch-mode", help="派单模式：suggest、line、ticket；默认读会话默认值，再读 [defaults] dispatch_mode")
     p.set_defaults(fn=cmd_run)
 
     p = sub.add_parser("session-default", help="读取、设置或清除会话派单默认值")
@@ -2871,6 +2883,9 @@ def main(argv=None, *, forwarded=None):
         group = p.add_mutually_exclusive_group()
         group.add_argument("--" + field)
         group.add_argument("--clear-" + field, action="store_true")
+    group = p.add_mutually_exclusive_group()
+    group.add_argument("--dispatch-mode", help="派单模式：suggest（默认）、line、ticket")
+    group.add_argument("--clear-dispatch-mode", action="store_true")
     p.add_argument("--clear", action="store_true", help="清除目标机和 harness 默认值，改读配置")
     p.set_defaults(fn=cmd_session_default)
 

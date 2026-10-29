@@ -126,6 +126,9 @@
   清除样例先执行 `previous_request`；详情见 `docs/session-dispatch-defaults.md`。
   票 59 的 GET 增加 `config: {host, harness}`，只读当前 `[defaults]` 配置，
   不受会话覆盖影响；host 缺省为 auto，harness 未配置为 null。PUT 和事件结构保持不变。
+  票 15 在 `config` 只读追加 `dispatch_mode`（`suggest` / `line` / `ticket`，缺省 `suggest`）。
+  会话级派单模式用独立接口 `GET/PUT /v1/sessions/{窗格ID}/dispatch-mode`，体为
+  `{dispatch_mode}`；整体替换 `dispatch-defaults` 不会清掉它。
 
 - 票 57：`projects-summary.json` / `projects-summary-breakdown.json` 固定
   `blocked_count/offline_count/failed_count`，总字段 `needs_attention_count` 等于三项之和。
