@@ -85,17 +85,17 @@ class BoardTests(unittest.TestCase):
             self.assertEqual(row[key], "未记录", key)
         self.assertIn("未记录", self.board("--all"))
 
-    def test_row_shows_reclaim_block_and_regenerable_sizes_when_present(self):
+    def test_row_shows_reclaim_block_and_regenerable_kb_when_present(self):
         rec = self.dispatch(project="demo", initiator_session="s1")
         self.plan("add", "next", "--after", rec["job"])
         row = self.data("--all")["rows"][0]
         self.assertEqual(row["reclaim_block"]["code"], "plan_referenced")
-        self.assertNotIn("regenerable_sizes", row)
+        self.assertNotIn("regenerable_kb", row)
         receipt = dict(schema=1, job=rec["job"], round=1, host="fixture", receipt_id="r", captured_at="x",
-                       execution_state="done", report=None, regenerable_sizes={"target": 5242880})
+                       execution_state="done", report=dict(regenerable_kb={"target": 5120}))
         rd.messages.atomic_json(rd.result_path(rec, 1), receipt)
         row = self.data("--all")["rows"][0]
-        self.assertEqual(row["regenerable_sizes"], {"target": 5242880})
+        self.assertEqual(row["regenerable_kb"], {"target": 5120})
         self.assertIn("target 5MB", self.board("--all"))
 
     def test_board_does_not_write_state(self):

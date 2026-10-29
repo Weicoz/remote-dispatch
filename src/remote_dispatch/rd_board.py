@@ -86,7 +86,7 @@ def row_for(query, rec, snapshot, project_row, unit, referrers, now):
     progress = None
     if rec.get("handoff_version") and snapshot.get("state") in ("running", "done"):
         progress = safe(lambda: query.report(rec, number, "progress"))
-    sizes = (receipt or {}).get("regenerable_sizes")
+    sizes = ((receipt or {}).get("report") or {}).get("regenerable_kb")
     row = dict(unit=unit, job=rec["job"], project=project_row.get("project"), host=rec.get("host") or UNRECORDED,
                harness=rec.get("agent") or UNRECORDED, model=project_row.get("model") or UNRECORDED,
                created=rec.get("created") or UNRECORDED,
@@ -97,7 +97,7 @@ def row_for(query, rec, snapshot, project_row, unit, referrers, now):
                initiator_session=rec.get("initiator_session"),
                reclaim_block=reclaim_block(query, rec, snapshot, receipt, referrers))
     if isinstance(sizes, dict) and sizes:
-        row["regenerable_sizes"] = sizes
+        row["regenerable_kb"] = sizes
     return row
 
 
@@ -134,7 +134,7 @@ def duration(value):
 
 def size_text(sizes):
     def one(n):
-        return f"{n / 1048576:.0f}MB" if isinstance(n, (int, float)) else str(n)
+        return f"{n / 1024:.0f}MB" if isinstance(n, (int, float)) else str(n)
     return "、".join(f"{path} {one(n)}" for path, n in sorted(sizes.items()))
 
 
@@ -149,6 +149,6 @@ def render(board):
                      f"已运行 {duration(row['elapsed_seconds'])}  第{row['rounds']}轮  {row['state']}  {text}")
         if row["reclaim_block"]:
             lines.append(f"    回收阻塞 [{row['reclaim_block']['code']}]：{row['reclaim_block']['reason']}")
-        if row.get("regenerable_sizes"):
-            lines.append("    可再生目录：" + size_text(row["regenerable_sizes"]))
+        if row.get("regenerable_kb"):
+            lines.append("    可再生目录：" + size_text(row["regenerable_kb"]))
     return "\n".join(lines)

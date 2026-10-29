@@ -42,7 +42,7 @@
   `hosts-offline.json` 展示离线仍保留时间。查询不探测，单纯时间刷新不发事件。
 - `board.json`：`GET /v1/board?all=1`（该用户全部派单）或 `?initiator_session=<会话>`（单个发起会话），
   二者都缺返回 400。结构与 `rdispatch board --json` 相同：`summary`（已派、运行中、待派、阻塞）与逐派单 `rows`；
-  老记录缺的 `harness`、`model`、`created`、`elapsed_seconds` 为「未记录」；`regenerable_sizes` 仅在有记录时出现。
+  老记录缺的 `harness`、`model`、`created`、`elapsed_seconds` 为「未记录」；`regenerable_kb`（路径到 KB 大小）仅在有记录时出现。
   只读本地快照，不探测目标机；`reclaim_block` 只含不连目标机可判的原因，合入与未提交检查仍由 `clean` 给出。
 - `jobs.json`：卡片列表，只含当前用户和没有用户字段的旧记录，跨发起会话。
   卡片与详情各轮可选 `snapshot_at` 是后台执行快照的控制端采集时间；
