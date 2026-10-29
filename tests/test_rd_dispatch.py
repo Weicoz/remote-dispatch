@@ -795,7 +795,7 @@ class DispatchTests(unittest.TestCase):
                              {record["job"], other_project["job"]})
         with patch.object(rd, "job_states", wraps=rd.job_states) as states:
             self.capture(rd.cmd_clean, self.bulk_args(project=record["project"]))
-        self.assertEqual([r["job"] for r in states.call_args.args[1]], [record["job"]])
+        self.assertEqual({r["job"] for r in states.call_args.args[1]}, {record["job"], other_repo["job"]})
 
     def test_clean_merged_dry_run_then_preserves_reports_and_branches_on_both_platforms(self):
         for platform in ("posix", "windows"):

@@ -4,7 +4,7 @@
 
 rdispatch 的 worktree 只被同一任务的 `rdispatch resume` 复用；新派单总是新建 worktree。所以“留不留”判断的是这个任务还会不会续跑：删早了，续跑要重新下载依赖和构建；一直不删，磁盘被旧任务占满。`rdispatch clean --expired` 按续跑可能性分级保留，只回收过期且安全的 worktree。
 
-安全条件与 `--merged` 相同，任一不满足就永不自动回收：任务已结束；没有未取回的提交、合入关系可核验；全部轮次回执已收取并 `rdispatch ack`；worktree 除 `--include` 路径外没有未提交内容。回收前保存 reports，任务分支保留在目标机仓库，之后仍可 `rdispatch fetch` 或以该分支重新派单，但不能再 `rdispatch resume`。
+安全条件与 `--merged` 相同，任一不满足就永不自动回收：任务已结束；没有未取回的提交、合入关系可核验；全部轮次回执已收取并 `rdispatch ack`；worktree 除 `--include` 路径和已声明的可再生路径（项目配置 `regenerable_paths`，只豁免其下的未跟踪文件）外没有未提交内容；已跟踪文件的改动和未声明的未跟踪文件仍然阻塞。批量清理按项目 ID 选择当前用户的派单，不按当前目录：从 `.worktrees/integration` 等其他 worktree 派出的派单，在主仓库执行也能看到并回收；`--project` 可显式指定项目。回收前保存 reports，任务分支保留在目标机仓库，之后仍可 `rdispatch fetch` 或以该分支重新派单，但不能再 `rdispatch resume`。
 
 保留期从最后一次回执确认（`rdispatch ack`）算起：
 
@@ -44,7 +44,7 @@ rdispatch clean --expired              # 只回收过期且安全的 worktree
 | `into_required` | 没有合入目标，需 `--into`（仅 `--merged`） |
 | `ref_invalid` | `--into` 的 REF 不存在或不是提交（仅 `--merged`） |
 | `receipt_pending` | 回执未收取或未 `ack` |
-| `uncommitted` | 有未提交内容（批量时指非 `--include` 路径） |
+| `uncommitted` | 有未提交内容（不含已声明的可再生未跟踪路径；批量时另排除 `--include` 路径） |
 | `pinned` | 已被 `rdispatch keep` 钉住（仅 `--expired`） |
 | `retention_not_expired` | 未到保留期（仅 `--expired`） |
 | `plan_referenced` | 待派登记里后续工作项仍引用该派单（见下节）；单个 clean 可用 `--force` 跳过 |
