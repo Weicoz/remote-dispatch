@@ -112,3 +112,51 @@ def decide(rec, request, facts):
     if not facts.get("session"):
         return False, "找不到前序派单的接收会话"
     return True, None
+
+
+def receipt_health(receipt):
+    """上一轮回执是否健康：(健康, 原因)。有运行故障分类即不健康。"""
+    if not receipt:
+        return False, "上一轮回执不健康：没有回执"
+    report = receipt.get("report") or {}
+    failure = report.get("runtime_failure")
+    if failure:
+        return False, f"上一轮回执不健康：运行故障 {failure.get('kind') or '未分类'}"
+    return True, None
+
+
+def reuse_limits(parser, agent):
+    """读 [line:<harness>] 的续用阈值：(单次调用上下文 token 上限, 间隔秒数上限)；未配置为 None。"""
+    section = f"line:{agent}"
+
+    def number(key):
+        value = parser.get(section, key, fallback="").strip() if parser.has_section(section) else ""
+        try:
+            return float(value) if value and float(value) >= 0 else None
+        except ValueError:
+            return None
+
+    return number("reuse_max_context_tokens"), number("reuse_max_interval_seconds")
+
+
+def session_policy(receipt, limits, idle_seconds):
+    """会话策略：返回 (动作, 原因)。动作 rotate 为策略轮换，reuse 为续用，refuse 为不做策略轮换。
+
+    默认每个工作项轮换。配置了阈值且全部满足才续用；缺用量数据时按不满足处理。
+    """
+    healthy, reason = receipt_health(receipt)
+    if not healthy:
+        return "refuse", reason
+    context_limit, interval_limit = limits
+    if context_limit is None and interval_limit is None:
+        return "rotate", "默认每个工作项轮换会话"
+    if context_limit is not None:
+        calls = ((receipt.get("report") or {}).get("rollout_calls"))
+        if not isinstance(calls, dict) or not calls.get("count"):
+            return "rotate", "缺少单次调用用量，按默认轮换"
+        average = calls["input_tokens"] / calls["count"]
+        if average > context_limit:
+            return "rotate", f"单次调用上下文约 {average:.0f} token，超过续用上限 {context_limit:g}"
+    if interval_limit is not None and idle_seconds > interval_limit:
+        return "rotate", f"距上一轮 {idle_seconds:.0f} 秒，超过续用间隔上限 {interval_limit:g}"
+    return "reuse", "单次调用上下文与间隔均在续用阈值内"
