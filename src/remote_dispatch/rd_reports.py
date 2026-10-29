@@ -8,6 +8,7 @@ import sys
 import threading
 import time
 
+from . import rd_digest as digest
 from . import rd_events as events
 from . import rd_messages as messages
 from .rd_query import result_path
@@ -118,7 +119,7 @@ class Reports:
                     saved["progress"][key] = self.service.redact(progress.get("summary", ""))
                 self.observe(saved, rec, number, snapshot, receipt, now, observed_at=stamp)
             saved["scan_due"] = now + 60
-        created = []
+        created = digest.step(self.service, saved, now)
         for owner, group in list(saved["pending"].items()):
             if now < group["due"]:
                 continue
@@ -151,7 +152,8 @@ class Reports:
                 if archives:
                     cursor, _ = events.tail(archives[-1])
         saved = dict(cursor=cursor, states={}, observed_at={}, progress={}, pending={}, reports=[],
-                     baseline_pending=[], baseline_started_at=self.started_at, scan_due=now + 60)
+                     baseline_pending=[], baseline_started_at=self.started_at, scan_due=now + 60,
+                     digest=dict(due=now + digest.interval(self.service.config), fingerprints={}))
         query = self.service.query()
         for rec in records.values():
             snapshot = query.states([rec]).get(rec["job"], {})
