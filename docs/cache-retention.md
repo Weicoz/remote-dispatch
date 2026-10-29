@@ -36,7 +36,7 @@ rdispatch clean --expired              # 只回收过期且安全的 worktree
 | `preparing` | 任务准备中或启动结果待核实 |
 | `unreachable` | 目标机连接不可达 |
 | `not_finished` | 未确认任务已结束 |
-| `source_missing` | 源仓库目录缺失，无法核验取回与合入 |
+| `needs_confirmation` | 源仓库目录缺失，待人工确认；`reason` 附目标机 bare 仓库的核对结果 |
 | `unverifiable` | 无法核验 worktree head、未提交内容或合入关系 |
 | `worktree_orphan` | worktree 已不在 git 登记中（仅单个 clean） |
 | `not_fetched` | 有未取回的提交 |
@@ -47,6 +47,12 @@ rdispatch clean --expired              # 只回收过期且安全的 worktree
 | `uncommitted` | 有未提交内容（批量时指非 `--include` 路径） |
 | `pinned` | 已被 `rdispatch keep` 钉住（仅 `--expired`） |
 | `retention_not_expired` | 未到保留期（仅 `--expired`） |
+
+## 源仓库缺失与无主派单
+
+源仓库目录已删除时，`rdispatch clean <job>` 改用目标机上的 bare 仓库核对：worktree 提交是否仍在 bare 仓库、是否已合入其他分支，结果写入阻塞原因，code 为 `needs_confirmation`。核对完仍需人工确认才删除：终端内询问 `[y/N]`，默认不删；非终端环境不带 `--force` 时拒绝，退出码 4；`--force` 视为已确认，并先打印核对结果。批量 `--merged` / `--expired` 只报告 `needs_confirmation`，不代为确认。
+
+`rdispatch inbox --orphans` 列出当前 `RD_USER_ID` 下没有发起会话的派单及其待收取回执，文本输出带可直接执行的 `ack` 命令；`--json` 输出数组。
 
 ## 合票后的缓存回收
 
