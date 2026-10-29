@@ -67,6 +67,11 @@ class SuggestTests(unittest.TestCase):
                 self.assertEqual(caught.exception.code, expect)
             else:
                 rd.cmd_run(self.args(**values), self.cfg)
+        # 工作线策略轮换后真实 harness 会在日志里给出新会话 ID；夹具没有日志，这里补上。
+        for record in rd.all_jobs():
+            if record.get("line") and not record.get("receiver_session"):
+                record["receiver_session"] = "receiver"
+                rd.save_job(record)
         return [r for r in rd.all_jobs() if r["job"] not in before], out.getvalue(), err.getvalue()
 
     def token_files(self):
