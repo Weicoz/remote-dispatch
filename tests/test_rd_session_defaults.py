@@ -205,7 +205,7 @@ class DefaultsTests(unittest.TestCase):
         self.assertEqual(first, (200, {'host': 'target', 'harness': None}))
         self.data['agents'] = []
         self.save_fixture()
-        before = serve.ServeTests.snapshot(self)
+        before = serve.ServeTests.quiet_snapshot(self)
         self.assertEqual(self.request(path, 'PUT', '{"host":"target"}', headers), first)
         self.assertEqual(self.request(path, 'PUT', '{}', headers),
                          (422, {'error': {'reason': 'idempotency_key_reused'}}))
@@ -236,7 +236,7 @@ class DefaultsTests(unittest.TestCase):
                          dict(host='auto', harness=None, dispatch_mode='suggest'))
         for forbidden in ('PRIVATE_MARKER', 'auth_file', 'env_file', 'token'):
             self.assertNotIn(forbidden, serialized)
-        before = serve.ServeTests.snapshot(self)
+        before = serve.ServeTests.quiet_snapshot(self)
         self.request('/v1/sessions/w1:p1/dispatch-defaults')
         self.assertEqual(serve.ServeTests.snapshot(self), before)
 
