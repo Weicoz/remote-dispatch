@@ -88,6 +88,8 @@ def display_data(kind, data):
             and isinstance(row.get("address"), str) and type(row.get("port")) is int]
     if kind == "session.changed" and isinstance(data.get("dispatch_defaults"), dict):
         projected["dispatch_defaults"] = {key: data["dispatch_defaults"].get(key) for key in ("host", "harness")}
+        if "dispatch_mode" in data["dispatch_defaults"]:
+            projected["dispatch_defaults"]["dispatch_mode"] = data["dispatch_defaults"]["dispatch_mode"]
     if kind == "harness.stats_changed" and isinstance(data.get("host_stats"), list):
         projected["host_stats"] = [dict(host=row["host"], daily_round_counts=[
             dict(date=day["date"], round_count=day["round_count"])

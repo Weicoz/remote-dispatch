@@ -30,6 +30,19 @@ harness = codex
 会话变量。ID 缺失时按 `HERDR_PANE_ID`（经 serve 转交时使用原始来源窗格）匹配。
 找不到唯一匹配时读配置。具备会话 ID 时不跨会话套用同窗格的旧记录。
 
+## 派单模式
+
+`dispatch_mode` 取值 `suggest`（默认）、`line`、`ticket`，优先级为命令行 `--dispatch-mode` >
+会话默认值 > `[defaults] dispatch_mode`。本版只做取值和存取，接线行为见后续票据。
+
+```sh
+rdispatch session-default <会话> --dispatch-mode line
+rdispatch session-default <会话> --clear-dispatch-mode
+```
+
+`--clear` 只清 host、harness，不清派单模式。非法取值退出码 4。serve 在线时 CLI 写入按
+ADR 0003 转交 serve（单写入者）。
+
 ## serve 契约
 
 - `GET /v1/sessions/{Herdr窗格ID}/dispatch-defaults` 返回 `{host, harness, config: {host, harness}}`。
@@ -38,6 +51,10 @@ harness = codex
   未配置 harness（或空值）为 `null`，与 CLI 没有隐含默认 harness 的行为一致。
   配置中的其他字段不返回。服务启动后修改默认值，下次 GET 即可读到；查询不写状态。
   返回值按本次配置的敏感值脱敏；配置格式损坏时返回 503 `read_unavailable` 与中文错误信息。
+- `GET/PUT /v1/sessions/{Herdr窗格ID}/dispatch-mode`：会话级派单模式的独立接口，
+  体为 `{dispatch_mode}`（`null` 清除），响应 `{dispatch_mode, config: {dispatch_mode}}`（GET）。
+  `dispatch-defaults` 的 `config` 只读追加 `dispatch_mode`；其 PUT 只替换 host/harness，
+  不接受 `dispatch_mode`，也不会清掉已存的值。非法取值返回 400。
 - `PUT` 相同路径，要求 JSON 对象和 `Idempotency-Key`；完整替换两项，缺项或 `null`
   表示读配置。CLI 设置只更新指定项。
   PUT 在写入前重新发现窗格；窗格不存在或已关闭时返回 404 `session_closed`，
