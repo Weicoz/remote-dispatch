@@ -48,8 +48,25 @@ harness = codex
 同一线同一时间只有一个运行中的轮次，沿用派单级文件锁；锁被占用时退出码 4。
 派单记录的 `line` 字段含 `items`（工作项到轮次列表）、`bases`（工作项开始时的基线）与 `current`；
 `RD_BASE` 在线上取所属工作项的基线（上一个工作项验收轮回执的 `head`），第一个工作项仍取派单基线。
-打回只续跑当前工作项，新轮次记入同一工作项。本版会话沿用当前会话。
-判定集中在 `rd_line.decide`，由 `cli.line_wiring` 收集事实后调用，后续 `suggest` 复用。
+打回只续跑当前工作项，新轮次记入同一工作项。
+
+### 会话轮换与交接包
+
+默认每个工作项换新会话：同一 worktree、新会话，提示词前附交接包（由 `rd_context_pack.build()` 拼装，与 `--context-from` 相同）。
+轮换在 `context_history` 里记 `reason: "policy"`；`--new-context` 的故障换新记 `reason: "context"`，换机记 `host_changed`。
+`--new-context` 的循环重建保护只看故障换新，策略轮换不触发它。
+策略轮换要求上一轮回执健康（没有 `runtime_failure`）；不健康时输出原因、不做策略轮换，按默认方式派出。
+
+按 harness 配置续用阈值，满足全部已配置阈值才续用当前会话，否则轮换：
+
+```ini
+[line:codex]
+reuse_max_context_tokens = 20000   ; 上一轮回执 rollout_calls 的单次调用平均输入 token 上限
+reuse_max_interval_seconds = 3600  ; 距上一轮最后回执确认的秒数上限
+```
+
+未配置任何阈值时总是轮换。配置了上下文阈值但回执没有 `rollout_calls`（需 `[features] rollout_stats = true`）时按轮换处理。
+会话策略集中在 `rd_line.session_policy`。判定集中在 `rd_line.decide`，由 `cli.line_wiring` 收集事实后调用，后续 `suggest` 复用。
 
 ### `suggest` 与建议令牌
 

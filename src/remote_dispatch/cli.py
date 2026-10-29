@@ -1787,11 +1787,20 @@ def line_wire(a, cfg, uid, owner, plan_store, item, after, include_paths, prompt
             if not ok:
                 print(f"工作线未接线：{reason}；按默认方式派出。")
                 return False
+            receipt = messages.read_json(result_path(rec, rec["rounds"]))
+            action, why = workline.session_policy(
+                receipt, workline.reuse_limits(cfg.cp, rec["agent"]), time.time() - last_activity(rec))
+            if action == "refuse":
+                print(f"工作线未接线：{why}，不做策略轮换；按默认方式派出。")
+                return False
+            line_item = dict(item=item, base=base)
+            if action == "rotate":
+                line_item["handoff"] = context_pack(cfg, uid, [previous])
             resume_args = argparse.Namespace(
                 job=previous, agent=None, session=None, host=None, model=a.model, effort=a.effort,
                 timeout=a.timeout, force_host=a.force_host, permission_mode=getattr(a, "permission_mode", None),
                 prompt_file=None, new_context=False, retry_after_repair=None, initiator_session=owner)
-            resume_job(resume_args, cfg, rec, prompt=prompt, line_item=dict(item=item, base=base),
+            resume_job(resume_args, cfg, rec, prompt=prompt, line_item=line_item,
                        before_launch=lambda: plan_store.attach_job(item, previous, after))
     except JobBusy:
         die("round_in_progress: round in progress; another operation holds the job lock; retry after it finishes", 4)
@@ -2514,7 +2523,7 @@ def check_recovery(rec, receipt, args, cfg):
     if new_context:
         if not failure or failure.get("kind") != "context":
             die("resume_recovery_not_allowed: 仅已识别的上下文故障可以 --new-context；路由、认证或网络故障须先修复。", 4)
-        history = rec.get("context_history", [])
+        history = [h for h in rec.get("context_history", []) if h.get("reason") != "policy"]
         if (history and history[-1].get("from_round") == rec["rounds"] - 1
                 and failure.get("work_observed") is False and not repair):
             die("resume_recovery_not_allowed: 新上下文也未开始工作；保存回执并先修复启动条件，不重复新建。", 4)
@@ -2587,6 +2596,12 @@ def resume_job(a, cfg, rec, *, prompt=None, before_launch=None, rollback_stack=N
         session = None
         prompt = ("原接收会话因上下文故障退役；沿用当前工作树、模型、员工配置和原授权，仅完成本轮剩余项。"
                   "旧失败和回执保留，不重复已完成工作。\n\n" + prompt)
+    if line_item and line_item.get("handoff"):
+        rec.setdefault("context_history", []).append(dict(receiver_session=session, from_round=rec["rounds"],
+                                                          receipt_id=receipt["receipt_id"], reason="policy", at=messages.utc_now()))
+        session = None
+        prompt = ("工作线按策略换新会话；沿用当前工作树、模型和授权，以下交接包为前序工作摘要。\n\n"
+                  + line_item["handoff"] + "\n" + prompt)
     if getattr(a, "retry_after_repair", None):
         rec.setdefault("recovery_repairs", []).append(dict(from_round=rec["rounds"],
                                                            evidence=a.retry_after_repair, at=messages.utc_now()))

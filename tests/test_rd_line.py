@@ -29,7 +29,7 @@ class LineTests(unittest.TestCase):
         path.write_text("实现本工作项")
         return str(path)
 
-    def run_item(self, item, **overrides):
+    def run_item(self, item, keep_session=True, **overrides):
         """以 line 模式派一个工作项；返回 (新增的派单列表, 标准输出)。"""
         before = {r["job"] for r in rd.all_jobs()}
         values = dict(project="demo", plan_item=item, agent="codex", cmd=None, prompt_file=self.prompt(),
@@ -38,6 +38,12 @@ class LineTests(unittest.TestCase):
         output = io.StringIO()
         with patch.object(rd, "agent_preflight", return_value=None), contextlib.redirect_stdout(output):
             rd.cmd_run(self.args(**values), self.cfg)
+        if keep_session:
+            # 换新会话后真实 harness 会在日志里给出新会话 ID；夹具没有日志，这里补上。
+            for record in rd.all_jobs():
+                if record.get("line") and not record.get("receiver_session"):
+                    record["receiver_session"] = "receiver"
+                    rd.save_job(record)
         return [r for r in rd.all_jobs() if r["job"] not in before], output.getvalue()
 
     def first_job(self):
@@ -201,6 +207,112 @@ class LineTests(unittest.TestCase):
         added, _ = self.run_item("c")
         self.assertEqual(added, [])
         self.assertEqual(rd.load_job(record["job"])["line"]["items"], {"a": [1], "b": [2], "c": [3]})
+
+    def patch_receipt(self, record, number, **fields):
+        """改写已落盘的回执 report，模拟不健康或带用量的上一轮。"""
+        path = rd.result_path(record, number)
+        data = messages.read_json(path)
+        data["report"].update(fields)
+        messages.atomic_json(path, data, limit=messages.RECEIPT_BYTES)
+
+    def second_round_prompt(self, record):
+        return rd.load_job(record["job"])["round_prompts"]["2"]
+
+    def test_default_policy_rotates_session_with_a_handoff_pack(self):
+        record, head = self.accepted_first()
+        prompts = []
+
+        def spy(host, rec, number, command, prompt, timeout):
+            prompts.append((number, prompt))
+            return self.finish(host, rec, number, command, prompt, timeout)
+
+        with patch.object(rd, "launch", side_effect=spy):
+            self.run_item("b", keep_session=False)
+        line = rd.load_job(record["job"])
+        self.assertIsNone(line["receiver_session"])
+        history = line["context_history"]
+        self.assertEqual([(h["reason"], h["from_round"], h["receiver_session"]) for h in history],
+                         [("policy", 1, "receiver")])
+        self.assertIn("receipt_id", history[0])
+        (number, launched), = prompts
+        self.assertEqual(number, 2)
+        for expected in ("上下文包", "来源 " + record["job"], "实现本工作项"):
+            self.assertIn(expected, launched)
+        self.assertNotIn("故障", launched.split("上下文包")[0])
+
+    def test_policy_and_fault_reasons_are_recorded_separately(self):
+        record, _ = self.accepted_first()
+        self.run_item("b")
+        self.finish_round(record, 2, "b.txt")
+        self.review(record, 2)
+        self.patch_receipt(record, 2, runtime_failure=dict(kind="context", work_observed=True, scan_complete=True))
+        changed = rd.load_job(record["job"])
+        changed["receiver_session"] = "receiver2"
+        rd.save_job(changed)
+        resume = argparse.Namespace(job=record["job"], prompt_file=self.prompt(), new_context=True, agent=None,
+                                    session=None, host=None, model=None, effort=None, timeout=None, force_host=True,
+                                    retry_after_repair=None, permission_mode=None, initiator_session="sender")
+        with patch.object(rd, "agent_preflight", return_value=None):
+            self.capture(rd.cmd_resume, resume)
+        reasons = [h["reason"] for h in rd.load_job(record["job"])["context_history"]]
+        self.assertEqual(reasons, ["policy", "context"])
+
+    def test_policy_rotation_does_not_trigger_the_fault_loop_guard(self):
+        record, _ = self.accepted_first()
+        self.run_item("b")
+        self.finish_round(record, 2, "b.txt")
+        self.review(record, 2)
+        self.patch_receipt(record, 2, runtime_failure=dict(kind="context", work_observed=False, scan_complete=True))
+        changed = rd.load_job(record["job"])
+        changed["receiver_session"] = "receiver2"
+        rd.save_job(changed)
+        resume = argparse.Namespace(job=record["job"], prompt_file=self.prompt(), new_context=True, agent=None,
+                                    session=None, host=None, model=None, effort=None, timeout=None, force_host=True,
+                                    retry_after_repair=None, permission_mode=None, initiator_session="sender")
+        # 历史里最后一条是策略轮换（from_round=1），当前轮 3；即使相邻也不得被当作故障重建。
+        history = changed["context_history"]
+        history[-1]["from_round"] = changed["rounds"] - 1
+        rd.save_job(changed)
+        with patch.object(rd, "agent_preflight", return_value=None):
+            self.capture(rd.cmd_resume, resume)
+        self.assertEqual([h["reason"] for h in rd.load_job(record["job"])["context_history"]], ["policy", "context"])
+
+    def test_unhealthy_previous_receipt_refuses_policy_rotation_with_reason(self):
+        record, _ = self.accepted_first()
+        self.patch_receipt(record, 1, runtime_failure=dict(kind="context", work_observed=True, scan_complete=True))
+        added, output = self.run_item("b")
+        self.assertEqual(len(added), 1)
+        self.assertIn("上一轮回执不健康", output)
+        self.assertIn("context", output)
+        line = rd.load_job(record["job"])
+        self.assertEqual(line["rounds"], 1)
+        self.assertNotIn("context_history", line)
+
+    def test_thresholds_keep_the_session_when_satisfied(self):
+        record, _ = self.accepted_first()
+        self.patch_receipt(record, 1, rollout_calls=dict(count=4, input_tokens=40000, cached_input_tokens=0, output_tokens=10))
+        self.cfg.cp.add_section("line:codex")
+        self.cfg.cp.set("line:codex", "reuse_max_context_tokens", "20000")
+        self.cfg.cp.set("line:codex", "reuse_max_interval_seconds", "3600")
+        self.run_item("b")
+        line = rd.load_job(record["job"])
+        self.assertEqual((line["rounds"], line["receiver_session"]), (2, "receiver"))
+        self.assertNotIn("context_history", line)
+
+    def test_thresholds_exceeded_or_missing_data_still_rotate(self):
+        record, _ = self.accepted_first()
+        self.cfg.cp.add_section("line:codex")
+        self.cfg.cp.set("line:codex", "reuse_max_context_tokens", "5000")
+        self.patch_receipt(record, 1, rollout_calls=dict(count=4, input_tokens=40000, cached_input_tokens=0, output_tokens=10))
+        self.run_item("b")
+        self.assertEqual([h["reason"] for h in rd.load_job(record["job"])["context_history"]], ["policy"])
+
+    def test_missing_usage_data_rotates_when_a_context_threshold_is_set(self):
+        record, _ = self.accepted_first()
+        self.cfg.cp.add_section("line:codex")
+        self.cfg.cp.set("line:codex", "reuse_max_context_tokens", "5000")
+        self.run_item("b")
+        self.assertEqual([h["reason"] for h in rd.load_job(record["job"])["context_history"]], ["policy"])
 
     def test_a_busy_job_lock_rejects_without_creating_a_job(self):
         record, _ = self.accepted_first()
