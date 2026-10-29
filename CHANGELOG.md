@@ -8,6 +8,7 @@
 - **回执记录实际模型与 token 用量**：回执和 `status --json` 新增 `model`（优先取 harness 输出，其次派单参数）与 `usage`（`input` 不含缓存、`cache_read`、`cache_write`、`output`）。Codex `--json`、Claude／Kimi／AGY `stream-json`、DSH `--json` 在 `rd_usage.py` 集中解析；没有用量或解析失败记「未记录」，老记录同样显示「未记录」。`status --json` 读取已收取的回执，未收取时显示「未记录」。
 - 派单缺发起会话时 stderr 输出警告，退出码不变。
 - **缓存目录**：目标机配置新增 `cache_dirs`，派单时注入各生态缓存目录的环境变量；目录按用户 ID 分开、放在 worktree 之外，落在 worktree 内的声明加载配置时报错。详见 `docs/worker-setup.md`。
+- **可再生子路径瘦身**：项目配置新增 `regenerable_paths`（如 `target; node_modules`），非法声明加载配置时报错；回执 `report.regenerable_kb` 记录各路径大小；新增 `rdispatch clean --slim [JOB]`，只删声明路径和 setup 完成标记，保留 worktree 与其余文件，续跑重新 setup。详见 `docs/worker-setup.md`。
 
 ## 0.3.1 — 2026-10-28
 
