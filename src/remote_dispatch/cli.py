@@ -41,6 +41,7 @@ from . import rd_agents as agents
 from . import rd_query as query
 from . import rd_projects as projects
 from . import rd_review as reviews
+from . import rd_context_pack as context_packs
 from . import rd_events as events
 from . import rd_plan as plans
 from . import rd_board as board
@@ -1601,6 +1602,50 @@ def cmd_session_default(a, cfg):
     print(json.dumps(result, ensure_ascii=False))
 
 
+def context_source(cfg, uid, job):
+    """整理一个前序派单的上下文包来源；跨用户或没有回执时退出码 4。"""
+    try:
+        rec = load_job(messages.job_id(job))
+    except ValueError as error:
+        die(str(error), 4)
+    if not rec.get("user_id") or rec["user_id"] != uid:
+        die(f"--context-from {job} 不属于当前用户 ID，拒绝作为上下文来源。", 4)
+    receipt, review = None, {}
+    for number in range(rec["rounds"], 0, -1):
+        found = messages.read_json(result_path(rec, number))
+        if found is None and number == rec["rounds"]:
+            try:
+                found = queries(cfg).result(rec, number, job_states(cfg, [rec]).get(job, {}))
+            except (Exception, SystemExit):
+                found = None
+        if found is None:
+            continue
+        state = reviews.read(STATE, rec, number)
+        if receipt is None or state["review_state"] == "accepted":
+            receipt, review = found, state
+        if state["review_state"] == "accepted":
+            break
+    if receipt is None:
+        die(f"--context-from {job} 没有回执，拒绝作为上下文来源；先用 rdispatch result 收取。", 4)
+    report = receipt.get("report") or {}
+    repo, ref = rec.get("repo"), "refs/remotes/rd/" + rec["branch"]
+    commits, files = [], []
+    if repo and git(["rev-parse", "--verify", "--quiet", ref], repo, check=False).returncode == 0:
+        commits = git(["log", "--oneline", f"{rec['base']}..{ref}"], repo, check=False).stdout.splitlines()
+        files = git(["diff", "--name-only", f"{rec['base']}..{ref}"], repo, check=False).stdout.splitlines()
+    changed = report.get("changed_files", receipt.get("changed_files"))
+    if isinstance(changed, list):
+        files = [x["path"] if isinstance(x, dict) else str(x) for x in changed] or files
+    return dict(job=job, round=receipt.get("round"), review_state=review.get("review_state"),
+                outcome=report.get("outcome"), checks=report.get("checks"), head=receipt.get("head"),
+                summary=report.get("summary", ""), commits=commits, files=files,
+                decisions=report.get("decisions") or [], unfinished=report.get("unfinished") or [])
+
+
+def context_pack(cfg, uid, jobs):
+    return context_packs.build([context_source(cfg, uid, job) for job in dict.fromkeys(jobs)])
+
+
 def cmd_plan(a, cfg):
     uid = require_user()
     project = a.project
@@ -1745,6 +1790,10 @@ def cmd_run(a, cfg):
         prompt = sys.stdin.read() if a.prompt_file == "-" else Path(a.prompt_file).read_text(encoding="utf-8")
     elif permission:
         die("--permission-mode 只用于代理派单。", 4)
+    if getattr(a, "context_from", None):
+        if not a.agent:
+            die("--context-from 只用于代理派单。", 4)
+        prompt = context_pack(cfg, uid, a.context_from) + "\n" + prompt
 
     include_paths = []
     missing = []
@@ -3383,6 +3432,8 @@ def main(argv=None, *, forwarded=None):
     p.add_argument("--project", help="project name (default: name of the origin repository)")
     p.add_argument("--workdir", help="临时覆盖目标机的工作根目录（默认读取 host 配置的 workdir）")
     p.add_argument("--include", action="append", default=[], help="extra path inside repository to copy, relative to repository root (repeatable)")
+    p.add_argument("--context-from", action="append", default=[], metavar="JOB",
+                   help="把前序派单的上下文包放在提示词前面（可重复；须是本用户 ID 且已有回执）")
     p.add_argument("--model")
     p.add_argument("--effort")
     p.add_argument("--permission-mode", choices=list(agents.AGY_PERMISSIONS),
