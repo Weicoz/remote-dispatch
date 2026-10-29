@@ -351,7 +351,7 @@ PYTHONPATH=src python3 -m unittest tests.test_rd_serve_device_cli -v
 | `/v1/jobs/{job}/rounds/{n}/review` | `review_state, reviewed_by`；打回另传 `review_note`；可选 `host, model, harness` | 200：`job, round, review`（验收原轮次） |
 | `/v1/jobs/{job}/stop` | `stopped_by` | 200：`job, round` |
 | `/v1/jobs/{job}/resume` | `prompt`；可选 `host, model, harness` | 200：`job, round`（新轮次） |
-| `/v1/runs` | `project, prompt`；可选 `harness, host, initiator_session, model` | 201：`job, round` |
+| `/v1/runs` | `project, prompt`；可选 `harness, host, initiator_session, model, plan_item, after, suggestion` | 201：`job, round`；有工作线建议时先 200：`suggestion`（见下） |
 
 `review_state` 接受 `accepted / rejected / voided`，空白打回附言返回 409。
 所有规则、整轮锁、打回失败回滚、自动代签和停止后的自动签收沿用原 CLI。
@@ -365,6 +365,29 @@ PYTHONPATH=src python3 -m unittest tests.test_rd_serve_device_cli -v
 执行前核对仓库当前 origin，身份改变返回 `project_unavailable`，避免意外新建项目。默认 harness 沿用最近派单，旧命令派单缺 harness 时为 codex；
 默认目标机为 auto，资源规则与 CLI 相同（auto 排除控制端本机），不绕过准入。
 发起会话未指定时暂记为 `app`；客户端可显式传 `app:<device_id>` 或所选会话 ID。
+
+### 工作线建议：两步派单
+
+`/v1/runs` 可选传 `plan_item`（待派登记里的工作项）和 `after`（前序派单 ID 数组）。
+传了 `plan_item` 且没有 `suggestion` 时，serve 先在同一用户、发起会话和参数下执行只读的
+`suggest --json`：
+
+1. 有建议：返回 200，body 为 `{"suggestion": {...}}`，内容与 `rdispatch suggest --json`
+   相同（含 `line、previous、host、branch、items、fingerprint、token、expires_at`）。此时不派单。
+   令牌单次有效、限时、绑定发起会话，所以确认请求必须带同一个 `initiator_session`。
+2. 没有建议（`suggest=false`、建议命令失败或没有 `plan_item`）：直接按默认方式派出，行为与现在一致，返回 201 `job, round`。
+
+App 确认后再次 POST `/v1/runs`，请求体与第一步相同，另加 `suggestion`：
+
+- 接受：`{"action":"accept","line":"<线名>","token":"<令牌>"}`，可加 `"accept_chain":true`
+  （本链后续工作项常驻同意）。令牌与接线条件在接线时再校验一次。成功返回 201
+  `job, round, line`：`job` 是前序派单，`round` 是新追加的轮次。
+- 拒绝：`{"action":"decline"}`。按默认方式派出新 job（201 `job, round`），并记「本链不再建议」。
+
+确认请求是新请求，必须使用新的 `Idempotency-Key`。第一步的键配第二步的请求体会返回
+422 `idempotency_key_reused`，不执行动作。`suggestion` 缺字段、动作未知，或没有
+`plan_item` 时返回 400 `invalid_request`。建议响应里的 `token` 是唯一不做字段脱敏的
+`token` 字段；它随幂等结果缓存在 `serve-writes/`，重放时可能已过期，过期后须用新键重新发起第一步。
 
 错误结构为 `{"error":{"reason":"标识",...}}`：
 

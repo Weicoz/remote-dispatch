@@ -41,6 +41,8 @@ from .rd_reclaim_schedule import ScheduledReclaim
 from . import rd_reclaim_plan as reclaim_plan
 
 
+# 只允许 serve 子进程执行、不让 CLI 自动转发给 serve 的命令（suggest 仍由 CLI 直接运行）。
+FORWARD_ONLY = {"suggest"}
 WRITE_COMMANDS = {"session-default", "run", "resume", "ack", "review", "stop", "project", "inbox", "keep", "clean", "plan"}
 SOCKET_NAME = "serve.sock"
 VERSION_ROUTE = "/v1/version"

@@ -4111,7 +4111,7 @@ def main(argv=None, *, forwarded=None):
     try:
         from . import rd_serve
         if forwarded is not None:
-            if a.command not in rd_serve.WRITE_COMMANDS:
+            if a.command not in rd_serve.WRITE_COMMANDS and a.command not in rd_serve.FORWARD_ONLY:
                 die("invalid_cli_command: command cannot be forwarded", 4)
             a._forwarded_origin = forwarded["origin"]
             if hasattr(a, "initiator_session"):

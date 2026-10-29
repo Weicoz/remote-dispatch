@@ -418,6 +418,90 @@ class ServeWriteTests(unittest.TestCase):
                          (422, {"error": {"reason": "idempotency_key_reused"}}))
         self.assertEqual(self.ready()["acknowledgement"]["acked_by"], "App")
 
+    SUGGESTION = dict(suggest=True, reason=None, line="a", previous="fixture-job", host="target", token="tok-1",
+                      fingerprint="f" * 64, expires_at="2026-10-30 00:00:00",
+                      items=dict(completed=["a"], current="b", pending=[]))
+
+    def fake_cli(self, suggestion):
+        """只替换 serve 子进程里的 suggest/run 边界：记录 argv，返回约定输出；其余命令照常执行。"""
+        calls = []
+        original = subprocess.run
+
+        def run(argv, *args, **kwargs):
+            request = json.loads(kwargs["input"]) if isinstance(kwargs.get("input"), str) and kwargs["input"].startswith("{") else {}
+            command = (request.get("argv") or [None])[0]
+            if command == "suggest":
+                calls.append(request["argv"])
+                return subprocess.CompletedProcess(argv, 0, json.dumps(suggestion), "")
+            if command == "run":
+                calls.append(request["argv"])
+                if "--line=a" in request["argv"]:
+                    return subprocess.CompletedProcess(argv, 0, "工作线 a：工作项 b 接入 fixture-job（分支 x）\n", "")
+                return subprocess.CompletedProcess(argv, 0, "started. job id: fixture-new\n", "")
+            return original(argv, *args, **kwargs)
+        patcher = patch.object(subprocess, "run", side_effect=run)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        return calls
+
+    def run_body(self, **extra):
+        return dict(project="demo", prompt="做 b", host="target", plan_item="b", **extra)
+
+    def test_runs_without_a_suggestion_dispatches_as_before(self):
+        self.prepare_run_project()
+        calls = self.fake_cli(dict(suggest=False, reason="前序派单未验收"))
+        reply = self.post("/v1/runs", self.run_body())
+        self.assertEqual(reply, (201, dict(job="fixture-new", round=1)))
+        self.assertEqual([call[0] for call in calls], ["suggest", "run"])
+        self.assertIn("--plan-item=b", calls[1])
+        self.assertFalse([a for a in calls[1] if a.startswith(("--line", "--accept", "--no-line"))])
+
+    def test_runs_with_a_suggestion_returns_it_first_without_dispatching(self):
+        self.prepare_run_project()
+        calls = self.fake_cli(self.SUGGESTION)
+        status, body = self.post("/v1/runs", self.run_body())
+        self.assertEqual(status, 200, body)
+        self.assertEqual(body["suggestion"], self.SUGGESTION)
+        self.assertNotIn("job", body)
+        self.assertEqual([call[0] for call in calls], ["suggest"])
+
+    def test_accepting_with_the_token_wires_the_line_under_a_new_key(self):
+        self.prepare_run_project()
+        calls = self.fake_cli(self.SUGGESTION)
+        self.assertEqual(self.post("/v1/runs", self.run_body(), "first")[0], 200)
+        cli.save_job(self.rec)  # 前序派单仍在（prepare_run_project 模拟的是清理后的项目）
+        accept = self.run_body(suggestion=dict(action="accept", line="a", token="tok-1"))
+        status, body = self.post("/v1/runs", accept, "second")
+        self.assertEqual((status, body["job"], body["line"]), (201, "fixture-job", "a"), body)
+        self.assertEqual(body["round"], 1)
+        self.assertEqual(calls[-1][0], "run")
+        self.assertIn("--line=a", calls[-1])
+        self.assertIn("--accept=tok-1", calls[-1])
+        self.assertNotIn("--no-line", calls[-1])
+
+    def test_declining_dispatches_the_default_way_and_records_no_line(self):
+        self.prepare_run_project()
+        calls = self.fake_cli(self.SUGGESTION)
+        status, body = self.post("/v1/runs", self.run_body(suggestion=dict(action="decline")), "decline")
+        self.assertEqual((status, body), (201, dict(job="fixture-new", round=1)))
+        self.assertEqual([call[0] for call in calls], ["run"])
+        self.assertIn("--no-line", calls[0])
+        self.assertFalse([a for a in calls[0] if a.startswith(("--line", "--accept"))])
+
+    def test_reusing_the_key_for_the_accept_request_is_rejected_and_bad_decisions_are_invalid(self):
+        self.prepare_run_project()
+        calls = self.fake_cli(self.SUGGESTION)
+        self.assertEqual(self.post("/v1/runs", self.run_body(), "same")[0], 200)
+        accept = self.run_body(suggestion=dict(action="accept", line="a", token="tok-1"))
+        self.assertEqual(self.post("/v1/runs", accept, "same"),
+                         (422, dict(error=dict(reason="idempotency_key_reused"))))
+        self.assertEqual([call[0] for call in calls], ["suggest"])
+        for bad in (dict(action="accept", line="a"), dict(action="other"), "accept"):
+            self.assertEqual(self.post("/v1/runs", self.run_body(suggestion=bad), "bad-" + str(bad))[0], 400)
+        self.assertEqual(self.post("/v1/runs", dict(project="demo", prompt="x", suggestion=dict(action="decline")),
+                                   "no-item")[0], 400)
+
+
     def test_large_cli_error_has_a_bounded_display_message_and_replays_first_result(self):
         self.prepare_run_project()
         body = dict(project="demo", prompt="继续", host="target", harness="unknown-" + "x" * 140000)
