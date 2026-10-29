@@ -1190,7 +1190,38 @@ def cmd_result(a, cfg):
     print(json.dumps(result, ensure_ascii=False, indent=2))
 
 
+def cmd_orphans(a, cfg):
+    """列出当前用户 ID 下没有发起会话的派单及其待收取回执，供集中签收。"""
+    uid = require_user()
+    recs = [r for r in all_jobs() if r.get("user_id") == uid and not r.get("initiator_session")]
+    states = job_states(cfg, recs)
+    rows = []
+    for rec in recs:
+        snapshot = states.get(rec["job"], {})
+        row = dict(job=rec["job"], host=rec.get("host"), project=rec.get("project"), branch=rec.get("branch"),
+                   state=snapshot.get("state"), rounds=rec.get("rounds"), pending_receipts=[])
+        if snapshot.get("state") != "unreachable":
+            collect_result(cfg, rec, snapshot)
+            for path in sorted(result_path(rec, 1).parent.glob("r*.json")):
+                if re.fullmatch(r"r[0-9]+\.json", path.name):
+                    receipt = messages.read_json(path)
+                    if not queries(cfg).acknowledgement(rec, receipt):
+                        row["pending_receipts"].append(dict(round=receipt["round"], receipt_id=receipt["receipt_id"]))
+        rows.append(row)
+    if getattr(a, "json", False):
+        print(json.dumps(rows, ensure_ascii=False, indent=2))
+        return
+    if not rows:
+        print("没有无主派单。")
+    for row in rows:
+        pending = "；".join(f"第 {p['round']} 轮待收取，签收：rdispatch ack {row['job']} --round {p['round']} --receipt-id {p['receipt_id']}"
+                            for p in row["pending_receipts"]) or "无待收取回执"
+        print(f"{row['job']} [{row['state'] or '未知'}] {row['host']}：{pending}")
+
+
 def cmd_inbox(a, cfg):
+    if getattr(a, "orphans", False):
+        return cmd_orphans(a, cfg)
     owner = initiator_session(a)
     if not owner:
         die("inbox 需要 --initiator-session 或 RD_INITIATOR_SESSION。", 4)
@@ -2444,7 +2475,7 @@ BLOCK_RUNNING = "running"
 BLOCK_PREPARING = "preparing"
 BLOCK_UNREACHABLE = "unreachable"
 BLOCK_NOT_FINISHED = "not_finished"
-BLOCK_SOURCE_MISSING = "source_missing"
+BLOCK_NEEDS_CONFIRM = "needs_confirmation"
 BLOCK_UNVERIFIABLE = "unverifiable"
 BLOCK_ORPHAN = "worktree_orphan"
 BLOCK_NOT_FETCHED = "not_fetched"
@@ -2468,7 +2499,41 @@ def merge_block_code(reason):
     return BLOCK_UNVERIFIABLE
 
 
-def reclaim_check(cfg, rec, snapshot, host, *, single=False, force=False, a=None, into=None, mode="merged"):
+def source_missing_report(host, rec):
+    """源仓库已删除时，用目标机 bare 仓库核对 worktree 提交是否仍可取回或已合入；返回给人看的核对结果。"""
+    prefix = f"源仓库不存在：{rec['repo']}；"
+    if host["platform"] == "windows":
+        return prefix + "Windows 目标机无法核对 bare 仓库，请人工确认提交已取回或不再需要。"
+    j, b = rec["job"], rec["branch"]
+    bare = f'"$ROOT/{rec.get("bare", "repos/" + rec["project"] + ".git")}"'
+    wt = f'"$ROOT/wt/{messages.job_id(j)}"'
+    try:
+        r = ssh(host, f'head=$(git -C {wt} rev-parse HEAD 2>/dev/null); echo "head=$head"; '
+                      f'if git -C {bare} rev-parse --git-dir >/dev/null 2>&1; then echo bare=yes; '
+                      f'echo "tip=$(git -C {bare} rev-parse -q --verify {shlex.quote("refs/heads/" + b)} 2>/dev/null)"; '
+                      f'if [ -n "$head" ] && git -C {bare} cat-file -e "$head^{{commit}}" 2>/dev/null; then echo present=yes; '
+                      f'echo "merged=$(git -C {bare} for-each-ref --contains "$head" --format="%(refname:short)" refs/heads '
+                      f'| grep -vxF {shlex.quote(b)} | head -3 | tr "\\n" " ")"; fi; fi', check=False)
+    except (OSError, ValueError, SystemExit, subprocess.SubprocessError) as error:
+        return prefix + f"bare 仓库核对失败：{error}"
+    fields = dict(line.partition("=")[::2] for line in (r.stdout or "").splitlines()) if r and not r.returncode else {}
+    head, tip = fields.get("head", ""), fields.get("tip", "")
+    if fields.get("bare") != "yes":
+        return prefix + "目标机上的 bare 仓库不存在或无法读取，无法核对。"
+    if not head:
+        return prefix + f"worktree 已不可读，无法核对；bare 仓库分支 {b} " + (f"位于 {tip[:12]}。" if tip else "不存在。")
+    if head == rec["base"]:
+        return prefix + "目标机 bare 仓库核对：worktree 没有新提交，删除不丢提交。"
+    merged = fields.get("merged", "").strip()
+    if fields.get("present") != "yes":
+        return prefix + f"目标机 bare 仓库核对：缺少 worktree head {head[:12]} 的提交，删除后无法恢复。"
+    if head == tip:
+        return prefix + f"目标机 bare 仓库核对：分支 {b} 已含 worktree head {head[:12]}，提交可从 bare 取回。"
+    where = f"，已合入 bare 分支 {merged}" if merged else "，但不在任何分支上"
+    return prefix + f"目标机 bare 仓库核对：有 worktree head {head[:12]} 的提交{where}；分支 {b} 位于 {tip[:12] or '无'}。"
+
+
+def reclaim_check(cfg, rec, snapshot, host, *, single=False, force=False, a=None, into=None, mode="merged", confirmed=False):
     """回收安全条件的唯一判定点，单个 clean 与批量清理共用。
 
     返回 (code, detail, head, reasons)：code 为 None 表示安全条件全部满足。
@@ -2490,6 +2555,8 @@ def reclaim_check(cfg, rec, snapshot, host, *, single=False, force=False, a=None
             receipt = collect_result(cfg, rec, snapshot)
             if not receipt or delivery(rec, receipt) != "received":
                 return BLOCK_RECEIPT_PENDING, "先用 rdispatch result 收取结果，再用 rdispatch ack 确认；未交付回执不清理。", None, []
+        if not Path(rec["repo"]).is_dir() and not (force or confirmed):
+            return BLOCK_NEEDS_CONFIRM, source_missing_report(host, rec), None, []
         if state == "missing" or force:
             return None, "", None, []
         j, b = rec["job"], rec["branch"]
@@ -2509,8 +2576,8 @@ def reclaim_check(cfg, rec, snapshot, host, *, single=False, force=False, a=None
                                   "确认可以丢弃后用 --force。"), head, []
         if dirty.strip() != "0":
             return BLOCK_DIRTY, f"{dirty.strip()} uncommitted file(s) in the remote worktree would be lost. Check them, or --force.", head, []
-        if not Path(rec["repo"]).is_dir():
-            return BLOCK_SOURCE_MISSING, f"源仓库不存在：{rec['repo']}；确认可以丢弃后用 --force。", head, []
+        if confirmed:
+            return None, "", head, []
         have = git(["rev-parse", "-q", "--verify", f"refs/remotes/rd/{b}"], rec["repo"], check=False).stdout.strip()
         if head and head != rec["base"] and head != have:
             return BLOCK_NOT_FETCHED, "the job has commits you have not fetched. Run rdispatch fetch first, or --force.", head, []
@@ -2524,7 +2591,7 @@ def reclaim_check(cfg, rec, snapshot, host, *, single=False, force=False, a=None
             return BLOCK_UNREACHABLE, "连接不可达", None, []
         return BLOCK_NOT_FINISHED, "未确认任务已结束", None, []
     if not Path(rec["repo"]).is_dir():
-        return BLOCK_SOURCE_MISSING, f"源仓库不存在：{rec['repo']}", None, []
+        return BLOCK_NEEDS_CONFIRM, source_missing_report(host, rec) + "批量清理不代为确认；改用 rdispatch clean JOB。", None, []
     try:
         head, paths = worktree_changes(host, rec)
         reasons = merge_check(rec, head, into)
@@ -2752,6 +2819,15 @@ def cmd_clean(a, cfg):
     j = rec["job"]
     st = remote_state(host, [j]).get(j, {})
     code, detail, _, _ = reclaim_check(cfg, rec, st, host, single=True, force=a.force, a=a)
+    if code == BLOCK_NEEDS_CONFIRM:
+        if not sys.stdin.isatty():
+            die(detail + "确认删除请加 --force。", 4)
+        print(detail)
+        if input("确认删除此派单的目标机 worktree？[y/N] ").strip().lower() not in ("y", "yes"):
+            die("未确认，保留 worktree 与登记。", 1)
+        code, detail, _, _ = reclaim_check(cfg, rec, st, host, single=True, a=a, confirmed=True)
+    elif a.force and not Path(rec["repo"]).is_dir():
+        print(source_missing_report(host, rec))
     if code:
         die(detail, 4 if code == BLOCK_RECEIPT_PENDING else 1)
     remove_job(a, rec, host)
@@ -3300,6 +3376,8 @@ def main(argv=None, *, forwarded=None):
 
     p = sub.add_parser("inbox", help="列出当前发起会话待收取的结果")
     p.add_argument("--initiator-session")
+    p.add_argument("--orphans", action="store_true", help="改列当前用户 ID 下没有发起会话的派单，供集中签收")
+    p.add_argument("--json", action="store_true", help="与 --orphans 合用：输出 JSON（inbox 默认即 JSON）")
     p.set_defaults(fn=cmd_inbox)
 
     p = sub.add_parser("ack", help="确认已收取特定回执，不自动验收或续派")

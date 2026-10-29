@@ -11,7 +11,7 @@ import sys
 import tempfile
 import time
 import unittest
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from test_rd import rd, native
 from remote_dispatch import rd_events as events
@@ -1250,7 +1250,86 @@ class DispatchTests(unittest.TestCase):
         gone = dict(record, repo=str(self.root / "deleted-repo"))
         rd.save_job(gone)
         row = self.verdict(record, dir=None, project=record["project"])
-        self.assertEqual((row["reclaimable"], row["code"]), (False, "source_missing"))
+        self.assertEqual((row["reclaimable"], row["code"]), (False, "needs_confirmation"))
+        self.assertIn("bare", row["reason"])
+
+    def delete_source(self, record):
+        """模拟源仓库被删除：登记改指向不存在的目录。"""
+        rd.save_job(dict(record, repo=str(self.root / "deleted-repo")))
+
+    def single_clean(self, record, stdin=None, **overrides):
+        """单个 clean（不带 --force）；stdin 为 None 表示非终端。"""
+        values = dict(job=record["job"], force=False, delete_branch=False, discard_reports=False, initiator_session=None)
+        values.update(overrides)
+        fake = MagicMock()
+        fake.isatty.return_value = stdin is not None
+        with patch.object(sys, "stdin", fake), patch("builtins.input", return_value=stdin or ""):
+            rd.cmd_clean(argparse.Namespace(**values), self.cfg)
+
+    def test_source_missing_reports_bare_check_and_non_tty_refuses_with_exit_4(self):
+        record = self.dispatch()
+        head = self.remote_head(record, commit=True, fetch=True)
+        self.acknowledge(record)
+        self.delete_source(record)
+        errors = io.StringIO()
+        with contextlib.redirect_stderr(errors), self.assertRaises(SystemExit) as raised:
+            self.single_clean(record)
+        self.assertEqual(raised.exception.code, 4)
+        self.assertIn("bare", errors.getvalue())
+        self.assertIn(head[:12], errors.getvalue())
+        self.assertTrue(os.path.exists(rd.job_path(record["job"])))
+
+    def test_source_missing_clean_requires_confirmation_then_reclaims(self):
+        record = self.dispatch()
+        self.remote_head(record, commit=True, fetch=True)
+        self.acknowledge(record)
+        self.delete_source(record)
+        with self.assertRaises(SystemExit):
+            self.single_clean(record, stdin="n")
+        self.assertTrue(os.path.exists(rd.job_path(record["job"])))
+        self.assertTrue((self.worker / "wt" / record["job"]).exists())
+        output = self.capture(lambda a, c: self.single_clean(record, stdin="y"), None)
+        self.assertIn("cleaned", output)
+        self.assertFalse(os.path.exists(rd.job_path(record["job"])))
+
+    def test_source_missing_force_prints_bare_check_and_reclaims(self):
+        record = self.dispatch()
+        self.remote_head(record, commit=True)
+        self.acknowledge(record)
+        self.delete_source(record)
+        output = self.capture(lambda a, c: self.single_clean(record, force=True), None)
+        self.assertIn("bare", output)
+        self.assertIn("cleaned", output)
+
+    def test_source_missing_check_says_when_commit_is_on_no_bare_branch(self):
+        record = self.dispatch()
+        self.remote_head(record)
+        self.acknowledge(record)
+        wt = self.worker / "wt" / record["job"]
+        native.git(wt, "checkout", "-q", "--detach")
+        (wt / "x.txt").write_text("x")
+        native.git(wt, "add", "x.txt")
+        native.git(wt, "-c", "user.name=F", "-c", "user.email=f@example.invalid", "commit", "-qm", "detached")
+        self.delete_source(record)
+        row = self.verdict(record, dir=None, project=record["project"])
+        self.assertEqual(row["code"], "needs_confirmation")
+        self.assertIn("不在任何分支上", row["reason"])
+
+    def test_inbox_orphans_lists_only_own_user_jobs_without_initiator_session(self):
+        orphan = self.dispatch()
+        rd.save_job(dict(orphan, initiator_session=None))
+        owned = self.dispatch(initiator_session="sender")
+        foreign = self.dispatch()
+        rd.save_job(dict(foreign, user_id="employee_b", initiator_session=None))
+        self.remote_head(orphan)
+        args = argparse.Namespace(initiator_session=None, orphans=True, json=True)
+        rows = json.loads(self.capture(rd.cmd_inbox, args))
+        self.assertEqual([r["job"] for r in rows], [orphan["job"]])
+        self.assertEqual(rows[0]["pending_receipts"][0]["round"], 1)
+        self.assertNotIn(owned["job"], [r["job"] for r in rows])
+        text = self.capture(rd.cmd_inbox, argparse.Namespace(initiator_session=None, orphans=True, json=False))
+        self.assertIn(orphan["job"], text)
+        self.assertNotIn(owned["job"], text)
 
     def test_clean_dry_run_json_expired_pinned_and_retention_blocks(self):
         record = self.agent_job(self.dispatch())
