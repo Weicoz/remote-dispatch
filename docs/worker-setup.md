@@ -54,7 +54,21 @@ max_heavy = 1
 
 非交互的 SSH 会话不读 `.zshrc`、`.bashrc`，装在用户目录下的命令往往找不到。把这些目录写进该机器的 `path`。默认已包含 `~/.local/bin`、`~/.kimi-code/bin`、`/opt/homebrew/bin`、`/usr/local/bin`。需要的环境变量（例如接口密钥）写进远端的一个文件，用 `env_file` 指过去，任务启动前会被加载。
 
+
 员工配置包不携带凭据。要共用现有登录，管理员显式设置 `codex_auth_file` 指向已授权的远端认证文件；否则使用配置引用的 API 环境变量。配置不自动读目标机默认 `auth.json` 或钥匙串。后台权限使用员工配置，`approval_policy` 必须是 `never`。
+
+## 缓存目录
+
+目标机配置 `cache_dirs` 声明各生态的缓存目录，派单时自动注入为环境变量（POSIX 运行脚本和 Windows 原生都注入），目录会自动创建。格式是 `NAME=目录`，多项用分号分隔：
+
+```ini
+cache_dirs = CARGO_HOME=cargo; PIP_CACHE_DIR=pip; npm_config_cache=npm; PNPM_HOME=/data/rd-cache/{user}/pnpm
+```
+
+- 相对目录展开到该用户 ID 根目录下的 `cache/` 子目录（`<workdir>/users/<ID>/cache/<目录>`），不同用户 ID 互不共享。
+- 绝对目录必须含 `{user}`，展开为用户 ID。
+- 展开后落在任何 worktree（`<workdir>/wt`、`<workdir>/users/<ID>/wt`）内、含 `..` 或变量名不合法的声明，加载配置时报错（退出码 4）。缓存在 worktree 之外，回收 worktree 不会删掉它。
+- 没有声明时，行为与之前一致。
 
 ## 4. 仓库访问（只在 `sync = origin` 时需要）
 

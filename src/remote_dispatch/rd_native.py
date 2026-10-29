@@ -362,6 +362,9 @@ def run_job(spec_file):
         if not isinstance(values, dict) or not all(isinstance(k, str) and isinstance(v, str) for k, v in values.items()):
             raise ValueError("Windows env_file 必须是字符串键值的 JSON 文件。")
         env.update(values)
+    for key, path in (spec.get("cache_env") or {}).items():
+        Path(path).mkdir(parents=True, exist_ok=True)
+        env[key] = path
     env.update(RD_USER_ID=spec["user_id"], RD_JOB=spec["job"], RD_WT=str(wt), RD_JOB_DIR=str(directory),
                RD_LOCK_DIR=spec["lock_dir"], RD_MAX_HEAVY=str(spec["max_heavy"]), RD_ROUND=str(spec["round"]),
                PATH=spec["bin"] + os.pathsep + env.get("PATH", ""))

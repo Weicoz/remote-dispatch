@@ -1270,6 +1270,63 @@ class DispatchTests(unittest.TestCase):
             with self.subTest(option=option), self.assertRaises(SystemExit):
                 rd.cmd_clean(self.bulk_args(**option), self.cfg)
 
+    def run_scripts(self, user, cache_dirs):
+        """派单并返回控制端生成的运行脚本文本；其余路径照常执行。"""
+        self.cfg.cp.set("host:fixture", "cache_dirs", cache_dirs)
+        scripts = []
+        def launch(host, rec, round_no, *args):
+            scripts.append(rd.build_run_script(host, rec, round_no, 10))
+            return self.finish(host, rec, round_no, *args)
+        with patch.dict(os.environ, {"RD_USER_ID": user}), patch.object(rd, "launch", side_effect=launch):
+            self.dispatch(name="cache-" + user)
+        return scripts[0]
+
+    def test_cache_dirs_are_injected_per_user_outside_worktrees(self):
+        declared = "CARGO_HOME=cargo;PIP_CACHE_DIR=pip/cache"
+        script_a = self.run_scripts("employee_a", declared)
+        script_b = self.run_scripts("employee_b", declared)
+        for script in (script_a, script_b):
+            self.assertIn('export CARGO_HOME="$ROOT"/cache/cargo;', script)
+            self.assertIn('export PIP_CACHE_DIR="$ROOT"/cache/pip/cache;', script)
+        # ROOT 是用户 ID 级根目录，各用户目录不同；worktree 在 $ROOT/wt 下，缓存不在其中。
+        self.assertIn(f"ROOT={self.root}/worker/users/employee_a\n", script_a)
+        self.assertIn(f"ROOT={self.root}/worker/users/employee_b\n", script_b)
+
+    def test_absolute_cache_dir_expands_user_id(self):
+        script = self.run_scripts("employee_b", "CARGO_HOME=/var/cache/rd/{user}/cargo")
+        self.assertIn("export CARGO_HOME=/var/cache/rd/employee_b/cargo;", script)
+
+    def test_without_cache_dirs_the_script_has_no_injection(self):
+        script = self.run_scripts("employee_a", "")
+        self.assertNotIn("/cache/", script)
+        self.assertNotIn("export CARGO_HOME", script)
+
+    def test_cache_dir_inside_a_worktree_is_rejected_at_config_load(self):
+        worker = self.root / "worker"
+        for declared in (f"CARGO_HOME={worker}/users/{{user}}/wt/job/cargo", f"CARGO_HOME={worker}/wt/x/{{user}}",
+                         "CARGO_HOME=../wt/x", "CARGO_HOME=/var/cache/shared", "BAD NAME=x"):
+            with self.subTest(declared=declared):
+                self.cfg.cp.set("host:fixture", "cache_dirs", declared)
+                with self.assertRaises(SystemExit) as stopped:
+                    self.cfg.host("fixture")
+                self.assertEqual(stopped.exception.code, 4)
+
+    def test_windows_launch_spec_carries_cache_dirs_per_user(self):
+        self.cfg.cp.set("host:fixture", "platform", "windows")
+        self.cfg.cp.set("host:fixture", "cache_dirs", "CARGO_HOME=cargo;PIP_CACHE_DIR=D:\\caches\\{user}\\pip")
+        specs = []
+        original = self.local_rpc
+        def rpc(host, operation, data=None, **kwargs):
+            if operation == "launch":
+                specs.append(data["spec"])
+                return None
+            return original(host, operation, data, **kwargs)
+        with patch.object(rd, "launch", side_effect=self.real_launch), patch.object(native, "request", side_effect=rpc):
+            self.dispatch(name="cache-windows")
+        env = specs[0]["cache_env"]
+        self.assertEqual(env["PIP_CACHE_DIR"], "D:\\caches\\employee_a\\pip")
+        self.assertTrue(env["CARGO_HOME"].replace("\\", "/").endswith("/users/employee_a/cache/cargo"), env)
+
 
 if __name__ == "__main__":
     unittest.main()
