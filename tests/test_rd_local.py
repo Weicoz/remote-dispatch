@@ -336,6 +336,65 @@ class LocalEndToEndTest(unittest.TestCase):
                                  "--verify", "refs/heads/" + rec["branch"]], capture_output=True)
         self.assertNotEqual(branch.returncode, 0)
 
+    def finished_job(self):
+        rd.cmd_run(self.args(), self.cfg)
+        rec = rd.all_jobs()[0]
+        self.wait_for_completion(rec)
+        rd.cmd_fetch(argparse.Namespace(job=rec["job"]), self.cfg)
+        return rec
+
+    def clean_args(self, rec, **options):
+        values = dict(job=rec["job"], force=False, delete_branch=False, discard_reports=True, merged=False,
+                      into=None, dry_run=False, project=None, initiator_session=None)
+        values.update(options)
+        return argparse.Namespace(**values)
+
+    def test_clean_removes_directory_left_after_worktree_registration_is_lost(self):
+        rec = self.finished_job()
+        wt = Path(rec["worker_root"], "wt", rec["job"])
+        (wt / ".git").unlink()
+        (wt / "leftover.txt").write_text("x")
+        rd.save_job(dict(rd.load_job(rec["job"]), handoff_version=None))
+        errors = io.StringIO()
+        with contextlib.redirect_stderr(errors), self.assertRaises(SystemExit):
+            rd.cmd_clean(self.clean_args(rec), self.cfg)
+        self.assertIn("--force", errors.getvalue())
+        self.assertTrue(wt.exists())
+        self.assertEqual(len(rd.all_jobs()), 1)
+        rd.cmd_clean(self.clean_args(rec, force=True), self.cfg)
+        self.assertFalse(wt.exists())
+        self.assertEqual(rd.all_jobs(), [])
+        pruned = self.git("-C", str(Path(rec["worker_root"], rec["bare"])), "worktree", "list", "--porcelain")
+        self.assertNotIn(str(wt.resolve()), pruned)
+
+    def test_clean_removes_write_only_worktree_directory(self):
+        rec = self.finished_job()
+        wt = Path(rec["worker_root"], "wt", rec["job"])
+        (wt / "leftover.txt").write_text("x")
+        sub = wt / "sub"
+        sub.mkdir()
+        (sub / "f").write_text("x")
+        sub.chmod(0o200)
+        self.addCleanup(lambda: sub.exists() and sub.chmod(0o700))
+        rd.cmd_clean(self.clean_args(rec, force=True), self.cfg)
+        self.assertFalse(wt.exists())
+        self.assertEqual(rd.all_jobs(), [])
+
+    def test_clean_without_force_still_refuses_uncommitted_files_and_removes_clean_worktree(self):
+        rec = self.finished_job()
+        rd.save_job(dict(rd.load_job(rec["job"]), handoff_version=None))
+        wt = Path(rec["worker_root"], "wt", rec["job"])
+        (wt / "dirty.txt").write_text("x")
+        errors = io.StringIO()
+        with contextlib.redirect_stderr(errors), self.assertRaises(SystemExit):
+            rd.cmd_clean(self.clean_args(rec), self.cfg)
+        self.assertIn("uncommitted", errors.getvalue())
+        self.assertTrue((wt / "dirty.txt").exists())
+        (wt / "dirty.txt").unlink()
+        rd.cmd_clean(self.clean_args(rec), self.cfg)
+        self.assertFalse(wt.exists())
+        self.assertEqual(rd.all_jobs(), [])
+
 
 FAKE_CODEX = '''#!/usr/bin/env python3
 import json, os, pathlib, sys

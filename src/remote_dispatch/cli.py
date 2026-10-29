@@ -2361,14 +2361,21 @@ def cmd_clean(a, cfg):
         if not receipt or delivery(rec, receipt) != "received":
             die("先用 rdispatch result 收取结果，再用 rdispatch ack 确认；未交付回执不清理。", 4)
     if st.get("state") != "missing" and not a.force:
+        orphan = False
         if host["platform"] == "windows":
             info = native.request(host, "clean-check", {"job": j})
             dirty, head = str(info["dirty"]), info["head"]
         else:
-            r = ssh(host, f'git -C "$ROOT/wt/{j}" status --porcelain 2>/dev/null | wc -l; '
-                      f'git -C "$ROOT/wt/{j}" rev-parse HEAD 2>/dev/null', check=False)
-            lines = r.stdout.split()
-            dirty, head = (lines + ["0", ""])[:2]
+            w = f'"$ROOT/wt/{messages.job_id(j)}"'
+            r = ssh(host, f'if [ ! -e {w} ] || [ "$(git -C {w} rev-parse --show-toplevel 2>/dev/null)" = "$(cd {w} && pwd -P)" ]; then '
+                          f'echo "dirty=$(git -C {w} status --porcelain 2>/dev/null | wc -l | tr -d " ")"; '
+                          f'echo "head=$(git -C {w} rev-parse HEAD 2>/dev/null)"; else echo orphan; fi', check=False)
+            fields = dict(line.partition("=")[::2] for line in (r.stdout or "").splitlines())
+            orphan = "orphan" in fields or r.stdout.strip() == "orphan"
+            dirty, head = fields.get("dirty", "0"), fields.get("head", "")
+        if orphan:
+            die(f"{j} 的 worktree 目录已不在 git worktree 登记中或无法读取，无法核验其中是否有未提交内容。"
+                "确认可以丢弃后用 --force。")
         if dirty.strip() != "0":
             die(f"{dirty.strip()} uncommitted file(s) in the remote worktree would be lost. Check them, or --force.")
         have = git(["rev-parse", "-q", "--verify", f"refs/remotes/rd/{b}"], rec["repo"], check=False).stdout.strip()
@@ -2401,8 +2408,13 @@ def remove_job(a, rec, host):
     else:
         drop = (f'if git -C "$ROOT/{bare}" show-ref --verify --quiet {shlex.quote("refs/heads/" + b)}; then '
                 f'git -C "$ROOT/{bare}" branch -q -D {shlex.quote(b)} || exit 1; fi; ') if delete_worker else ""
-        ssh(host, f'if [ -e "$ROOT/wt/{j}" ]; then '
-                  f'git -C "$ROOT/{bare}" worktree remove --force "$ROOT/wt/{j}" || exit 1; fi; '
+        wt = f'"$ROOT/wt/{messages.job_id(j)}"'
+        # 登记已丢失或目录不可读写时 worktree remove 会失败：恢复权限，仍失败则删目录并 prune。
+        ssh(host, f'if [ -e {wt} ]; then '
+                  f'git -C "$ROOT/{bare}" worktree remove --force {wt} 2>/dev/null || {{ '
+                  f'chmod -R u+rwx {wt} 2>/dev/null; '
+                  f'git -C "$ROOT/{bare}" worktree remove --force {wt} 2>/dev/null || {{ '
+                  f'rm -rf {wt} && [ ! -e {wt} ] && git -C "$ROOT/{bare}" worktree prune; }}; }} || exit 1; fi; '
                   f'{drop}rm -rf "$ROOT/jobs/{j}"')
     if delete_origin and rec["sync"] == "origin":
         git(["push", "origin", "--delete", b], rec["repo"])
