@@ -41,9 +41,11 @@ from . import rd_agents as agents
 from . import rd_query as query
 from . import rd_projects as projects
 from . import rd_review as reviews
+from . import rd_context_pack as context_packs
 from . import rd_events as events
 from . import rd_plan as plans
 from . import rd_board as board
+from . import rd_line as workline
 from .rd_lock import JobBusy, JobLock
 from . import rd_initiator as initiators
 from .rd_session_defaults import SessionDefaults, resolve_mode, validate_mode
@@ -261,6 +263,10 @@ class Config:
     def scheduled_reclaim(self):
         """[features] scheduled_reclaim：serve 每小时按 max_worktree_gb 回收，默认关闭；取值无效按关闭处理。"""
         return self.cp.get("features", "scheduled_reclaim", fallback="false").strip().lower() in ("1", "true", "yes", "on")
+
+    def line_enabled(self):
+        """[features] line：显式写 false 才关闭；关闭后不接新线，已有线继续。"""
+        return workline.feature_enabled(self.cp)
 
     def retention_hours(self):
         """过期回收的保留时长（小时），从最后一次回执确认算起；环境变量优先。"""
@@ -1360,7 +1366,7 @@ def build_run_script(host, rec, round_no, timeout):
                          'if command -v python3 >/dev/null 2>&1; then python3 "$RD_REPORTER" finish --exit "$rc" '
                          '>> "$RD_JOB_DIR/report.r$RD_ROUND.log" 2>&1; fi')
     rollout_env = "export RD_ROLLOUT_STATS=1" if str(host.get("rollout_stats", "0")).lower() in ("1", "true", "yes") else ""
-    subs = {"JOB": rec["job"], "BASE": shlex.quote(rec.get("base") or ""), "ROLLOUT_ENV": rollout_env, "ROUND": str(round_no), "PATH": host["path"], "ROOT": root_expr(host),
+    subs = {"JOB": rec["job"], "BASE": shlex.quote(workline.round_base(rec, round_no) or ""), "ROLLOUT_ENV": rollout_env, "ROUND": str(round_no), "PATH": host["path"], "ROOT": root_expr(host),
             "MAX_HEAVY": host["max_heavy"], "ENV_FILE": env_file, "KILLTREE": KILLTREE,
             "TIMEOUT": str(int(timeout)), "PUSH": push, "SHARED_ROOT": root_expr(shared),
             "CACHE_ENV": cache_env_script(host, rec.get("user_id")), "IDENTITY": identity, "EXEC": command, "REPORT_ENV": report_env, "REPORT_FINISH": report_finish}
@@ -1438,7 +1444,7 @@ def launch(host, rec, round_no, cmd_text, prompt_text, timeout):
             put_file(host, f"jobs/{j}/rd_cache.py", stream.read(), "600")
         put_file(host, f"jobs/{j}/reports/dispatch.r{round_no}.json", json.dumps(dict(job=j, round=round_no, initiator_session=rec.get("initiator_session"))), "600")
     if host["platform"] == "windows":
-        spec = dict(rec, round=round_no, timeout=int(timeout), max_heavy=int(host["max_heavy"]),
+        spec = dict(rec, round=round_no, base=workline.round_base(rec, round_no), timeout=int(timeout), max_heavy=int(host["max_heavy"]),
                     auth_file=host["codex_auth_file"], env_file=host["env_file"],
                     rollout_stats=host.get("rollout_stats", "0"),
                     cache_env=cache_env(host, rec.get("user_id")))
@@ -1613,6 +1619,50 @@ def cmd_session_default(a, cfg):
     print(json.dumps(result, ensure_ascii=False))
 
 
+def context_source(cfg, uid, job):
+    """整理一个前序派单的上下文包来源；跨用户或没有回执时退出码 4。"""
+    try:
+        rec = load_job(messages.job_id(job))
+    except ValueError as error:
+        die(str(error), 4)
+    if not rec.get("user_id") or rec["user_id"] != uid:
+        die(f"--context-from {job} 不属于当前用户 ID，拒绝作为上下文来源。", 4)
+    receipt, review = None, {}
+    for number in range(rec["rounds"], 0, -1):
+        found = messages.read_json(result_path(rec, number))
+        if found is None and number == rec["rounds"]:
+            try:
+                found = queries(cfg).result(rec, number, job_states(cfg, [rec]).get(job, {}))
+            except (Exception, SystemExit):
+                found = None
+        if found is None:
+            continue
+        state = reviews.read(STATE, rec, number)
+        if receipt is None or state["review_state"] == "accepted":
+            receipt, review = found, state
+        if state["review_state"] == "accepted":
+            break
+    if receipt is None:
+        die(f"--context-from {job} 没有回执，拒绝作为上下文来源；先用 rdispatch result 收取。", 4)
+    report = receipt.get("report") or {}
+    repo, ref = rec.get("repo"), "refs/remotes/rd/" + rec["branch"]
+    commits, files = [], []
+    if repo and git(["rev-parse", "--verify", "--quiet", ref], repo, check=False).returncode == 0:
+        commits = git(["log", "--oneline", f"{rec['base']}..{ref}"], repo, check=False).stdout.splitlines()
+        files = git(["diff", "--name-only", f"{rec['base']}..{ref}"], repo, check=False).stdout.splitlines()
+    changed = report.get("changed_files", receipt.get("changed_files"))
+    if isinstance(changed, list):
+        files = [x["path"] if isinstance(x, dict) else str(x) for x in changed] or files
+    return dict(job=job, round=receipt.get("round"), review_state=review.get("review_state"),
+                outcome=report.get("outcome"), checks=report.get("checks"), head=receipt.get("head"),
+                summary=report.get("summary", ""), commits=commits, files=files,
+                decisions=report.get("decisions") or [], unfinished=report.get("unfinished") or [])
+
+
+def context_pack(cfg, uid, jobs):
+    return context_packs.build([context_source(cfg, uid, job) for job in dict.fromkeys(jobs)])
+
+
 def cmd_plan(a, cfg):
     uid = require_user()
     project = a.project
@@ -1644,6 +1694,106 @@ def cmd_plan(a, cfg):
         extra = f" 等待 {'、'.join(row['blocked_by'])}" if row["blocked_by"] else ""
         jobs = f" 派单 {'、'.join(row['jobs'])}" if row["jobs"] else ""
         print(f"{row['id']} [{row['state']}] {row['title']}{extra}{jobs}")
+
+
+def gate_choose(a, cfg, project, uid):
+    """返回 (目标机名, 选择理由)。只用全量测试（test_tier=full）的成功历史，挑最快且有空闲重命令名额的机器。"""
+    if a.host:
+        return a.host, f"--host 指定 {a.host}"
+    records = [rec for rec in all_jobs() if rec.get("user_id") in (None, "", uid) and rec.get("test_tier") == "full"]
+    rows = timings.history(STATE, records, project=project, kind="test")
+    medians = timings.median_body_by_host(rows, success_only=True)
+    hosts = {h["name"]: h for h in cfg.hosts()}
+    ranked = sorted((seconds, name) for name, seconds in medians.items() if name in hosts)
+    if not ranked:
+        default = cfg.cp["defaults"].get("host") if cfg.cp.has_section("defaults") else None
+        if not default or default == "auto":
+            die("没有全量测试历史，且未配置默认目标机；请用 --host 指定，或在 [defaults] 设置 host。", 4)
+        return default, "无数据，用默认目标机"
+    skipped = []
+    for seconds, name in ranked:
+        info = probe(hosts[name])
+        used = num(info.get("heavy")) or 0
+        if not assess(hosts[name], info) and used < int(hosts[name]["max_heavy"]):
+            reason = f"历史全量测试中位耗时 {seconds:g}s，最快且有空闲重命令名额"
+            if skipped:
+                reason = f"历史全量测试中位耗时 {seconds:g}s；更快的 {'、'.join(skipped)} 满载或不可用"
+            return name, reason
+        skipped.append(f"{name}({seconds:g}s)")
+    die(f"有历史的目标机均无空闲重命令名额或不可用（{'、'.join(skipped)}）；未派出。", 3)
+
+
+def cmd_gate(a, cfg):
+    """合入前门禁：对指定提交在选定目标机跑一次全量测试，复用 run 的派单、排队与回执路径。"""
+    uid = require_user()
+    repo = local_repo(get_dir(a))
+    project = a.project or project_name(repo)[0]
+    sha = git(["rev-parse", "--verify", a.ref + "^{commit}"], repo).stdout.strip()
+    host, reason = gate_choose(a, cfg, project, uid)
+    print(f"gate: 目标机 {host}（{reason}）；被测提交 {sha[:10]}")
+    values = dict(force_host=False, tag=[], include=[], branch=None, wip=False, timeout=None, initiator_session=None)
+    values.update(vars(a))
+    values.update(test=False, test_full=True, agent=None, cmd=None, prompt_file=None, heavy=True,
+                  model=None, effort=None, gate={"ref": a.ref, "commit": sha})
+    run_args = argparse.Namespace(**values)
+    run_args.host = host
+    run_args.name = a.name or "gate"
+    cmd_run(run_args, cfg)
+
+
+def line_facts(cfg, rec):
+    """接线判定要用的目标机与验收事实；全部只读，读不到按缺失处理。"""
+    facts = dict(state=None, review_state=None, session=None, head=None)
+    try:
+        snapshot = job_states(cfg, [rec]).get(rec["job"], {})
+        facts["state"] = snapshot.get("state")
+        facts["review_state"] = reviews.read(STATE, rec, rec["rounds"])["review_state"]
+        if facts["review_state"] == "accepted":
+            receipt = messages.read_json(result_path(rec, rec["rounds"])) or queries(cfg).result(rec, rec["rounds"])
+            facts["head"] = (receipt or {}).get("head")
+        host = job_host(cfg, rec)
+        facts["session"] = rec.get("receiver_session") or find_session(
+            host, rec, rec.get("agent_config") or cfg.agent(rec["agent"]))
+    except (Exception, SystemExit):
+        pass
+    return facts
+
+
+def line_wiring(cfg, a, uid, owner, rec, item, include_paths):
+    """判定本次派单能否作为 rec 所在线的新工作项：(可接线, 原因, 基线)。只读，供 run 自动接线与后续 suggest 复用。"""
+    facts = line_facts(cfg, rec)
+    request = dict(uid=uid, owner=owner, agent=a.agent, model=a.model, permission=getattr(a, "permission_mode", None),
+                   include=include_paths, wip=a.wip, branch=a.branch, host=a.host, item=item,
+                   enabled=cfg.line_enabled())
+    ok, reason = workline.decide(rec, request, facts)
+    return ok, reason, facts.get("head")
+
+
+def line_wire(a, cfg, uid, owner, plan_store, item, after, include_paths, prompt):
+    """line 模式：满足严格接线条件就把本工作项作为前序派单的新轮次追加，返回 True；否则打印原因返回 False。"""
+    previous, reason = workline.predecessor(plan_store.read(), item, after)
+    if previous is None:
+        print(f"工作线未接线：{reason}；按默认方式派出。")
+        return False
+    try:
+        with JobLock(STATE, previous):
+            rec = load_job(previous)
+            ok, reason, base = line_wiring(cfg, a, uid, owner, rec, item, include_paths)
+            if not ok:
+                print(f"工作线未接线：{reason}；按默认方式派出。")
+                return False
+            resume_args = argparse.Namespace(
+                job=previous, agent=None, session=None, host=None, model=a.model, effort=a.effort,
+                timeout=a.timeout, force_host=a.force_host, permission_mode=getattr(a, "permission_mode", None),
+                prompt_file=None, new_context=False, retry_after_repair=None, initiator_session=owner)
+            resume_job(resume_args, cfg, rec, prompt=prompt, line_item=dict(item=item, base=base),
+                       before_launch=lambda: plan_store.attach_job(item, previous, after))
+    except JobBusy:
+        die("round_in_progress: round in progress; another operation holds the job lock; retry after it finishes", 4)
+    line = rec["line"]
+    print(f"工作线 {line['name']}：工作项 {item} 接入 {previous}（分支 {rec['branch']}，权限档位 "
+          f"{rec.get('permission_mode') or '默认'}，基线 {base[:10]}）")
+    return True
 
 
 def cmd_run(a, cfg):
@@ -1712,6 +1862,10 @@ def cmd_run(a, cfg):
         prompt = sys.stdin.read() if a.prompt_file == "-" else Path(a.prompt_file).read_text(encoding="utf-8")
     elif permission:
         die("--permission-mode 只用于代理派单。", 4)
+    if getattr(a, "context_from", None):
+        if not a.agent:
+            die("--context-from 只用于代理派单。", 4)
+        prompt = context_pack(cfg, uid, a.context_from) + "\n" + prompt
 
     include_paths = []
     missing = []
@@ -1725,6 +1879,11 @@ def cmd_run(a, cfg):
             die(f"--include 路径必须位于仓库内：{value}（仓库根目录：{repo}）", 4)
     if missing:
         die("--include 缺少以下路径（相对仓库根目录解析）：\n  " + "\n  ".join(missing), 4)
+    if a.dispatch_mode == "line":
+        if not plan_item:
+            print("工作线未接线：line 模式需要 --plan-item；按默认方式派出。")
+        elif line_wire(a, cfg, uid, owner, plan_store, plan_item, after, include_paths, prompt):
+            return
     sha = git(["rev-parse", "--verify", a.ref + "^{commit}"], repo).stdout.strip()
     source = git(["symbolic-ref", "--quiet", "HEAD"], repo, check=False)
     source_branch = source.stdout.strip()[len("refs/heads/"):] if source.returncode == 0 else None
@@ -1788,6 +1947,8 @@ def cmd_run(a, cfg):
                "handoff_version": 1, "initiator_session": owner, "test": bool(a.test or test_full),
                "test_tier": ("full" if test_full or not proj.get("test_quick") else "quick") if (a.test or test_full) else None,
                "regenerable_paths": slim.parse_paths(proj.get("regenerable_paths", ""))}
+        if getattr(a, "gate", None):
+            rec["gate"] = a.gate
         if plan_item:
             rec["plan_item"] = plan_item
         rec["round_prompts"] = {"1": prompt}
@@ -2227,7 +2388,7 @@ def cmd_resume(a, cfg):
     resume_job(a, cfg, rec)
 
 
-def resume_job(a, cfg, rec, *, prompt=None, before_launch=None, rollback_stack=None):
+def resume_job(a, cfg, rec, *, prompt=None, before_launch=None, rollback_stack=None, line_item=None):
     if getattr(a, "agent", None) and a.agent != rec.get("agent"):
         die("harness_change_not_allowed: 续跑不能换 harness；请另派一单。", 4)
     require_user()
@@ -2289,6 +2450,10 @@ def resume_job(a, cfg, rec, *, prompt=None, before_launch=None, rollback_stack=N
     rec["permission_mode"] = permission
     rec["receiver_session"] = session
     rec["rounds"] += 1
+    if line_item:
+        workline.start_item(rec, line_item["item"], rec["rounds"], line_item["base"])
+    else:
+        workline.note_round(rec, rec["rounds"])
     rec["session"] = session
     rec["model"] = a.model or rec.get("model")
     rec["effort"] = a.effort or rec.get("effort")
@@ -3348,6 +3513,8 @@ def main(argv=None, *, forwarded=None):
     p.add_argument("--project", help="project name (default: name of the origin repository)")
     p.add_argument("--workdir", help="临时覆盖目标机的工作根目录（默认读取 host 配置的 workdir）")
     p.add_argument("--include", action="append", default=[], help="extra path inside repository to copy, relative to repository root (repeatable)")
+    p.add_argument("--context-from", action="append", default=[], metavar="JOB",
+                   help="把前序派单的上下文包放在提示词前面（可重复；须是本用户 ID 且已有回执）")
     p.add_argument("--model")
     p.add_argument("--effort")
     p.add_argument("--permission-mode", choices=list(agents.AGY_PERMISSIONS),
@@ -3396,6 +3563,13 @@ def main(argv=None, *, forwarded=None):
     p.add_argument("--into", help="合入目标 REF；默认各 job 的 source_branch")
     p.add_argument("--project", help="限定项目；未指定时 --unmerged 在当前仓库内筛选")
     p.set_defaults(fn=cmd_status)
+
+    p = sub.add_parser("gate", parents=[repo_parser], help="合入前门禁：对指定提交跑一次全量测试（按历史耗时自动选目标机）")
+    p.add_argument("ref", help="被测提交")
+    p.add_argument("--host", help="指定目标机，覆盖自动选择")
+    p.add_argument("--project", help="project name (default: name of the origin repository)")
+    p.add_argument("--timeout", type=int, help="seconds before the job is killed")
+    p.set_defaults(fn=cmd_gate)
 
     p = sub.add_parser("timings", help="按项目与目标机查询各轮次 setup 与主体耗时（读本地已保存回执）")
     p.add_argument("--project")

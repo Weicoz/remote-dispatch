@@ -33,7 +33,23 @@ harness = codex
 ## 派单模式
 
 `dispatch_mode` 取值 `suggest`（默认）、`line`、`ticket`，优先级为命令行 `--dispatch-mode` >
-会话默认值 > `[defaults] dispatch_mode`。本版只做取值和存取，接线行为见后续票据。
+会话默认值 > `[defaults] dispatch_mode`。取值为 `line` 时的接线行为见下节；`suggest`、`ticket` 本版不接线。
+
+### 工作线接线（`line` 模式）
+
+`run --plan-item <新工作项>` 在 `line` 模式下判断能否接入前序派单所在的线（前序派单取 `--after`、待派登记里的 `after`
+与依赖工作项最后一个派单，必须唯一）。全部满足才接线，新工作项作为同一派单、worktree、分支的新轮次追加：
+
+- 前序派单有交接协议版本、属于同一用户 ID 与发起会话、worktree 在且不在运行，最新一轮已验收通过且回执有 `head`；
+- harness、模型、权限档位、`--include` 与线一致；不带 `--wip`；不指定 `--branch`，或等于线分支；`--host` 不指定或等于线所在目标机；
+- `[features] line` 未设为 false（已有线不受此项限制）。
+
+任一不满足，按默认方式派单并输出「工作线未接线：原因」。接线时打印线名、分支、权限档位和基线。
+同一线同一时间只有一个运行中的轮次，沿用派单级文件锁；锁被占用时退出码 4。
+派单记录的 `line` 字段含 `items`（工作项到轮次列表）、`bases`（工作项开始时的基线）与 `current`；
+`RD_BASE` 在线上取所属工作项的基线（上一个工作项验收轮回执的 `head`），第一个工作项仍取派单基线。
+打回只续跑当前工作项，新轮次记入同一工作项。本版会话沿用当前会话。
+判定集中在 `rd_line.decide`，由 `cli.line_wiring` 收集事实后调用，后续 `suggest` 复用。
 
 ```sh
 rdispatch session-default <会话> --dispatch-mode line
