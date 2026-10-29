@@ -2238,10 +2238,113 @@ def disk_low(host):
     return free is not None and free < float(host["min_free_disk_gb"])
 
 
+# 回收阻塞原因的稳定枚举值；可回收时 code 为 "ok"。新增值必须同步 docs/cache-retention.md。
+BLOCK_RUNNING = "running"
+BLOCK_PREPARING = "preparing"
+BLOCK_UNREACHABLE = "unreachable"
+BLOCK_NOT_FINISHED = "not_finished"
+BLOCK_SOURCE_MISSING = "source_missing"
+BLOCK_UNVERIFIABLE = "unverifiable"
+BLOCK_ORPHAN = "worktree_orphan"
+BLOCK_NOT_FETCHED = "not_fetched"
+BLOCK_NOT_MERGED = "not_merged"
+BLOCK_INTO_REQUIRED = "into_required"
+BLOCK_REF_INVALID = "ref_invalid"
+BLOCK_RECEIPT_PENDING = "receipt_pending"
+BLOCK_DIRTY = "uncommitted"
+BLOCK_PINNED = "pinned"
+BLOCK_RETENTION = "retention_not_expired"
+RECLAIM_OK = "ok"
+
+
+def merge_block_code(reason):
+    """把 merge_check 的原因文本归入枚举值。"""
+    for prefix, code in (("未取回", BLOCK_NOT_FETCHED), ("无法核验", BLOCK_UNVERIFIABLE), ("未合入", BLOCK_NOT_MERGED),
+                         ("需指定 --into", BLOCK_INTO_REQUIRED), ("REF 不存在", BLOCK_REF_INVALID)):
+        if reason.startswith(prefix):
+            return code
+    return BLOCK_UNVERIFIABLE
+
+
+def reclaim_check(cfg, rec, snapshot, host, *, single=False, force=False, a=None, into=None, mode="merged"):
+    """回收安全条件的唯一判定点，单个 clean 与批量清理共用。
+
+    返回 (code, detail, head, reasons)：code 为 None 表示安全条件全部满足。
+    single 对应 `rdispatch clean JOB`（可被 force 跳过部分检查）；批量按 mode 区分 merged / expired。
+    reasons 是 merge_check 的原文，供保留期分级使用。"""
+    state = snapshot.get("state")
+    unlaunched = rec.get("dispatch_state") in ("preparing", "preparation_failed")
+    if single:
+        if state == "running" or (state == "starting" and not unlaunched):
+            return BLOCK_RUNNING, "the job is still running; rdispatch stop it first", None, []
+        if state == "unreachable":
+            return BLOCK_UNREACHABLE, f"{host['name']} is unreachable; nothing was removed", None, []
+        if rec.get("handoff_version") and not force and not unlaunched:
+            require_initiator(rec, a)
+            receipt = collect_result(cfg, rec, snapshot)
+            if not receipt or delivery(rec, receipt) != "received":
+                return BLOCK_RECEIPT_PENDING, "先用 rdispatch result 收取结果，再用 rdispatch ack 确认；未交付回执不清理。", None, []
+        if state == "missing" or force:
+            return None, "", None, []
+        j, b = rec["job"], rec["branch"]
+        if host["platform"] == "windows":
+            info = native.request(host, "clean-check", {"job": j})
+            orphan, dirty, head = False, str(info["dirty"]), info["head"]
+        else:
+            w = f'"$ROOT/wt/{messages.job_id(j)}"'
+            r = ssh(host, f'if [ ! -e {w} ] || [ "$(git -C {w} rev-parse --show-toplevel 2>/dev/null)" = "$(cd {w} && pwd -P)" ]; then '
+                          f'echo "dirty=$(git -C {w} status --porcelain 2>/dev/null | wc -l | tr -d " ")"; '
+                          f'echo "head=$(git -C {w} rev-parse HEAD 2>/dev/null)"; else echo orphan; fi', check=False)
+            fields = dict(line.partition("=")[::2] for line in (r.stdout or "").splitlines())
+            orphan = "orphan" in fields or r.stdout.strip() == "orphan"
+            dirty, head = fields.get("dirty", "0"), fields.get("head", "")
+        if orphan:
+            return BLOCK_ORPHAN, (f"{j} 的 worktree 目录已不在 git worktree 登记中或无法读取，无法核验其中是否有未提交内容。"
+                                  "确认可以丢弃后用 --force。"), head, []
+        if dirty.strip() != "0":
+            return BLOCK_DIRTY, f"{dirty.strip()} uncommitted file(s) in the remote worktree would be lost. Check them, or --force.", head, []
+        if not Path(rec["repo"]).is_dir():
+            return BLOCK_SOURCE_MISSING, f"源仓库不存在：{rec['repo']}；确认可以丢弃后用 --force。", head, []
+        have = git(["rev-parse", "-q", "--verify", f"refs/remotes/rd/{b}"], rec["repo"], check=False).stdout.strip()
+        if head and head != rec["base"] and head != have:
+            return BLOCK_NOT_FETCHED, "the job has commits you have not fetched. Run rdispatch fetch first, or --force.", head, []
+        return None, "", head, []
+    if state == "running":
+        return BLOCK_RUNNING, "任务运行中", None, []
+    if state == "starting" or rec.get("dispatch_state") == "preparing":
+        return BLOCK_PREPARING, "任务准备中或启动结果待核实", None, []
+    if state not in ("done", "dead"):
+        if state == "unreachable":
+            return BLOCK_UNREACHABLE, "连接不可达", None, []
+        return BLOCK_NOT_FINISHED, "未确认任务已结束", None, []
+    if not Path(rec["repo"]).is_dir():
+        return BLOCK_SOURCE_MISSING, f"源仓库不存在：{rec['repo']}", None, []
+    try:
+        head, paths = worktree_changes(host, rec)
+        reasons = merge_check(rec, head, into)
+    except (OSError, ValueError, SystemExit, subprocess.SubprocessError) as error:
+        return BLOCK_UNVERIFIABLE, f"核验或清理失败，保留未删除内容与登记：{error}", None, []
+    unsafe = [r for r in reasons if r.startswith(("未取回", "无法核验"))]
+    if unsafe or (reasons and mode == "merged"):
+        chosen = unsafe or reasons
+        return merge_block_code(chosen[0]), "；".join(chosen), head, reasons
+    try:
+        if pending_results(cfg, rec, snapshot):
+            return BLOCK_RECEIPT_PENDING, "结果回执待收取；先用 rdispatch result / rdispatch ack", head, reasons
+    except (OSError, ValueError, SystemExit, subprocess.SubprocessError) as error:
+        return BLOCK_UNVERIFIABLE, f"核验或清理失败，保留未删除内容与登记：{error}", head, reasons
+    included = rec.get("include_paths", [])
+    unexpected = [p for p in paths if not any(
+        item == "." or p == item or p.startswith(item.rstrip("/") + "/") for item in included)]
+    if unexpected:
+        return BLOCK_DIRTY, f"存在非 --include 路径的未提交内容：{unexpected!r}", head, reasons
+    return None, "", head, reasons
+
+
 def retention_verdict(rec, head, reasons, activity, hours, now):
-    """返回 (可回收, 说明)。只判断复用可能性；未取回、未提交等安全条件由调用方先行拦截。"""
+    """返回 (可回收, 说明, 阻塞码)。只判断复用可能性；未取回、未提交等安全条件由 reclaim_check 先行拦截。"""
     if rec.get("keep_until", 0) > now:
-        return False, "已用 rdispatch keep 钉住，到 " + time.strftime("%Y-%m-%d %H:%M", time.localtime(rec["keep_until"]))
+        return False, "已用 rdispatch keep 钉住，到 " + time.strftime("%Y-%m-%d %H:%M", time.localtime(rec["keep_until"])), BLOCK_PINNED
     if not rec.get("agent"):
         kind, label = "command", "命令任务不能续跑"
     elif head == rec["base"] or not reasons:
@@ -2250,52 +2353,40 @@ def retention_verdict(rec, head, reasons, activity, hours, now):
         kind, label = "unmerged", "已取回未合入（" + "；".join(reasons) + "）"
     age = (now - activity) / 3600
     if age < hours[kind]:
-        return False, f"{label}，保留期 {hours[kind]:g} 小时，还剩 {hours[kind] - age:.1f} 小时"
-    return True, f"{label}，最后确认于 {age:.1f} 小时前，超过保留期 {hours[kind]:g} 小时"
+        return False, f"{label}，保留期 {hours[kind]:g} 小时，还剩 {hours[kind] - age:.1f} 小时", BLOCK_RETENTION
+    return True, f"{label}，最后确认于 {age:.1f} 小时前，超过保留期 {hours[kind]:g} 小时", None
 
 
 def cmd_clean_batch(a, cfg, mode):
-    """--merged 只看合入；--expired 另按续跑可能性分级保留，过期才回收。两者共用同一组安全条件。"""
+    """--merged 只看合入；--expired 另按续跑可能性分级保留，过期才回收。两者共用 reclaim_check 的安全条件。"""
     if a.job or a.force or a.delete_branch or getattr(a, "discard_reports", False):
         die(f"--{mode} 不与 job、--force、--delete-branch 或 --discard-reports 混用。", 4)
+    as_json = getattr(a, "json", False)
+    if as_json and not getattr(a, "dry_run", False):
+        die("--json 只能与 --dry-run 一起使用。", 4)
     recs = scoped_jobs(a, cfg)
     if not recs:
-        print("no jobs.")
+        print("[]" if as_json else "no jobs.")
         return
     states = job_states(cfg, recs)
     hours = cfg.retention_hours() if mode == "expired" else None
     pressure = {}
     now = time.time()
+    rows = []
+
+    def report(j, code, text, line):
+        rows.append(dict(job=j, reclaimable=code == RECLAIM_OK, code=code, reason=text))
+        if not as_json:
+            print(line)
+
     for rec in recs:
         j = rec["job"]
         snapshot = states.get(j, {})
-        state = snapshot.get("state")
-        reason = None
-        if state == "running":
-            reason = "任务运行中"
-        elif state == "starting" or rec.get("dispatch_state") == "preparing":
-            reason = "任务准备中或启动结果待核实"
-        elif state not in ("done", "dead"):
-            reason = "连接不可达" if state == "unreachable" else "未确认任务已结束"
-        if reason:
-            print(f"skip {j}: {reason}")
-            continue
         try:
             host = job_host(cfg, rec)
-            head, paths = worktree_changes(host, rec)
-            reasons = merge_check(rec, head, getattr(a, "into", None))
-            unsafe = [r for r in reasons if r.startswith(("未取回", "无法核验"))]
-            if unsafe or (reasons and mode == "merged"):
-                print(f"skip {j}: {'；'.join(unsafe or reasons)}")
-                continue
-            if pending_results(cfg, rec, snapshot):
-                print(f"skip {j}: 结果回执待收取；先用 rdispatch result / rdispatch ack")
-                continue
-            included = rec.get("include_paths", [])
-            unexpected = [p for p in paths if not any(
-                item == "." or p == item or p.startswith(item.rstrip("/") + "/") for item in included)]
-            if unexpected:
-                print(f"skip {j}: 存在非 --include 路径的未提交内容：{unexpected!r}")
+            code, detail, head, reasons = reclaim_check(cfg, rec, snapshot, host, a=a, into=getattr(a, "into", None), mode=mode)
+            if code:
+                report(j, code, detail, f"skip {j} [{code}]: {detail}")
                 continue
             note = "reports 将保存，分支保留"
             if mode == "expired":
@@ -2303,19 +2394,22 @@ def cmd_clean_batch(a, cfg, mode):
                 if key not in pressure:
                     pressure[key] = disk_low(host)
                 limits = {k: min(v, RETENTION_LOW_DISK_HOURS[k]) for k, v in hours.items()} if pressure[key] else hours
-                expired, note = retention_verdict(rec, head, reasons, last_activity(rec), limits, now)
+                expired, note, code = retention_verdict(rec, head, reasons, last_activity(rec), limits, now)
                 if pressure[key]:
                     note += "；目标机磁盘不足，保留期已收紧"
                 if not expired:
-                    print(f"keep {j}: {note}")
+                    report(j, code, note, f"keep {j} [{code}]: {note}")
                     continue
             if getattr(a, "dry_run", False):
-                print(f"would clean {j} ({note})")
+                report(j, RECLAIM_OK, note, f"would clean {j} [{RECLAIM_OK}] ({note})")
             else:
                 print(f"clean {j}: {note}")
                 remove_job(a, rec, host)
         except (OSError, ValueError, SystemExit, subprocess.SubprocessError) as error:
-            print(f"skip {j}: 核验或清理失败，保留未删除内容与登记：{error}")
+            text = f"核验或清理失败，保留未删除内容与登记：{error}"
+            report(j, BLOCK_UNVERIFIABLE, text, f"skip {j} [{BLOCK_UNVERIFIABLE}]: {text}")
+    if as_json:
+        print(json.dumps(rows, ensure_ascii=False, indent=2))
 
 
 def cmd_clean_merged(a, cfg):
@@ -2348,39 +2442,11 @@ def cmd_clean(a, cfg):
         die("请指定 job；--into、--dry-run 和范围筛选需要 --merged 或 --expired。", 4)
     rec = load_job(a.job)
     host = job_host(cfg, rec)
-    j, b = rec["job"], rec["branch"]
+    j = rec["job"]
     st = remote_state(host, [j]).get(j, {})
-    unlaunched = rec.get("dispatch_state") in ("preparing", "preparation_failed")
-    if st.get("state") == "running" or (st.get("state") == "starting" and not unlaunched):
-        die("the job is still running; rdispatch stop it first")
-    if st.get("state") == "unreachable":
-        die(f"{host['name']} is unreachable; nothing was removed")
-    if rec.get("handoff_version") and not a.force and not unlaunched:
-        require_initiator(rec, a)
-        receipt = collect_result(cfg, rec, st)
-        if not receipt or delivery(rec, receipt) != "received":
-            die("先用 rdispatch result 收取结果，再用 rdispatch ack 确认；未交付回执不清理。", 4)
-    if st.get("state") != "missing" and not a.force:
-        orphan = False
-        if host["platform"] == "windows":
-            info = native.request(host, "clean-check", {"job": j})
-            dirty, head = str(info["dirty"]), info["head"]
-        else:
-            w = f'"$ROOT/wt/{messages.job_id(j)}"'
-            r = ssh(host, f'if [ ! -e {w} ] || [ "$(git -C {w} rev-parse --show-toplevel 2>/dev/null)" = "$(cd {w} && pwd -P)" ]; then '
-                          f'echo "dirty=$(git -C {w} status --porcelain 2>/dev/null | wc -l | tr -d " ")"; '
-                          f'echo "head=$(git -C {w} rev-parse HEAD 2>/dev/null)"; else echo orphan; fi', check=False)
-            fields = dict(line.partition("=")[::2] for line in (r.stdout or "").splitlines())
-            orphan = "orphan" in fields or r.stdout.strip() == "orphan"
-            dirty, head = fields.get("dirty", "0"), fields.get("head", "")
-        if orphan:
-            die(f"{j} 的 worktree 目录已不在 git worktree 登记中或无法读取，无法核验其中是否有未提交内容。"
-                "确认可以丢弃后用 --force。")
-        if dirty.strip() != "0":
-            die(f"{dirty.strip()} uncommitted file(s) in the remote worktree would be lost. Check them, or --force.")
-        have = git(["rev-parse", "-q", "--verify", f"refs/remotes/rd/{b}"], rec["repo"], check=False).stdout.strip()
-        if head and head != rec["base"] and head != have:
-            die("the job has commits you have not fetched. Run rdispatch fetch first, or --force.")
+    code, detail, _, _ = reclaim_check(cfg, rec, st, host, single=True, force=a.force, a=a)
+    if code:
+        die(detail, 4 if code == BLOCK_RECEIPT_PENDING else 1)
     remove_job(a, rec, host)
 
 
@@ -2968,6 +3034,7 @@ def main(argv=None, *, forwarded=None):
     p.add_argument("--expired", action="store_true", help="同 --merged 的安全条件，再按续跑可能性分级保留：命令任务确认即回收、已合入 24 小时、未合入 7 天；见 [retention]")
     p.add_argument("--into", help="合入目标 REF；默认各 job 的 source_branch")
     p.add_argument("--dry-run", action="store_true", help="只列出 --merged / --expired 计划，不删除")
+    p.add_argument("--json", action="store_true", help="与 --dry-run 合用：输出每个派单的 job、reclaimable、code、reason")
     p.add_argument("--project", help="限定项目；未指定时 --merged / --expired 在当前仓库内筛选")
     p.add_argument("--delete-branch", action="store_true", help="also delete the job branch (worker and origin)")
     p.add_argument("--force", action="store_true", help="discard uncommitted or unfetched work")
