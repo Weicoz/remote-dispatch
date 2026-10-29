@@ -1,5 +1,9 @@
 # 变更记录
 
+## 未发布
+
+- **缓存目录**：目标机配置新增 `cache_dirs`，派单时注入各生态缓存目录的环境变量；目录按用户 ID 分开、放在 worktree 之外，落在 worktree 内的声明加载配置时报错。详见 `docs/worker-setup.md`。
+
 ## 0.3.1 — 2026-10-28
 
 - **新增 `rdispatch service`**：`install | uninstall | restart | status` 用用户级 LaunchAgent 托管常驻 serve，开机自启、崩溃拉起，日志写状态目录；`status` 报告 launchd 加载状态、进程、socket、包版本、合同版本与最近一次配置重载结果，支持 `--json`，未安装时非零退出并提示安装。只支持 macOS，详见 `docs/serve.md`。

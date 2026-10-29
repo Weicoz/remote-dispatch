@@ -58,6 +58,10 @@ def validate(values):
             raise InvalidField("platform")
         if not values["workdir"].startswith(("/", "~", "$HOME")):
             raise InvalidField("workdir")
+    try:
+        cli.parse_cache_dirs(values.get("cache_dirs", ""), values["workdir"])
+    except ValueError:
+        raise InvalidField("cache_dirs") from None
     for field in cli.DEFAULTS:
         if field.startswith(("max_", "min_", "warn_", "swap_")) or field == "timeout":
             try:

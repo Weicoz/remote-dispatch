@@ -15,8 +15,10 @@ import functools
 import hashlib
 import json
 import math
+import ntpath
 import os
 from pathlib import Path
+import posixpath
 import re
 import secrets
 import shlex
@@ -55,6 +57,9 @@ DEFAULTS = {
     "path": "$HOME/.local/bin:$HOME/.kimi-code/bin:/opt/homebrew/bin:/usr/local/bin",
     "ssh_opts": "-o BatchMode=yes -o ConnectTimeout=8",
     "env_file": "",
+    # 缓存目录声明：NAME=目录，多项用分号分隔。相对目录落在用户根目录的 cache/ 下；
+    # 绝对目录必须含 {user}（展开为用户 ID），且不得落在任何 worktree 内。空表示不注入。
+    "cache_dirs": "",
     "codex_auth_file": "",
     "dsh_auth_file": "",
     "agy_auth_file": "~/.gemini/antigravity-cli/antigravity-oauth-token",
@@ -104,6 +109,7 @@ export RD_LOCK_DIR=@@SHARED_ROOT@@/locks RD_MAX_HEAVY=@@MAX_HEAVY@@
 export RD_PROMPT="$RD_JOB_DIR/prompt.r$RD_ROUND.md"
 @@REPORT_ENV@@
 export PATH="$ROOT/bin:$PATH"
+@@CACHE_ENV@@
 @@ENV_FILE@@
 @@IDENTITY@@
 @@KILLTREE@@
@@ -289,6 +295,10 @@ class Config:
             self.fail(f"[host:{name}] 本机派发只支持 POSIX；Windows 目标必须通过 SSH。")
         if h["ssh"] == "local" and not h["workdir"].startswith(("/", "~", "$HOME")):
             self.fail(f"[host:{name}] 本机目标（ssh 为 local）的 workdir 必须是绝对路径或 ~ 开头；相对路径会随发起目录漂移。")
+        try:
+            parse_cache_dirs(h.get("cache_dirs", ""), h["workdir"])
+        except ValueError as error:
+            self.fail(f"[host:{name}] cache_dirs {error}", 4)
         h["name"] = name
         h["probe_agent"] = getattr(self, "probe_agent", "codex")
         return h
@@ -1261,7 +1271,7 @@ def build_run_script(host, rec, round_no, timeout):
     subs = {"JOB": rec["job"], "ROUND": str(round_no), "PATH": host["path"], "ROOT": root_expr(host),
             "MAX_HEAVY": host["max_heavy"], "ENV_FILE": env_file, "KILLTREE": KILLTREE,
             "TIMEOUT": str(int(timeout)), "PUSH": push, "SHARED_ROOT": root_expr(shared),
-            "IDENTITY": identity, "EXEC": command, "REPORT_ENV": report_env, "REPORT_FINISH": report_finish}
+            "CACHE_ENV": cache_env_script(host, rec.get("user_id")), "IDENTITY": identity, "EXEC": command, "REPORT_ENV": report_env, "REPORT_FINISH": report_finish}
     text = RUN_TEMPLATE
     for k, v in subs.items():
         text = text.replace(f"@@{k}@@", v)
@@ -1333,7 +1343,8 @@ def launch(host, rec, round_no, cmd_text, prompt_text, timeout):
         put_file(host, f"jobs/{j}/reports/dispatch.r{round_no}.json", json.dumps(dict(job=j, round=round_no, initiator_session=rec.get("initiator_session"))), "600")
     if host["platform"] == "windows":
         spec = dict(rec, round=round_no, timeout=int(timeout), max_heavy=int(host["max_heavy"]),
-                    auth_file=host["codex_auth_file"], env_file=host["env_file"])
+                    auth_file=host["codex_auth_file"], env_file=host["env_file"],
+                    cache_env=cache_env(host, rec.get("user_id")))
         native.request(host, "launch", {"spec": spec, "prompt": prompt_text})
         return
     if rec.get("profile"):
@@ -1356,6 +1367,82 @@ def launch(host, rec, round_no, cmd_text, prompt_text, timeout):
     else:
         die(f"[host:{host['name']}] launcher must be nohup or tmux")
     ssh(host, f'rm -f "$ROOT/jobs/{j}/exit_code" "$ROOT/jobs/{j}/pid"; {start}')
+
+
+CACHE_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+
+
+def _cache_norm(path):
+    path = path.replace("\\", "/")
+    if path.startswith("$HOME"):
+        path = "~" + path[5:]
+    return path
+
+
+def _cache_absolute(path):
+    return path.startswith(("/", "~")) or bool(re.match(r"[A-Za-z]:/", path))
+
+
+def parse_cache_dirs(text, root):
+    """解析 cache_dirs；返回 [(环境变量名, 目录, 是否绝对)]。声明不合法或落在 worktree 内时抛 ValueError。
+
+    root 是用户 ID 级（或共享）根目录；worktree 位于 root/wt、root/users/<ID>/wt 下。
+    """
+    items, seen = [], set()
+    for part in (text or "").split(";"):
+        part = part.strip()
+        if not part:
+            continue
+        name, sep, path = part.partition("=")
+        name, path = name.strip(), path.strip()
+        if not sep or not CACHE_NAME.fullmatch(name) or not path:
+            raise ValueError(f"项必须是 NAME=目录：{part}")
+        if name in seen:
+            raise ValueError(f"环境变量重复声明：{name}")
+        seen.add(name)
+        norm = _cache_norm(path)
+        if ".." in norm.split("/"):
+            raise ValueError(f"{name} 的目录不得含 ..：{path}")
+        absolute = _cache_absolute(norm)
+        if absolute and "{user}" not in norm:
+            raise ValueError(f"{name} 的绝对目录必须含 {{user}}，按用户 ID 分开：{path}")
+        if absolute:
+            expanded = posixpath.normpath(norm.replace("{user}", "user"))
+            base = posixpath.normpath(_cache_norm(root))
+            if re.match(r"[A-Za-z]:/", base):
+                expanded, base = expanded.lower(), base.lower()
+            if expanded.startswith(base.rstrip("/") + "/"):
+                rest = expanded[len(base.rstrip("/")) + 1:].split("/")
+                if rest[0] == "wt" or (rest[0] == "users" and len(rest) > 2 and rest[2] == "wt"):
+                    raise ValueError(f"{name} 的目录落在 worktree 内：{path}")
+        items.append((name, path, absolute))
+    return items
+
+
+def cache_env(host, uid):
+    """返回 {环境变量名: 目录}。相对目录在用户根目录 cache/ 下；Windows 用反斜杠路径。"""
+    items = parse_cache_dirs(host.get("cache_dirs", ""), host["workdir"])
+    windows = host["platform"] == "windows"
+    values = {}
+    for name, path, absolute in items:
+        path = path.replace("{user}", uid or "shared")
+        if absolute:
+            values[name] = path
+        elif windows:
+            values[name] = ntpath.join(host["workdir"], "cache", *path.replace("\\", "/").split("/"))
+        else:
+            values[name] = host["workdir"].rstrip("/") + "/cache/" + path
+    return values
+
+
+def cache_env_script(host, uid):
+    """POSIX 运行脚本中的缓存环境变量与目录创建。"""
+    lines = []
+    for name, path, absolute in parse_cache_dirs(host.get("cache_dirs", ""), host["workdir"]):
+        path = path.replace("{user}", uid or "shared")
+        target = worker_path(path) if absolute else '"$ROOT"/cache/' + shlex.quote(path)
+        lines.append(f'export {name}={target}; mkdir -p "${name}" 2>/dev/null || true')
+    return "\n".join(lines)
 
 
 def worker_path(path):
@@ -1530,6 +1617,10 @@ def cmd_run(a, cfg):
             host["shared_workdir"] = custom_root
             if is_local(host) and not custom_root.startswith(("/", "~", "$HOME")):
                 die("本机目标的 --workdir 必须是绝对路径或 ~ 开头。", 4)
+            try:
+                parse_cache_dirs(host.get("cache_dirs", ""), custom_root)
+            except ValueError as error:
+                die(f"[host:{host['name']}] cache_dirs {error}", 4)
         check_controller(host, uid)
         if host["platform"] == "windows" and a.test:
             a.cmd = proj.get("test_windows", a.cmd)
