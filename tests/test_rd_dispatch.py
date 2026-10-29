@@ -791,6 +791,71 @@ class DispatchTests(unittest.TestCase):
         rd.save_job(record)
         return record
 
+    def replayed_receipt(self, kind, fixture, model=None):
+        """假 launch 之后回放录制输出到 stdout 日志，再经 CLI 的 result 取回执。"""
+        record = self.dispatch(model=model)
+        record["agent"] = kind
+        rd.save_job(record)
+        log = self.worker / "jobs" / record["job"] / f"stdout.r{record['rounds']}.log"
+        log.write_text((Path(__file__).parent / "fixtures" / "usage" / fixture).read_text(encoding="utf-8"), encoding="utf-8")
+        return json.loads(self.capture(rd.cmd_result, argparse.Namespace(
+            job=record["job"], round=None, summary=False, initiator_session=None))), record
+
+    def test_receipt_records_model_and_usage_for_each_harness(self):
+        unrecorded = "未记录"
+        cases = (
+            ("codex", "codex.jsonl", "gpt-x", "gpt-x", dict(input=315, cache_read=24448, cache_write=unrecorded, output=122)),
+            ("claude", "claude.jsonl", None, "claude-sonnet-5-5", dict(input=12, cache_read=51000, cache_write=3400, output=820)),
+            ("kimi", "kimi.jsonl", None, "kimi-k2", dict(input=900, cache_read=700, cache_write=50, output=120)),
+            ("agy", "agy.jsonl", None, "gemini-3-pro", dict(input=1500, cache_read=1000, cache_write=0, output=300)),
+            ("dsh", "dsh.jsonl", None, "deepseek-v4", dict(input=500, cache_read=1500, cache_write=unrecorded, output=250)),
+        )
+        for kind, fixture, requested, model, usage in cases:
+            with self.subTest(kind):
+                receipt, _ = self.replayed_receipt(kind, fixture, requested)
+                self.assertEqual((receipt["model"], receipt["usage"]), (model, usage))
+
+    def test_harness_output_model_wins_over_dispatch_parameter(self):
+        receipt, _ = self.replayed_receipt("claude", "claude.jsonl", "requested-model")
+        self.assertEqual(receipt["model"], "claude-sonnet-5-5")
+
+    def test_missing_or_broken_usage_is_unrecorded_and_dispatch_completes(self):
+        for kind, fixture, requested, model in (("claude", "claude-truncated.jsonl", None, "claude-sonnet-5-5"),
+                                                ("codex", "codex-nousage.jsonl", "gpt-x", "gpt-x"),
+                                                ("codex", "codex-nousage.jsonl", None, "未记录")):
+            with self.subTest(fixture=fixture, requested=requested):
+                receipt, _ = self.replayed_receipt(kind, fixture, requested)
+                self.assertEqual((receipt["execution_state"], receipt["model"], receipt["usage"]),
+                                 ("done", model, "未记录"))
+
+    def test_command_job_without_harness_is_unrecorded(self):
+        record = self.dispatch()
+        self.remote_head(record)
+        receipt = rd.collect_result(self.cfg, record, dict(state="done", round="1", exit="0"))
+        self.assertEqual((receipt["model"], receipt["usage"]), ("未记录", "未记录"))
+
+    def test_status_json_shows_model_and_usage_and_legacy_records_unrecorded(self):
+        _, record = self.replayed_receipt("claude", "claude.jsonl")
+        rd.collect_result(self.cfg, record, dict(state="done", round="1", exit="0"))
+        row = self.queried_job(record["job"])
+        self.assertEqual((row["model"], row["usage"]["cache_read"]), ("claude-sonnet-5-5", 51000))
+        legacy = self.dispatch(name="legacy")
+        row = self.queried_job(legacy["job"])
+        self.assertEqual((row["model"], row["usage"]), ("未记录", "未记录"))
+
+    def test_run_without_initiator_session_warns_on_stderr_but_dispatches(self):
+        with self.initiator_context({}, CODEX_THREAD_ID="", CLAUDE_CODE_SESSION_ID="", DSH_SESSION_ID="",
+                                    ANTIGRAVITY_CONVERSATION_ID=""), \
+             contextlib.redirect_stderr(io.StringIO()) as warning:
+            record = self.dispatch()
+        self.assertIsNone(record.get("initiator_session"))
+        self.assertIn("发起会话", warning.getvalue())
+
+    def test_run_with_initiator_session_does_not_warn(self):
+        with contextlib.redirect_stderr(io.StringIO()) as warning:
+            self.dispatch(initiator_session="sender")
+        self.assertNotIn("发起会话", warning.getvalue())
+
     def test_clean_expired_reclaims_command_jobs_once_acknowledged(self):
         record = self.dispatch()
         self.remote_head(record)
