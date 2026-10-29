@@ -3,7 +3,6 @@
 `rdispatch service` 只支持 macOS。路径与环境由调用方给出，测试才能在临时 HOME
 和 PATH 里的假 `launchctl` 下断言 plist 内容与调用序列，不碰真实 launchd。
 """
-import http.client
 import json
 import os
 from pathlib import Path
@@ -14,7 +13,7 @@ import time
 import tempfile
 
 from . import __version__
-from .rd_serve import SOCKET_NAME, VERSION_ROUTE, UnixHTTPConnection
+from .rd_serve import SOCKET_NAME, VERSION_ROUTE, ServeFailed, ServeUnavailable, serve_call
 
 
 LABEL = "io.github.weicoz.remote-dispatch.serve"
@@ -144,19 +143,11 @@ def jobs():
 
 def version(socket_path, timeout=5):
     """读 serve 的 /v1/version；不在线时返回 None，不抛错。"""
-    connection = UnixHTTPConnection(socket_path, timeout=timeout)
     try:
-        connection.connect()
-        connection.request("GET", VERSION_ROUTE)
-        response = connection.getresponse()
-        if response.status != 200:
-            return None
-        body = json.loads(response.read())
-        return body if isinstance(body, dict) else None
-    except (OSError, http.client.HTTPException, ValueError):
+        status, body = serve_call("GET", VERSION_ROUTE, timeout=timeout, socket_path=socket_path)
+    except (ServeUnavailable, ServeFailed):
         return None
-    finally:
-        connection.close()
+    return body if status == 200 and isinstance(body, dict) else None
 
 
 def status(path):

@@ -82,7 +82,15 @@ class UnixHTTPConnection(http.client.HTTPConnection):
 
 
 class ServeUnavailable(Exception):
-    """The local serve socket is absent or refused the connection."""
+    """Nothing was sent: the serve socket is absent, or the connection failed.
+
+    `absent` is true when serve is plainly not running (no socket, refused);
+    other connect errors leave serve's state unknown.
+    """
+
+    def __init__(self, message, absent=True):
+        super().__init__(message)
+        self.absent = absent
 
 
 class ServeFailed(Exception):
@@ -93,56 +101,45 @@ def serve_socket_path():
     return os.environ.get("RD_SERVE_SOCKET") or Path(cli.STATE) / SOCKET_NAME
 
 
-def serve_connection(timeout=None):
-    """Connect to the local serve socket; the caller owns the returned connection."""
-    if not hasattr(socket, "AF_UNIX"):
-        raise FileNotFoundError("Unix sockets are not supported")
-    connection = UnixHTTPConnection(serve_socket_path(), timeout=timeout)
-    try:
-        connection.connect()
-    except BaseException:
-        connection.close()
-        raise
-    return connection
+def serve_call(method, path, body=None, *, headers=None, timeout=None, socket_path=None):
+    """One request to the local serve socket; returns (status, parsed JSON).
 
-
-def admin_request(method, path, body=None, *, key=None, timeout=10):
-    """Call serve's local admin API; device and pairing state never live in the CLI."""
-    socket_path = serve_socket_path()
+    ServeUnavailable means nothing was sent (callers may fall back); ServeFailed
+    means the request may have been processed. `body` is bytes or a JSON value.
+    """
+    socket_path = socket_path or serve_socket_path()
+    if not hasattr(socket, "AF_UNIX") or not Path(socket_path).exists():
+        raise ServeUnavailable(f"serve socket 不可用（{socket_path}）")
+    connection = UnixHTTPConnection(socket_path, timeout=timeout)
     try:
-        connection = serve_connection(timeout)
-    except (FileNotFoundError, ConnectionRefusedError, NotADirectoryError):
-        raise ServeUnavailable(f"serve socket 不可用（{socket_path}）") from None
-    except OSError as error:
-        raise ServeUnavailable(f"无法连接 serve socket（{socket_path}）：{error}") from None
-    try:
-        headers = {}
-        payload = None
-        if body is not None:
-            payload = json.dumps(body, ensure_ascii=False).encode("utf-8")
-            headers["Content-Type"] = "application/json"
-        if key:
-            headers["Idempotency-Key"] = key
         try:
-            connection.request(method, path, payload, headers)
+            connection.connect()
+        except (FileNotFoundError, ConnectionRefusedError, NotADirectoryError):
+            raise ServeUnavailable(f"serve socket 不可用（{socket_path}）") from None
+        except OSError as error:
+            raise ServeUnavailable(f"无法连接 serve socket（{socket_path}）：{error}", absent=False) from None
+        headers = dict(headers or {})
+        if body is not None and not isinstance(body, bytes):
+            body = json.dumps(body, ensure_ascii=False).encode("utf-8")
+        if body is not None:
+            headers.setdefault("Content-Type", "application/json")
+        try:
+            connection.request(method, path, body, headers)
             response = connection.getresponse()
-            raw = response.read()
-            return response.status, json.loads(raw)
+            return response.status, json.loads(response.read())
         except (OSError, http.client.HTTPException, ValueError) as error:
             raise ServeFailed(f"serve 请求失败（{path}）：{error}") from None
     finally:
         connection.close()
 
 
+def admin_request(method, path, body=None, *, key=None, timeout=10):
+    """Call serve's local admin API; device and pairing state never live in the CLI."""
+    return serve_call(method, path, body, headers={"Idempotency-Key": key} if key else None, timeout=timeout)
+
+
 def forward(args, argv):
     """Only absence/refusal before sending permits direct CLI fallback."""
-    path = serve_socket_path()
-    if not hasattr(socket, "AF_UNIX") or not Path(path).exists():
-        return None
-    try:
-        connection = serve_connection()
-    except (FileNotFoundError, ConnectionRefusedError):
-        return None
     try:
         harness = cli.initiators.harness()
         request = dict(argv=argv, cwd=os.getcwd(), config=str(Path(cli.CONFIG).resolve()),
@@ -152,18 +149,18 @@ def forward(args, argv):
         body = json.dumps(request, ensure_ascii=False).encode("utf-8")
         if len(body) > MAX_REQUEST_BYTES:
             raise ValueError("cli_request_too_large: forwarded request exceeds 8 MiB")
-        connection.request("POST", "/_cli/v1", body, {"Content-Type": "application/json"})
-        response = connection.getresponse()
-        reply = json.loads(response.read())
-        if response.status != 200:
+        status, reply = serve_call("POST", "/_cli/v1", body)
+        if status != 200:
             raise ValueError("cli_forward_rejected: serve rejected the command; no direct retry")
         sys.stdout.write(reply["stdout"])
         sys.stderr.write(reply["stderr"])
         return reply["exit_code"]
-    except (OSError, http.client.HTTPException, ValueError, KeyError, TypeError) as error:
+    except ServeUnavailable as error:
+        if error.absent:
+            return None
         raise ValueError("cli_forward_failed: command may have run; check state before retrying") from error
-    finally:
-        connection.close()
+    except (OSError, http.client.HTTPException, ValueError, KeyError, TypeError, ServeFailed) as error:
+        raise ValueError("cli_forward_failed: command may have run; check state before retrying") from error
 
 
 def execute_cli():

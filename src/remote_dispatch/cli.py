@@ -13,7 +13,6 @@ import concurrent.futures
 import configparser
 import functools
 import hashlib
-import http.client
 import json
 import math
 import os
@@ -327,36 +326,18 @@ def config_lock():
 def serve_config_request(method, path, body=None):
     """Ask the running serve before falling back; only pre-send absence can fall back."""
     from .rd_host_config import config_digest
-    from .rd_serve import UnixHTTPConnection
-    socket_path = Path(os.environ.get("RD_SERVE_SOCKET") or Path(STATE) / "serve.sock")
-    if not hasattr(socket, "AF_UNIX") or not socket_path.exists():
-        return None
-    connection = UnixHTTPConnection(socket_path)
+    from .rd_serve import ServeFailed, ServeUnavailable, serve_call
+    headers = {"X-Rdispatch-Config-SHA256": config_digest(config_path())}
+    if method in ("POST", "PUT", "DELETE"):
+        headers["Idempotency-Key"] = uuid.uuid4().hex
     try:
-        try:
-            connection.connect()
-        except (FileNotFoundError, ConnectionRefusedError):
+        return serve_call(method, path, body, headers=headers, timeout=CONFIG_REQUEST_TIMEOUT)
+    except ServeUnavailable as error:
+        if error.absent:
             return None
-        connection.sock.settimeout(CONFIG_REQUEST_TIMEOUT)
-        headers = {"X-Rdispatch-Config-SHA256": config_digest(config_path())}
-        payload = None
-        if body is not None:
-            payload = json.dumps(body, ensure_ascii=False).encode("utf-8")
-            headers["Content-Type"] = "application/json"
-        if method in ("POST", "PUT", "DELETE"):
-            headers["Idempotency-Key"] = uuid.uuid4().hex
-        connection.request(method, path, payload, headers)
-        response = connection.getresponse()
-        raw = response.read()
-        try:
-            reply = json.loads(raw)
-        except ValueError:
-            raise ValueError("cli_forward_failed: command may have run; check state before retrying") from None
-        return response.status, reply
-    except (OSError, http.client.HTTPException) as error:
         raise ValueError("cli_forward_failed: command may have run; check state before retrying") from error
-    finally:
-        connection.close()
+    except ServeFailed as error:
+        raise ValueError("cli_forward_failed: command may have run; check state before retrying") from error
 
 
 def config_error(error, status):
