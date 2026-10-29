@@ -369,15 +369,22 @@ def run_job(spec_file):
         env["RD_BASE"] = spec["base"]
     if spec.get("handoff_version"):
         env["RD_REPORTER"] = str(directory / "rd_messages.py")
+    if str(spec.get("rollout_stats", "0")).lower() in ("1", "true", "yes"):
+        os.environ["RD_ROLLOUT_STATS"] = "1"  # messages.finish 在本进程内读取
     os.chdir(wt)
     setup = directory / "setup.ps1"
+    timing = directory / ("timing.r" + str(spec["round"]))
     if setup.exists() and not (directory / "setup.done").exists():
+        began = time.monotonic()
         with (directory / "setup.log").open("wb") as output:
             result = subprocess.run(shell_command(setup.read_text(encoding="utf-8")), stdout=output, stderr=subprocess.STDOUT, env=env)
+        timing.write_text("setup_seconds=%d\n" % (time.monotonic() - began), encoding="utf-8")
         if result.returncode:
             (directory / "exit_code").write_text("97", encoding="utf-8")
             return
         (directory / "setup.done").touch()
+    else:
+        timing.write_text("setup_seconds=0\nsetup_note=已跳过\n", encoding="utf-8")
     runtime = None
     if spec.get("profile"):
         runtime = profiles.prepare_runtime(directory, spec["profile"], spec.get("auth_file", ""))
@@ -386,6 +393,7 @@ def run_job(spec_file):
     command = codex_command(spec, runtime, prompt) if runtime else shell_command(spec["cmd"])
     slot = heavy_slot(Path(spec["lock_dir"]), spec["max_heavy"]) if spec.get("heavy") else None
     rc = 98
+    began = time.monotonic()
     try:
         with (directory / ("stdout.r" + str(spec["round"]) + ".log")).open("wb") as output, (directory / ("stderr.r" + str(spec["round"]) + ".log")).open("wb") as error, prompt.open("rb") as incoming:
             child = subprocess.Popen(command, stdin=incoming if runtime else subprocess.DEVNULL, stdout=output, stderr=error,
@@ -398,6 +406,8 @@ def run_job(spec_file):
                 child.wait()
                 rc = 124
     finally:
+        with timing.open("a", encoding="utf-8") as stream:
+            stream.write("body_seconds=%d\n" % (time.monotonic() - began))
         if slot:
             shutil.rmtree(slot)
         (directory / "head").write_text(git(wt, "rev-parse", "HEAD", check=False).stdout.strip(), encoding="utf-8")
