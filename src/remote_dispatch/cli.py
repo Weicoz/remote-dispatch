@@ -269,6 +269,13 @@ class Config:
         """[features] line：显式写 false 才关闭；关闭后不接新线，已有线继续。"""
         return workline.feature_enabled(self.cp)
 
+    def line_stale_days(self):
+        """工作线停滞天数；环境变量 RD_LINE_STALE_DAYS 优先，默认 7。"""
+        try:
+            return workline.stale_days(self.cp)
+        except ValueError as error:
+            self.fail(str(error), 4)
+
     def retention_hours(self):
         """过期回收的保留时长（小时），从最后一次回执确认算起；环境变量优先。"""
         hours = {}
@@ -1121,7 +1128,8 @@ def initiator_session(args, harness=None):
 def require_initiator(rec, args):
     owner = rec.get("initiator_session")
     if owner and initiator_session(args) != owner:
-        die("结果和续派属于原发起会话；使用该会话或显式传入 --initiator-session。", 4)
+        hint = "；工作线可用 rdispatch takeover 在同一用户 ID 下接手" if rec.get("line") else ""
+        die("结果和续派属于原发起会话；使用该会话或显式传入 --initiator-session" + hint + "。", 4)
 
 
 def result_path(rec, number):
@@ -1281,7 +1289,8 @@ def cmd_board(a, cfg):
             die("board 需要 --initiator-session 或 RD_INITIATOR_SESSION；--all 查看全部派单。", 4)
     recs = [r for r in all_jobs() if r.get("user_id") == uid and (a.all or r.get("initiator_session") == owner)]
     result = board.build(STATE, queries(cfg), recs, job_states(cfg, recs) if recs else {}, user_id=uid,
-                         scope="all" if a.all else "session", initiator_session=owner)
+                         scope="all" if a.all else "session", initiator_session=owner,
+                         stale_days=cfg.line_stale_days())
     print(json.dumps(result, ensure_ascii=False, indent=2) if a.json else board.render(result))
 
 
@@ -2598,6 +2607,43 @@ def check_recovery(rec, receipt, args, cfg):
         die("resume_recovery_not_allowed: 重复模型启动故障，已停止续跑；用 rdispatch result --summary 查看分类。取得修复证据后才用 --retry-after-repair，纯上下文故障可以显式 --new-context。", 4)
 
 
+def record_line_residue(host, rec, item):
+    """工作项开始前记录 worktree 里的未跟踪文件清单；只记录不删除，读取失败不阻止派单。"""
+    try:
+        paths = [path for code, path in worktree_changes(host, rec)[1] if code == "??"]
+    except (OSError, ValueError, SystemExit, subprocess.SubprocessError) as error:
+        print(f"note: 无法记录工作项 {item} 开始前的未跟踪文件清单：{error}")
+        return
+    workline.record_residue(rec, item, paths)
+    if paths:
+        print(f"note: worktree 里有 {len(paths)} 个未跟踪文件，已记入回执与看板，未删除。")
+
+
+def handover_pack(cfg, rec):
+    """换机交接包：复用上下文包拼装；没有回执等取不到来源时返回空串，不阻止换机。"""
+    try:
+        return context_pack(cfg, rec["user_id"], [rec["job"]]) + "\n"
+    except (Exception, SystemExit):
+        return ""
+
+
+@locked_job
+def cmd_takeover(a, cfg):
+    """同一用户 ID 的其他发起会话接手工作线，写入交接记录；跨用户 ID 与非工作线一律拒绝。"""
+    rec = load_job(a.job)
+    session = initiator_session(a)
+    if not session:
+        die("接手需要 --initiator-session 或 RD_INITIATOR_SESSION。", 4)
+    try:
+        changed = workline.takeover(rec, require_user(), session)
+    except ValueError as error:
+        die(str(error), 4)
+    if changed:
+        save_job(rec)
+    print(f"{rec['job']}: " + (f"发起会话已由 {rec['line']['handovers'][-1]['from_session'] or '无'} 交接给 {session}。"
+                               if changed else f"当前会话 {session} 已是发起会话。"))
+
+
 @locked_job
 def cmd_resume(a, cfg):
     rec = load_job(a.job)
@@ -2660,13 +2706,16 @@ def resume_job(a, cfg, rec, *, prompt=None, before_launch=None, rollback_stack=N
         rec.setdefault("recovery_repairs", []).append(dict(from_round=rec["rounds"],
                                                            evidence=a.retry_after_repair, at=messages.utc_now()))
     if moving:
+        print("note: 换机导出包含整个工作树；体积大时先 rdispatch clean JOB --slim 瘦身再换机。")
         target_profile = agent_preflight(host, rec["user_id"], rec["agent"], agent, auto_sync=False)
         if target_profile != rec.get("profile"):
             die("resume_profile_mismatch: 目标机用户配置与原派单不一致；先同步原配置。", 4)
         rec.setdefault("context_history", []).append(dict(receiver_session=session, from_round=rec["rounds"],
                                                           reason="host_changed", at=messages.utc_now()))
         session = None
-        prompt = "续跑已更换目标机；沿用迁移工作树、原 harness 和授权，仅完成附言要求。\n\n" + prompt
+        prompt = ("续跑已更换目标机并换新会话；沿用迁移工作树、原 harness 和授权，仅完成附言要求。"
+                  "以下交接包由 rdispatch 从前序回执拼装。\n\n" + (handover_pack(cfg, rec) if rec.get("handoff_version") else "")
+                  + "\n" + prompt)
     # 续跑沿用原权限档位；显式 --permission-mode 才改变并记入任务。
     permission = getattr(a, "permission_mode", None) or rec.get("permission_mode")
     command = agent_command(agent, a.model or rec.get("model"), a.effort or rec.get("effort"), session, permission)
@@ -2675,6 +2724,7 @@ def resume_job(a, cfg, rec, *, prompt=None, before_launch=None, rollback_stack=N
     rec["rounds"] += 1
     if line_item:
         workline.start_item(rec, line_item["item"], rec["rounds"], line_item["base"])
+        record_line_residue(host, rec, line_item["item"])
     else:
         workline.note_round(rec, rec["rounds"])
     rec["session"] = session
@@ -2979,7 +3029,9 @@ def reclaim_check(cfg, rec, snapshot, host, *, single=False, force=False, a=None
     state = snapshot.get("state")
     unlaunched = rec.get("dispatch_state") in ("preparing", "preparation_failed")
     if rec.get("project") and not (single and force):
-        referrers = plans.PlanStore(STATE, rec.get("user_id") or require_user(), rec["project"]).referrers(rec["job"])
+        referrers = plan_referrers(rec)
+        if referrers and mode == "expired" and not single and line_lapsed(cfg, rec, referrers, time.time()):
+            referrers = []
         if referrers:
             return BLOCK_PLAN_REFERENCED, "待派登记中后续工作项仍引用该派单：" + "、".join(referrers), None, []
     if single:
@@ -3057,12 +3109,26 @@ def reclaim_check(cfg, rec, snapshot, host, *, single=False, force=False, a=None
     return None, "", head, reasons
 
 
-def retention_verdict(rec, head, reasons, activity, hours, now):
+def plan_referrers(rec):
+    return plans.PlanStore(STATE, rec.get("user_id") or require_user(), rec["project"]).referrers(rec["job"])
+
+
+def line_lapsed(cfg, rec, referrers, now):
+    """工作线停滞后继续无人处理：不再因待派工作项保留，按「已取回未合入」的保留期处理。"""
+    try:
+        return workline.abandoned(rec, referrers, last_activity(rec), now, cfg.line_stale_days())
+    except OSError:
+        return False
+
+
+def retention_verdict(rec, head, reasons, activity, hours, now, lapsed=False):
     """返回 (可回收, 说明, 阻塞码)。只判断复用可能性；未取回、未提交等安全条件由 reclaim_check 先行拦截。"""
     if rec.get("keep_until", 0) > now:
         return False, "已用 rdispatch keep 钉住，到 " + time.strftime("%Y-%m-%d %H:%M", time.localtime(rec["keep_until"])), BLOCK_PINNED
     if not rec.get("agent"):
         kind, label = "command", "命令任务不能续跑"
+    elif lapsed:
+        kind, label = "unmerged", "工作线停滞后无人处理，按已取回未合入处理"
     elif head == rec["base"] or not reasons:
         kind, label = "accepted", "已合入或无新提交"
     else:
@@ -3110,7 +3176,8 @@ def cmd_clean_batch(a, cfg, mode):
                 if key not in pressure:
                     pressure[key] = disk_low(host)
                 limits = {k: min(v, RETENTION_LOW_DISK_HOURS[k]) for k, v in hours.items()} if pressure[key] else hours
-                expired, note, code = retention_verdict(rec, head, reasons, last_activity(rec), limits, now)
+                lapsed = bool(rec.get("project")) and line_lapsed(cfg, rec, plan_referrers(rec), now)
+                expired, note, code = retention_verdict(rec, head, reasons, last_activity(rec), limits, now, lapsed)
                 if pressure[key]:
                     note += "；目标机磁盘不足，保留期已收紧"
                 if not expired:
@@ -3907,6 +3974,11 @@ def main(argv=None, *, forwarded=None):
     p.add_argument("--new-context", action="store_true", help="仅上下文故障时显式接替原会话，保留任务与配置")
     p.add_argument("--retry-after-repair", help="同类故障修复后续跑的证据说明；不绕过资源或身份检查")
     p.set_defaults(fn=cmd_resume)
+
+    p = sub.add_parser("takeover", help="同一用户 ID 的其他发起会话接手工作线，写入交接记录")
+    p.add_argument("job")
+    p.add_argument("--initiator-session")
+    p.set_defaults(fn=cmd_takeover)
 
     p = sub.add_parser("fetch", help="bring the job's commits back as rd/<branch>")
     p.add_argument("job")

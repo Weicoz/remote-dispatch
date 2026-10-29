@@ -4,7 +4,14 @@
 后续的 suggest、会话轮换与建议令牌都复用同一个 decide，避免条件各写一份。
 """
 
+import os
+import time
+
 FALSE_VALUES = ("0", "false", "no", "off")
+# 线上有待派工作项时，无人推进超过这个天数即停滞；再过同样天数视为无人处理，按「已取回未合入」的保留期处理。
+STALE_DAYS = 7
+# 残留清单写入回执与看板的条数上限；超出只记总数。
+RESIDUE_LIMIT = 50
 
 
 def feature_enabled(parser):
@@ -210,3 +217,78 @@ def session_policy(receipt, limits, idle_seconds):
     if interval_limit is not None and idle_seconds > interval_limit:
         return "rotate", f"距上一轮 {idle_seconds:.0f} 秒，超过续用间隔上限 {interval_limit:g}"
     return "reuse", "单次调用上下文与间隔均在续用阈值内"
+
+
+def stale_days(parser, environ=None):
+    """线停滞天数：环境变量 RD_LINE_STALE_DAYS 优先，其次 [line] stale_days，默认 7。非法值抛 ValueError。"""
+    environ = os.environ if environ is None else environ
+    value = environ.get("RD_LINE_STALE_DAYS") or parser.get("line", "stale_days", fallback=str(STALE_DAYS))
+    try:
+        days = float(value)
+    except (TypeError, ValueError):
+        days = -1
+    if not days >= 0:
+        raise ValueError("RD_LINE_STALE_DAYS / [line] stale_days 必须是非负天数。")
+    return days
+
+
+def idle_days(activity, now):
+    return max(0.0, (now - activity) / 86400)
+
+
+def stale(rec, referrers, activity, now, days):
+    """线是否停滞，返回原因或 None。只有线上还有待派工作项（referrers）时才占盘，才谈停滞。
+
+    原因：发起会话缺失；或最后一次推进（回执确认、新轮次）距今超过 days 天。
+    """
+    if not referrers or not (rec.get("line") or referrers):
+        return None
+    if not rec.get("initiator_session"):
+        return "发起会话缺失，待派工作项无人推进：" + "、".join(referrers)
+    idle = idle_days(activity, now)
+    if idle > days:
+        return f"待派工作项 {'、'.join(referrers)} 已 {idle:.1f} 天无人推进（超过 {days:g} 天）"
+    return None
+
+
+def abandoned(rec, referrers, activity, now, days):
+    """停滞后继续无人处理（再过 days 天）：不再因待派工作项保留，按「已取回未合入」的保留期处理。"""
+    return bool(stale(rec, referrers, activity, now, days)) and idle_days(activity, now) > 2 * days
+
+
+def record_residue(rec, item, paths):
+    """记录工作项开始前 worktree 里的未跟踪文件清单；只记录，不删除。"""
+    line = rec.get("line")
+    if not line or not paths:
+        return
+    paths = sorted(dict.fromkeys(paths))
+    line.setdefault("residue", {})[item] = dict(files=paths[:RESIDUE_LIMIT], total=len(paths))
+
+
+def residue_for(rec, number):
+    """某一轮所属工作项开始前的未跟踪文件清单；没有记录返回 None。"""
+    line = rec.get("line") or {}
+    for item, rounds in line.get("items", {}).items():
+        if number in rounds:
+            return (line.get("residue") or {}).get(item)
+    return None
+
+
+def current_residue(rec):
+    line = rec.get("line") or {}
+    return (line.get("residue") or {}).get(line.get("current"))
+
+
+def takeover(rec, uid, session):
+    """同一用户 ID 的其他发起会话接手工作线，写入交接记录。拒绝时抛 ValueError。"""
+    if not rec.get("line"):
+        raise ValueError("只有工作线可以被其他发起会话接手；普通派单仍只允许原发起会话。")
+    if not rec.get("user_id") or rec["user_id"] != uid:
+        raise ValueError("工作线不属于当前用户 ID，拒绝接手。")
+    previous = rec.get("initiator_session")
+    if previous == session:
+        return False
+    rec["line"].setdefault("handovers", []).append(
+        dict(from_session=previous, to_session=session, at=time.strftime("%Y-%m-%d %H:%M:%S")))
+    rec["initiator_session"] = session
+    return True

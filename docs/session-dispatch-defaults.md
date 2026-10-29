@@ -96,6 +96,19 @@ reuse_max_interval_seconds = 3600  ; 距上一轮最后回执确认的秒数上�
 `line.closed`，之后按正常合入判定与回收；有运行中轮次或目标机不可达时退出码 4。线关闭后不再接新工作项。
 新增逻辑在 `rd_line.py`（`prefix_items`、`accepted_round`、`close_blocker`、`merge_blocker`）。
 
+### 工作线生命周期
+
+- **停滞**：线上还有待派工作项（后续工作项仍引用该派单）时，最后一次推进（回执确认或新轮次）距今超过停滞天数，
+  或发起会话缺失，看板显示「停滞」并给出提醒（JSON 行字段 `stale`）。天数取 `RD_LINE_STALE_DAYS`，其次
+  `[line] stale_days`，默认 7；非法值退出码 4。继续无人处理（再过同样天数）后，`clean --expired` 不再因待派工作项保留，
+  按「已取回未合入」的保留期回收；未取回、未提交等安全条件照常拦截。
+- **残留可见**：每个新工作项接入前，记录 worktree 里的未跟踪文件清单（最多 50 条加总数），写入该工作项各轮回执的
+  `residue` 和看板行 `residue`，不删除。
+- **接手**：`rdispatch takeover JOB --initiator-session 新会话`。只对工作线放宽：同一用户 ID 的其他发起会话可以接手，
+  `line.handovers` 记录交接，发起会话改为新会话；跨用户 ID 或非工作线退出码 4。普通派单仍只允许原发起会话。
+- **换机**：`resume --host 新目标机` 沿用现有导出／导入，换新会话并把交接包（由 `rd_context_pack.build` 从前序回执拼装）
+  放在提示词前面；导出包含整个工作树，输出提示先用 `clean JOB --slim` 瘦身。
+
 ```sh
 rdispatch session-default <会话> --dispatch-mode line
 rdispatch session-default <会话> --clear-dispatch-mode
