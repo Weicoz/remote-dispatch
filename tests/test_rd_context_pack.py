@@ -1,6 +1,8 @@
 """上下文包：run --context-from 的 CLI 接缝，以及拼装模块的截断规则。不调用模型。"""
 import contextlib
 import io
+import os
+import sys
 from pathlib import Path
 import unittest
 from unittest.mock import patch
@@ -66,6 +68,31 @@ class ContextFromTests(unittest.TestCase):
             self.assertIn(text, sent)
         self.assertLess(sent.index("完成了解析器"), sent.index("新任务正文"))
         self.assertIn("上下文包", record["round_prompts"]["1"])
+
+    def test_executor_decisions_and_unfinished_reach_the_pack(self):
+        rec = self.dispatch(name="prior")
+        job_dir = self.root / "executor"
+        (job_dir / "reports").mkdir(parents=True)
+        argv = ["rd-report", "result", "--summary", "做完一半", "--decision", "用递归下降",
+                "--decision", "不改公共接口", "--unfinished", "补错误位置"]
+        env = dict(RD_JOB_DIR=str(job_dir), RD_JOB=rec["job"], RD_ROUND="1")
+        with patch.object(sys, "argv", argv), patch.dict(os.environ, env):
+            messages.main()
+        saved = messages.read_json(job_dir / "reports" / "result.r1.json")
+        self.assertEqual(saved["decisions"], ["用递归下降", "不改公共接口"])
+        rd.persist_receipt(rec, dict(job=rec["job"], round=1, receipt_id="r-2", head="b" * 40,
+                                     execution_state="done", executor_exit=0, report=saved))
+        _, sent = self.agent_dispatch("正文", context_from=[rec["job"]])
+        for text in ("用递归下降", "不改公共接口", "补错误位置"):
+            self.assertIn(text, sent)
+
+    def test_progress_rejects_decisions(self):
+        errors = io.StringIO()
+        with patch.object(sys, "argv", ["rd-report", "progress", "--decision", "x"]), \
+             patch.dict(os.environ, dict(RD_JOB_DIR=str(self.root), RD_JOB="job-a", RD_ROUND="1")), \
+             contextlib.redirect_stderr(errors), self.assertRaises(SystemExit) as caught:
+            messages.main()
+        self.assertEqual(caught.exception.code, 4)
 
     def test_several_sources_are_all_included(self):
         first, second = self.prior("第一个摘要"), self.prior("第二个摘要")
