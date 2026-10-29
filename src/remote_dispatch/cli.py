@@ -2009,6 +2009,7 @@ def build_suggestion(cfg, a, scope=None, issue=True):
                   decline="rdispatch run --no-line --plan-item " + scope.plan_item + "（其余参数同本次；按默认方式派出并记「本链不再建议」）")
     if issue:
         token, expires = suggestions.TokenStore(STATE, scope.uid).issue(result["fingerprint"], scope.owner)
+        store.change_chain(chain, lambda setting: setting.update(suggested=setting["suggested"] + 1))
         result.update(token=token, expires_at=time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(expires)))
     return result
 
@@ -2058,7 +2059,47 @@ def line_accept(a, cfg, scope, include_paths, prompt):
             print(f"已记录常驻同意：本链 {chain} 后续工作项可用 --line {chain} 直接接线（每次仍校验严格接线条件）。")
     elif not scope.plan_store.chain(chain)["accept_all"]:
         die(f"--line 需要有效的建议令牌（--accept）；先运行 rdispatch suggest。本链 {chain} 没有常驻同意。", 4)
-    return line_wire(a, cfg, scope.uid, scope.owner, scope.plan_store, scope.plan_item, scope.after, include_paths, prompt)
+    wired = line_wire(a, cfg, scope.uid, scope.owner, scope.plan_store, scope.plan_item, scope.after, include_paths, prompt)
+    if wired:
+        scope.plan_store.change_chain(chain, lambda setting: setting.update(accepted=setting["accepted"] + 1))
+    return wired
+
+
+def line_ask(a, cfg, scope, include_paths, prompt):
+    """run 没带 --line／--no-line 且可以接线：返回 (是否已接线, 「本可接线」提示或 None)。
+
+    stdin 和 stdout 都是终端才询问：y 等同 --accept，n 等同 --no-line。
+    非终端不阻塞：按默认方式派出，提示写进派单记录（看板可见）。
+    """
+    suggestion = build_suggestion(cfg, a, scope, issue=False)
+    if not suggestion["suggest"]:
+        return False, None
+    chain, items = suggestion["line"], suggestion["items"]
+    if not (sys.stdin.isatty() and sys.stdout.isatty()):
+        scope.plan_store.change_chain(chain, lambda setting: setting.update(suggested=setting["suggested"] + 1))
+        hint = dict(line=chain, previous=suggestion["previous"], branch=suggestion["branch"],
+                    message=f"本可接入工作线 {chain}（前序派单 {suggestion['previous']}）；"
+                            f"用 rdispatch suggest 取令牌后以 --line {chain} --accept 接线，或 --no-line 拒绝")
+        print("note: " + hint["message"])
+        return False, hint
+    print(f"可以接入工作线 {chain}（前序派单 {suggestion['previous']}，分支 {suggestion['branch']}）；"
+          f"已完成 {'、'.join(items['completed'])}，本项 {items['current']}，后续待派 {'、'.join(items['pending']) or '无'}")
+    while True:
+        try:
+            answer = input("接入这条工作线？[y/n] ").strip().lower()
+        except EOFError:
+            return False, None
+        if answer in ("y", "yes"):
+            issued = build_suggestion(cfg, a, scope)
+            if not issued["suggest"]:
+                print("建议已失效：" + issued["reason"] + "；按默认方式派出。")
+                return False, None
+            a.line, a.accept = chain, issued["token"]
+            return line_accept(a, cfg, scope, include_paths, prompt), None
+        if answer in ("n", "no"):
+            a.no_line = True
+            line_decline(scope)
+            return False, None
 
 
 def line_decline(scope):
@@ -2178,7 +2219,7 @@ def cmd_run(a, cfg):
         prompt = context_pack(cfg, uid, a.context_from) + "\n" + prompt
 
     include_paths = include_list(a, repo)
-    line, no_line = getattr(a, "line", None), getattr(a, "no_line", False)
+    line, no_line, line_hint = getattr(a, "line", None), getattr(a, "no_line", False), None
     if line and no_line:
         die("--line 与 --no-line 不能同时使用。", 4)
     if (getattr(a, "accept", None) or getattr(a, "accept_chain", False)) and not line:
@@ -2196,6 +2237,10 @@ def cmd_run(a, cfg):
         if not plan_item:
             print("工作线未接线：line 模式需要 --plan-item；按默认方式派出。")
         elif line_wire(a, cfg, uid, owner, plan_store, plan_item, after, include_paths, prompt):
+            return
+    elif a.dispatch_mode == "suggest" and plan_item:
+        wired, line_hint = line_ask(a, cfg, scope, include_paths, prompt)
+        if wired:
             return
     sha = git(["rev-parse", "--verify", a.ref + "^{commit}"], repo).stdout.strip()
     source = git(["symbolic-ref", "--quiet", "HEAD"], repo, check=False)
@@ -2264,6 +2309,8 @@ def cmd_run(a, cfg):
             rec["gate"] = a.gate
         if plan_item:
             rec["plan_item"] = plan_item
+        if line_hint:
+            rec["line_hint"] = line_hint
         rec["round_prompts"] = {"1": prompt}
         source = dict(forwarded_origin) if forwarded_origin else initiators.origin(origin_harness, rec["created"])
         source["initiator_herdr"] = dict(source["initiator_herdr"], captured_at=rec["created"])
