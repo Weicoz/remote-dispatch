@@ -43,6 +43,7 @@ from . import rd_projects as projects
 from . import rd_review as reviews
 from . import rd_events as events
 from . import rd_plan as plans
+from . import rd_board as board
 from .rd_lock import JobBusy, JobLock
 from . import rd_initiator as initiators
 from .rd_session_defaults import SessionDefaults, resolve_mode, validate_mode
@@ -1249,6 +1250,20 @@ def cmd_inbox(a, cfg):
                                      acknowledgement=ack, summary=messages.result_summary(receipt)["summary"]))
     print(json.dumps(dict(initiator_session=owner, results=receipts, unreachable=unavailable,
                          reports=read_reports(STATE, uid, owner)), ensure_ascii=False, indent=2))
+
+
+def cmd_board(a, cfg):
+    """看板：只读，不收取回执、不写状态。默认当前发起会话，--all 为该用户全部派单。"""
+    uid = require_user()
+    owner = None
+    if not a.all:
+        owner = initiator_session(a)
+        if not owner:
+            die("board 需要 --initiator-session 或 RD_INITIATOR_SESSION；--all 查看全部派单。", 4)
+    recs = [r for r in all_jobs() if r.get("user_id") == uid and (a.all or r.get("initiator_session") == owner)]
+    result = board.build(STATE, queries(cfg), recs, job_states(cfg, recs) if recs else {}, user_id=uid,
+                         scope="all" if a.all else "session", initiator_session=owner)
+    print(json.dumps(result, ensure_ascii=False, indent=2) if a.json else board.render(result))
 
 
 @locked_job
@@ -3402,6 +3417,12 @@ def main(argv=None, *, forwarded=None):
     p.add_argument("--initiator-session")
     p.add_argument("--summary", action="store_true", help="仅返回有界摘要及完整回执路径；保留原完整JSON接口")
     p.set_defaults(fn=cmd_result)
+
+    p = sub.add_parser("board", help="看板：派单数量、目标机、模型、时长、进度、待派与阻塞")
+    p.add_argument("--all", action="store_true", help="该用户 ID 下全部派单，含没有发起会话的")
+    p.add_argument("--json", action="store_true")
+    p.add_argument("--initiator-session")
+    p.set_defaults(fn=cmd_board)
 
     p = sub.add_parser("inbox", help="列出当前发起会话待收取的结果")
     p.add_argument("--initiator-session")

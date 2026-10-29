@@ -201,3 +201,16 @@ class PlanStore:
             if job in item["after"] or any(job in items.get(dep, {}).get("jobs", []) for dep in item["depends"]):
                 names.append(name)
         return names
+
+
+def user_rows(state, uid):
+    """只读：该用户全部项目的登记行 {项目: rows}；目录不存在时为空，不创建任何文件。"""
+    uid = user_id(uid)
+    result = {}
+    for path in sorted((Path(state) / "plan" / uid).glob("*.json")):
+        project = path.stem
+        if PROJECT_PATTERN.fullmatch(project) and project not in (".", ".."):
+            rows = PlanStore(state, uid, project).rows()
+            if rows:
+                result[project] = rows
+    return result
