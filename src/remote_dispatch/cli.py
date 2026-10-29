@@ -1746,6 +1746,45 @@ def cmd_gate(a, cfg):
     cmd_run(run_args, cfg)
 
 
+@locked_job
+def cmd_line(a, cfg):
+    """工作线收尾：prefix 在验收轮的 head 建前缀分支；close 关闭线，之后派单才按已合入处理。"""
+    rec = load_job(a.job)
+    require_initiator(rec, a)
+    if a.line_action == "close":
+        state = job_states(cfg, [rec]).get(rec["job"], {}).get("state")
+        reason = workline.close_blocker(rec, state)
+        if reason:
+            die(reason + "。", 4)
+        rec["line"]["closed"] = True
+        save_job(rec)
+        print(f"工作线 {rec['line']['name']} 已关闭；派单 {rec['job']} 之后按合入状态进入回收。")
+        return
+    items, reason = workline.prefix_items(rec, a.items)
+    if reason:
+        die(reason + "。", 4)
+    heads = {}
+    for item in items:
+        number = workline.accepted_round(rec, item, lambda n: reviews.read(STATE, rec, n)["review_state"])
+        if number is None:
+            die(f"工作项 {item} 尚未验收通过，不能合入。", 4)
+        receipt = messages.read_json(result_path(rec, number)) or queries(cfg).result(rec, number)
+        heads[item] = (receipt or {}).get("head")
+    head = heads[items[-1]]
+    if not head:
+        die(f"工作项 {items[-1]} 的验收轮回执缺少 head。", 4)
+    if git(["cat-file", "-e", head + "^{commit}"], rec["repo"], check=False).returncode:
+        die(f"提交 {head[:10]} 尚未取回；先用 rdispatch fetch {rec['job']}。", 4)
+    name = a.branch or f"{rec['branch']}-prefix-{len(items)}"
+    existing = git(["rev-parse", "-q", "--verify", "refs/heads/" + name], rec["repo"], check=False).stdout.strip()
+    if existing and existing != head:
+        die(f"分支 {name} 已存在且指向 {existing[:10]}；不改写，换个 --branch。", 4)
+    if not existing:
+        git(["branch", name, head], rec["repo"])
+    print(f"前缀分支 {name} -> {head[:10]}（工作项 {'、'.join(items)}）；线未关闭，派单仍不算已合入。")
+    print(f"门禁：rdispatch gate {name}")
+
+
 def line_facts(cfg, rec):
     """接线判定要用的目标机与验收事实；全部只读，读不到按缺失处理。"""
     facts = dict(state=None, review_state=None, session=None, head=None)
@@ -2324,6 +2363,9 @@ def merge_check(rec, head, into):
     ref = into or rec.get("source_branch")
     reasons = []
     target = None
+    blocker = workline.merge_blocker(rec)
+    if blocker:
+        reasons.append("未合入：" + blocker)
     if not ref:
         reasons.append("需指定 --into")
     else:
@@ -3757,6 +3799,13 @@ def main(argv=None, *, forwarded=None):
     p.add_argument("--project", help="project name (default: name of the origin repository)")
     p.add_argument("--timeout", type=int, help="seconds before the job is killed")
     p.set_defaults(fn=cmd_gate)
+
+    p = sub.add_parser("line", help="工作线收尾：prefix 建前缀分支，close 关闭线")
+    p.add_argument("line_action", choices=("prefix", "close"))
+    p.add_argument("job")
+    p.add_argument("items", nargs="*", help="prefix：工作项，必须是线上顺序的前 k 个")
+    p.add_argument("--branch", help="prefix：前缀分支名；默认 <线分支>-prefix-<k>")
+    p.set_defaults(fn=cmd_line)
 
     p = sub.add_parser("timings", help="按项目与目标机查询各轮次 setup 与主体耗时（读本地已保存回执）")
     p.add_argument("--project")

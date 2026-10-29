@@ -85,6 +85,17 @@ reuse_max_interval_seconds = 3600  ; 距上一轮最后回执确认的秒数上�
 - 拒绝：`run --no-line` 按默认方式派出，只在待派登记里记「本链不再建议」和拒绝次数。
 - 管理：`rdispatch plan chain <线名>` 查看；`--clear` 清除拒绝设置并恢复建议；`--revoke-accept` 撤销常驻同意。
 
+### 前缀合入与关闭线
+
+工作线只支持前缀合入。`rdispatch line prefix <派单> <工作项...>` 的工作项必须恰好是线上顺序的前 k 个（不跳项，
+也不接受未验收的工作项），否则退出码 4。第 k 个工作项取其最近一个验收轮回执的 `head`（需已 `fetch`），在该提交建本地分支
+`<线分支>-prefix-<k>`（`--branch` 可改名；同名分支指向别处时拒绝，不改写）。门禁直接对该分支执行：`rdispatch gate <前缀分支>`。
+
+中途前缀合入不把派单算作已合入：线关闭前，合入检查（`status --unmerged`、`clean --merged|--expired`）都带原因
+「工作线未关闭」，`clean --merged` 阻塞码为 `not_merged`。`rdispatch line close <派单>` 在线上没有运行中轮次时记
+`line.closed`，之后按正常合入判定与回收；有运行中轮次或目标机不可达时退出码 4。线关闭后不再接新工作项。
+新增逻辑在 `rd_line.py`（`prefix_items`、`accepted_round`、`close_blocker`、`merge_blocker`）。
+
 ```sh
 rdispatch session-default <会话> --dispatch-mode line
 rdispatch session-default <会话> --clear-dispatch-mode
