@@ -97,7 +97,7 @@ class DispatchTests(unittest.TestCase):
         (directory / f"run.r{rec['rounds']}.{suffix}").write_text("")
 
     def args(self, **overrides):
-        values = dict(dir=str(self.repo), agent=None, prompt_file=None, cmd="true", test=False,
+        values = dict(dir=str(self.repo), agent=None, prompt_file=None, cmd="true", test=False, test_full=False,
                       heavy=False, host="fixture", force_host=True, tag=[], ref="baseline", wip=False,
                       branch=None, name="fixture", project=None, include=[], model=None, effort=None,
                       timeout=15, initiator_session=None)
@@ -131,6 +131,67 @@ class DispatchTests(unittest.TestCase):
     def queried_job(self, job):
         args = argparse.Namespace(job=job, details=False, json=True)
         return json.loads(self.capture(rd.cmd_status, args))[0]
+
+    def configure_project(self, **commands):
+        text = "".join(f"{k}={v}\n" for k, v in commands.items())
+        with open(rd.CONFIG, "a") as stream:
+            stream.write(f"\n[project:app]\n{text}")
+        self.cfg = rd.Config()
+
+    def test_only_legacy_test_serves_both_flags_as_full_test(self):
+        self.configure_project(test="echo legacy")
+        quick = self.dispatch(project="app", cmd=None, test=True)
+        full = self.dispatch(project="app", cmd=None, test_full=True)
+        self.assertEqual((quick["cmd"], quick["heavy"]), ("echo legacy", True))
+        self.assertEqual((full["cmd"], full["heavy"]), ("echo legacy", True))
+
+    def test_quick_and_full_commands_are_chosen_by_flag(self):
+        self.configure_project(test_quick="echo quick", test_full="echo full", test_heavy="false")
+        quick = self.dispatch(project="app", cmd=None, test=True)
+        full = self.dispatch(project="app", cmd=None, test_full=True)
+        self.assertEqual((quick["cmd"], quick["heavy"]), ("echo quick", False))
+        self.assertEqual((full["cmd"], full["heavy"]), ("echo full", True))
+
+    def test_all_three_configured_prefers_quick_and_full_over_legacy(self):
+        self.configure_project(test="echo legacy", test_quick="echo quick", test_full="echo full")
+        self.assertEqual(self.dispatch(project="app", cmd=None, test=True)["cmd"], "echo quick")
+        self.assertEqual(self.dispatch(project="app", cmd=None, test_full=True)["cmd"], "echo full")
+
+    def test_full_flag_without_any_full_command_is_rejected(self):
+        self.configure_project(test_quick="echo quick")
+        with self.assertRaises(SystemExit):
+            self.dispatch(project="app", cmd=None, test_full=True)
+
+    def test_full_flag_queues_through_rd_heavy(self):
+        self.configure_project(test_quick="echo quick", test_full="echo full", test_heavy="false")
+        with patch.object(rd, "launch", side_effect=self.finish) as launch:
+            self.dispatch(project="app", cmd=None, test_full=True)
+        self.assertTrue(launch.call_args.args[3].startswith("rd-heavy sh -c"))
+
+    def test_posix_run_script_exports_baseline_for_command_and_agent_jobs(self):
+        host = self.cfg.host("fixture")
+        for kwargs in ({}, {"cmd": None, "agent": "codex", "prompt_file": str(self.root / "p.md")}):
+            (self.root / "p.md").write_text("hi")
+            with patch.object(rd, "launch", side_effect=self.finish), patch.object(rd, "agent_preflight", return_value=None):
+                rec = self.dispatch(**kwargs)
+            script = rd.build_run_script(host, rec, 1, 10)
+            self.assertIn(f" RD_BASE={self.base}\n", script)
+
+    def test_windows_native_job_environment_carries_baseline(self):
+        rec = self.dispatch()
+        directory, wt = self.root / "native-job", self.root / "native-wt"
+        for folder in (directory, wt, self.root / "native-bin"):
+            folder.mkdir()
+        (directory / "prompt.r1.md").write_text("")
+        command = f'"{sys.executable}" -c "import os; print(os.environ[\'RD_BASE\'])"'
+        spec = dict(rec, round=1, user_id="employee_a", timeout=20, max_heavy=1, heavy=False, cmd=command,
+                    directory=str(directory), wt=str(wt), bin=str(self.root / "native-bin"),
+                    lock_dir=str(self.root / "locks"), sync="direct", profile=None, handoff_version=None)
+        spec_file = self.root / "spec.json"
+        spec_file.write_text(json.dumps(spec))
+        self.addCleanup(os.chdir, os.getcwd())  # run_job 会切换工作目录
+        native.run_job(str(spec_file))
+        self.assertEqual((directory / "stdout.r1.log").read_text().strip(), self.base)
 
     def test_project_history_survives_clean_with_dispatch_count_and_times(self):
         with patch.object(rd.time, "strftime", side_effect=lambda fmt: "2026-10-24 10:00:00" if fmt == "%Y-%m-%d %H:%M:%S" else "20261024-100000"):
