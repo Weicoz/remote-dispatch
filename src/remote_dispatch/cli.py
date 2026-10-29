@@ -32,6 +32,7 @@ from . import __version__
 from . import rd_profiles as profiles
 from . import rd_native as native
 from . import rd_messages as messages
+from . import rd_timings as timings
 from . import rd_health as health
 from . import rd_agents as agents
 from . import rd_query as query
@@ -125,20 +126,28 @@ mkdir -p "$RD_JOB_DIR/reports"
   fi
   printf 'nofile soft_before=%s soft_after=%s hard=%s\n' "$rd_nofile_soft" "$(ulimit -Sn)" "$rd_nofile_hard"
 } > "$RD_JOB_DIR/reports/resource-limits.r$RD_ROUND.log" 2>&1
+@@ROLLOUT_ENV@@
 if [ -f "$RD_JOB_DIR/setup.sh" ] && [ ! -f "$RD_JOB_DIR/setup.done" ]; then
+  rd_t0=$(date +%s)
   if sh "$RD_JOB_DIR/setup.sh" > "$RD_JOB_DIR/setup.log" 2>&1; then
     touch "$RD_JOB_DIR/setup.done"
+    echo "setup_seconds=$(( $(date +%s) - rd_t0 ))" > "$RD_JOB_DIR/timing.r$RD_ROUND"
   else
+    echo "setup_seconds=$(( $(date +%s) - rd_t0 ))" > "$RD_JOB_DIR/timing.r$RD_ROUND"
     rc=97; @@REPORT_FINISH@@
     echo 97 > "$RD_JOB_DIR/exit_code"; exit 97
   fi
+else
+  printf 'setup_seconds=0\nsetup_note=已跳过\n' > "$RD_JOB_DIR/timing.r$RD_ROUND"
 fi
+rd_t1=$(date +%s)
 @@EXEC@@ > "$RD_JOB_DIR/stdout.r$RD_ROUND.log" 2> "$RD_JOB_DIR/stderr.r$RD_ROUND.log" &
 cpid=$!
 ( sleep @@TIMEOUT@@; : > "$RD_JOB_DIR/timed_out"; killtree $cpid ) &
 wpid=$!
 wait $cpid; rc=$?
 killtree $wpid
+echo "body_seconds=$(( $(date +%s) - rd_t1 ))" >> "$RD_JOB_DIR/timing.r$RD_ROUND"
 [ -f "$RD_JOB_DIR/timed_out" ] && rc=124
 git rev-parse HEAD > "$RD_JOB_DIR/head" 2>/dev/null
 git status --porcelain 2>/dev/null | wc -l | tr -d ' ' > "$RD_JOB_DIR/dirty"
@@ -233,6 +242,10 @@ class Config:
             self.fail("RD_REPORT_INTERVAL_SECONDS / [monitor] report_interval_seconds must be a positive integer (seconds)", 4)
         return interval
 
+    def rollout_stats(self):
+        """[features] rollout_stats：读取 Codex rollout 逐次调用用量，默认关闭；取值无效按关闭处理。"""
+        return self.cp.get("features", "rollout_stats", fallback="false").strip().lower() in ("1", "true", "yes", "on")
+
     def retention_hours(self):
         """过期回收的保留时长（小时），从最后一次回执确认算起；环境变量优先。"""
         hours = {}
@@ -289,6 +302,7 @@ class Config:
             self.fail(f"[host:{name}] 本机派发只支持 POSIX；Windows 目标必须通过 SSH。")
         if h["ssh"] == "local" and not h["workdir"].startswith(("/", "~", "$HOME")):
             self.fail(f"[host:{name}] 本机目标（ssh 为 local）的 workdir 必须是绝对路径或 ~ 开头；相对路径会随发起目录漂移。")
+        h["rollout_stats"] = "1" if self.rollout_stats() else "0"
         h["name"] = name
         h["probe_agent"] = getattr(self, "probe_agent", "codex")
         return h
@@ -1258,7 +1272,8 @@ def build_run_script(host, rec, round_no, timeout):
         report_finish = ('printf "%s\\n" "$rc" > "$RD_JOB_DIR/exit.r$RD_ROUND"; '
                          'if command -v python3 >/dev/null 2>&1; then python3 "$RD_REPORTER" finish --exit "$rc" '
                          '>> "$RD_JOB_DIR/report.r$RD_ROUND.log" 2>&1; fi')
-    subs = {"JOB": rec["job"], "ROUND": str(round_no), "PATH": host["path"], "ROOT": root_expr(host),
+    rollout_env = "export RD_ROLLOUT_STATS=1" if str(host.get("rollout_stats", "0")).lower() in ("1", "true", "yes") else ""
+    subs = {"JOB": rec["job"], "ROLLOUT_ENV": rollout_env, "ROUND": str(round_no), "PATH": host["path"], "ROOT": root_expr(host),
             "MAX_HEAVY": host["max_heavy"], "ENV_FILE": env_file, "KILLTREE": KILLTREE,
             "TIMEOUT": str(int(timeout)), "PUSH": push, "SHARED_ROOT": root_expr(shared),
             "IDENTITY": identity, "EXEC": command, "REPORT_ENV": report_env, "REPORT_FINISH": report_finish}
@@ -1333,7 +1348,8 @@ def launch(host, rec, round_no, cmd_text, prompt_text, timeout):
         put_file(host, f"jobs/{j}/reports/dispatch.r{round_no}.json", json.dumps(dict(job=j, round=round_no, initiator_session=rec.get("initiator_session"))), "600")
     if host["platform"] == "windows":
         spec = dict(rec, round=round_no, timeout=int(timeout), max_heavy=int(host["max_heavy"]),
-                    auth_file=host["codex_auth_file"], env_file=host["env_file"])
+                    auth_file=host["codex_auth_file"], env_file=host["env_file"],
+                    rollout_stats=host.get("rollout_stats", "0"))
         native.request(host, "launch", {"spec": spec, "prompt": prompt_text})
         return
     if rec.get("profile"):
@@ -1534,7 +1550,7 @@ def cmd_run(a, cfg):
                "agent_kind": a.agent, "isolated": bool(a.agent), "permission_mode": permission,
                "auth_file": host[spec["auth_key"]] if a.agent else host["codex_auth_file"],
                "worker_platform": host["platform"], "worker_python": host["python"], "heavy": a.heavy,
-               "handoff_version": 1, "initiator_session": owner}
+               "handoff_version": 1, "initiator_session": owner, "test": bool(a.test)}
         rec["round_prompts"] = {"1": prompt}
         source = dict(forwarded_origin) if forwarded_origin else initiators.origin(origin_harness, rec["created"])
         source["initiator_herdr"] = dict(source["initiator_herdr"], captured_at=rec["created"])
@@ -1754,6 +1770,15 @@ def merge_check(rec, head, into):
             if compared.returncode:
                 reasons.append("未合入 " + ref if compared.returncode == 1 else "无法核验合入关系")
     return reasons
+
+
+def cmd_timings(a, cfg):
+    """按项目与目标机列出已保存回执里的 setup 与主体耗时（只读，供门禁选机读取）。"""
+    uid = require_user()
+    records = [rec for rec in all_jobs() if rec.get("user_id") in (None, "", uid)]
+    rows = timings.history(STATE, records, project=a.project, host=a.host, kind=a.kind)
+    print(json.dumps(dict(rows=rows, median_body_seconds_by_host=timings.median_body_by_host(rows, success_only=True)),
+                     ensure_ascii=False, indent=2))
 
 
 def cmd_status(a, cfg):
@@ -2870,6 +2895,12 @@ def main(argv=None, *, forwarded=None):
     p.add_argument("--into", help="合入目标 REF；默认各 job 的 source_branch")
     p.add_argument("--project", help="限定项目；未指定时 --unmerged 在当前仓库内筛选")
     p.set_defaults(fn=cmd_status)
+
+    p = sub.add_parser("timings", help="按项目与目标机查询各轮次 setup 与主体耗时（读本地已保存回执）")
+    p.add_argument("--project")
+    p.add_argument("--host")
+    p.add_argument("--kind", choices=["test", "command", "agent"])
+    p.set_defaults(fn=cmd_timings)
 
     p = sub.add_parser("wait", help="block until a job finishes (exit 0 ok, 1 failed, 2 still running)")
     p.add_argument("job")
