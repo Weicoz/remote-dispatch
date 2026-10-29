@@ -210,6 +210,108 @@ class LineTests(unittest.TestCase):
         self.assertEqual(caught.exception.code, 4)
         self.assertEqual(len(rd.all_jobs()), count)
 
+    def fetch(self, record):
+        bare = self.worker / record["bare"]
+        self.git("fetch", "-q", str(bare), f"+{record['branch']}:refs/remotes/rd/{record['branch']}")
+
+    def two_items(self):
+        """a、b 两个工作项都已验收；返回 (派单, a 的 head, b 的 head)。"""
+        record, head_a = self.accepted_first()
+        self.run_item("b")
+        head_b = self.finish_round(record, 2, "b.txt")
+        self.review(record, 2)
+        self.fetch(record)
+        return rd.load_job(record["job"]), head_a, head_b
+
+    def line_cmd(self, action, record, *items, **overrides):
+        values = dict(line_action=action, job=record["job"], items=list(items), branch=None,
+                      initiator_session="sender")
+        values.update(overrides)
+        return self.capture(rd.cmd_line, argparse.Namespace(**values))
+
+    def branch_head(self, name):
+        return self.git("rev-parse", name).strip()
+
+    def test_prefix_branch_holds_the_accepted_head_of_the_kth_item(self):
+        record, head_a, head_b = self.two_items()
+        self.line_cmd("prefix", record, "a")
+        self.assertEqual(self.branch_head(record["branch"] + "-prefix-1"), head_a)
+        self.line_cmd("prefix", record, "a", "b")
+        second = record["branch"] + "-prefix-2"
+        self.assertEqual(self.branch_head(second), head_b)
+        self.git("merge-base", "--is-ancestor", head_a, second)
+        self.assertEqual(self.branch_head(record["branch"] + "-prefix-1"), head_a)
+
+    def test_skipping_or_unaccepted_items_are_rejected_with_exit_code_4(self):
+        record, _, _ = self.two_items()
+        self.run_item("c")
+        for items in (("b",), ("a", "c"), ("c",), ("a", "b", "c"), ("nope",), ()):
+            with self.subTest(items=items), self.assertRaises(SystemExit) as caught:
+                self.line_cmd("prefix", record, *items)
+            self.assertEqual(caught.exception.code, 4)
+        self.assertEqual(self.git("branch", "--list", "*-prefix-*").strip(), "")
+
+    def test_gate_runs_against_the_prefix_branch(self):
+        record, _, head_b = self.two_items()
+        self.line_cmd("prefix", record, "a", "b")
+        name = record["branch"] + "-prefix-2"
+        with open(rd.CONFIG, "a") as stream:
+            stream.write("\n[project:app]\ntest_full=echo full\n")
+        self.cfg = rd.Config()
+        before = {r["job"] for r in rd.all_jobs()}
+        values = dict(dir=str(self.repo), ref=name, host="fixture", project="app", timeout=15,
+                      initiator_session=None, force_host=False, tag=[], include=[], name=None, branch=None, wip=False)
+        self.capture(rd.cmd_gate, argparse.Namespace(**values))
+        (gate,) = [r for r in rd.all_jobs() if r["job"] not in before]
+        self.assertEqual(gate["gate"], {"ref": name, "commit": head_b})
+
+    def test_open_line_is_not_merged_for_clean_until_closed(self):
+        record, _, head_b = self.two_items()
+        self.plan("cancel", "c")
+        self.git("merge", "--ff-only", "-q", head_b)
+        self.acknowledge_all(record)
+        dry = dict(job=None, merged=True, force=False, delete_branch=False, discard_reports=False,
+                   initiator_session="sender", into=None, dry_run=True, project="demo", dir=str(self.repo))
+        before = self.capture(rd.cmd_clean, argparse.Namespace(**dry))
+        self.assertNotIn("would clean", before)
+        self.assertIn(record["job"], before)
+        open_rec = rd.load_job(record["job"])
+        snapshot = rd.job_states(self.cfg, [open_rec])[open_rec["job"]]
+        code, detail, _, _ = rd.reclaim_check(self.cfg, open_rec, snapshot, rd.job_host(self.cfg, open_rec))
+        self.assertEqual(code, rd.BLOCK_NOT_MERGED)
+        self.assertIn("未关闭", detail)
+        self.line_cmd("close", record)
+        self.assertTrue(rd.load_job(record["job"])["line"]["closed"])
+        after = self.capture(rd.cmd_clean, argparse.Namespace(**dry))
+        self.assertIn("would clean " + record["job"], after)
+
+    def acknowledge_all(self, record):
+        for number in (1, 2):
+            rec = rd.load_job(record["job"])
+            rec["rounds"] = number
+            snapshot = rd.job_states(self.cfg, [rec])[rec["job"]]
+            receipt = rd.queries(self.cfg).result(rec, number, snapshot) if number == record["rounds"] else None
+            receipt = receipt or messages.read_json(rd.result_path(rec, number))
+            if receipt:
+                rd.cmd_ack(argparse.Namespace(job=rec["job"], round=number, receipt_id=receipt["receipt_id"],
+                                              initiator_session="sender"), self.cfg)
+
+    def test_close_is_rejected_while_a_round_is_running(self):
+        record, _, _ = self.two_items()
+        for state in ("running", "starting"):
+            with self.subTest(state), patch.object(rd, "job_states", return_value={record["job"]: dict(state=state)}), \
+                    self.assertRaises(SystemExit) as caught:
+                self.line_cmd("close", record)
+            self.assertEqual(caught.exception.code, 4)
+        self.assertNotIn("closed", rd.load_job(record["job"])["line"])
+
+    def test_closed_line_takes_no_new_items(self):
+        record, _, _ = self.two_items()
+        self.line_cmd("close", record)
+        added, output = self.run_item("c")
+        self.assertEqual(len(added), 1)
+        self.assertIn("已关闭", output)
+
 
 if __name__ == "__main__":
     unittest.main()

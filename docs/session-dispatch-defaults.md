@@ -49,6 +49,18 @@ harness = codex
 派单记录的 `line` 字段含 `items`（工作项到轮次列表）、`bases`（工作项开始时的基线）与 `current`；
 `RD_BASE` 在线上取所属工作项的基线（上一个工作项验收轮回执的 `head`），第一个工作项仍取派单基线。
 打回只续跑当前工作项，新轮次记入同一工作项。本版会话沿用当前会话。
+
+#### 前缀合入与关闭线
+
+工作线只支持前缀合入。`rdispatch line prefix <派单> <工作项...>` 的工作项必须恰好是线上顺序的前 k 个（不跳项，
+也不接受未验收的工作项），否则退出码 4。第 k 个工作项取其最近一个验收轮回执的 `head`（需已 `fetch`），在该提交建本地分支
+`<线分支>-prefix-<k>`（`--branch` 可改名；同名分支指向别处时拒绝，不改写）。门禁直接对该分支执行：`rdispatch gate <前缀分支>`。
+
+中途前缀合入不把派单算作已合入：线关闭前，合入检查（`status --unmerged`、`clean --merged|--expired`）都带原因
+「工作线未关闭」，`clean --merged` 阻塞码为 `not_merged`。`rdispatch line close <派单>` 在线上没有运行中轮次时记
+`line.closed`，之后按正常合入判定与回收；有运行中轮次或目标机不可达时退出码 4。线关闭后不再接新工作项。
+新增逻辑在 `rd_line.py`（`prefix_items`、`accepted_round`、`close_blocker`、`merge_blocker`）。
+
 判定集中在 `rd_line.decide`，由 `cli.line_wiring` 收集事实后调用，后续 `suggest` 复用。
 
 ```sh

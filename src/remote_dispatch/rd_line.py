@@ -49,6 +49,54 @@ def note_round(rec, number):
         line["items"][line["current"]].append(number)
 
 
+def merge_blocker(rec):
+    """线未关闭时的合入阻塞原因；线关闭或不是线时为 None。前缀合入不改变派单的合入状态。"""
+    line = rec.get("line")
+    if line and not line.get("closed"):
+        return f"工作线 {line['name']} 未关闭（用 rdispatch line close 关闭后才按已合入处理）"
+    return None
+
+
+def prefix_items(rec, requested):
+    """校验前缀合入请求：返回 (工作项列表, 原因)。请求必须恰好是线上工作项顺序的前 k 个，不跳项。"""
+    line = rec.get("line")
+    if not line:
+        return None, "派单不在工作线上"
+    order = list(line["items"])
+    requested = list(requested or [])
+    if not requested:
+        return None, "需要至少一个工作项"
+    unknown = [item for item in requested if item not in line["items"]]
+    if unknown:
+        return None, "工作项不在线上：" + "、".join(unknown)
+    if requested != order[:len(requested)]:
+        return None, (f"只支持前缀合入：应为 {'、'.join(order[:len(requested)])}（按线上顺序，不跳项），"
+                      f"本次请求 {'、'.join(requested)}")
+    return requested, None
+
+
+def accepted_round(rec, item, state_of):
+    """工作项最近一个验收通过的轮次；没有则为 None。state_of(number) 返回该轮验收状态。"""
+    for number in reversed(rec["line"]["items"][item]):
+        if state_of(number) == "accepted":
+            return number
+    return None
+
+
+def close_blocker(rec, state):
+    """关闭线的阻塞原因；None 表示可以关闭。state 为目标机上最新轮次的运行状态。"""
+    line = rec.get("line")
+    if not line:
+        return "派单不在工作线上"
+    if line.get("closed"):
+        return "工作线已关闭"
+    if state in ("running", "starting"):
+        return "线上有运行中的轮次；先 rdispatch stop 或等它结束"
+    if state == "unreachable":
+        return "目标机不可达，无法确认线上没有运行中的轮次"
+    return None
+
+
 def predecessor(items, item, after):
     """取本工作项唯一的前序派单：(派单 ID, 原因)。after 为 --after 传入的派单。"""
     row = items.get(item) or {}
@@ -99,6 +147,8 @@ def decide(rec, request, facts):
     if request.get("host") not in (None, "auto", rec.get("host")):
         return False, f"目标机 {request['host']} 与线所在的 {rec.get('host')} 不一致"
     line = rec.get("line")
+    if line and line.get("closed"):
+        return False, "工作线已关闭，不接新工作项"
     if line and request["item"] in line["items"]:
         return False, f"工作项 {request['item']} 已在线上"
     if facts.get("state") in ("running", "starting"):
