@@ -95,12 +95,61 @@ class Writes:
             except (OSError, subprocess.SubprocessError):
                 result = pending
             status, reply = result
+            token = reply["suggestion"].get("token") if isinstance(reply.get("suggestion"), dict) else None
             reply = service.redact(reply)
+            if token and "suggestion" in reply:
+                # 令牌是单次、限时、绑定发起会话的接受凭据，App 必须能拿到；其余字段照常脱敏。
+                reply["suggestion"]["token"] = token
             try:
                 messages.atomic_json(path, dict(status=status, body=reply, fingerprint=request_hash), limit=None)
             except OSError:
                 return pending
             return status, reply
+
+    @staticmethod
+    def line_arguments(body):
+        """解析 /v1/runs 的 plan_item、after、suggestion；返回 (plan 参数, 接受/拒绝参数或 None)。"""
+        item = text(body, "plan_item")
+        after = body.get("after", [])
+        decision = body.get("suggestion")
+        if not isinstance(after, list) or any(not isinstance(value, str) or not value or "\x00" in value for value in after):
+            raise ValueError("invalid_request")
+        if item is None:
+            if after or decision is not None:
+                raise ValueError("invalid_request")
+            return [], None
+        args = ["--plan-item=" + item] + ["--after=" + value for value in after]
+        if decision is None:
+            return args, None
+        if not isinstance(decision, dict):
+            raise ValueError("invalid_request")
+        action = text(decision, "action", required=True)
+        if action == "decline":
+            return args, ["--no-line"]
+        if action != "accept":
+            raise ValueError("invalid_request")
+        line, token = text(decision, "line", required=True), text(decision, "token", required=True)
+        flags = ["--line=" + line, "--accept=" + token]
+        chain = decision.get("accept_chain", False)
+        if not isinstance(chain, bool):
+            raise ValueError("invalid_request")
+        return args, flags + (["--accept-chain"] if chain else [])
+
+    def suggest(self, run_argv, cwd, stdin, initiator, origin):
+        """用与 run 相同的参数执行只读的 suggest --json；有建议返回其结构，否则返回 None（照常派单）。"""
+        argv = ["suggest", "--json"] + run_argv[1:]
+        request = dict(argv=argv, cwd=cwd, config=str(Path(cli.CONFIG).resolve()), user_id=self.service.user_id,
+                       initiator_session=initiator, origin=origin, stdin=stdin)
+        result = self.service.execute(request)
+        if result["exit_code"]:
+            return None
+        try:
+            suggestion = json.loads(result["stdout"])
+        except ValueError:
+            return None
+        if not isinstance(suggestion, dict) or not suggestion.get("suggest"):
+            return None
+        return suggestion
 
     def command(self, route, body):
         service = self.service
@@ -183,6 +232,15 @@ class Writes:
                     argv += ["--" + name + "=" + value]
             origin = dict(initiator_harness="app", initiator_host=socket.gethostname(),
                           initiator_herdr=dict(session=None, workspace_id=None, pane_id=None))
+            plan_args, decision = self.line_arguments(body)
+            argv += plan_args
+            if plan_args and decision is None:
+                # 第一步：先问建议；有建议就返回给 App 确认，不派单。
+                suggestion = self.suggest(argv, cwd, stdin, initiator, origin)
+                if suggestion is not None:
+                    return 200, dict(suggestion=suggestion)
+            elif decision:
+                argv += decision
         else:
             raise ValueError("invalid_request")
         if action in ("review", "resume"):
@@ -213,7 +271,12 @@ class Writes:
         if route is None:
             match = re.search(r"started\. job id: ([A-Za-z0-9._-]+)", result["stdout"])
             if match is None:
-                return error(503, "write_outcome_unknown")
+                # 接受建议后接线：新工作项作为前序派单的新轮次，不创建新 job。
+                wired = re.search(r"工作线 (\S+)：工作项 \S+ 接入 ([A-Za-z0-9._-]+)（", result["stdout"])
+                current = wired and next((saved for saved in service.records() if saved["job"] == wired[2]), None)
+                if not current:
+                    return error(503, "write_outcome_unknown")
+                return 201, dict(job=current["job"], round=current["rounds"], line=wired[1])
             return 201, dict(job=match[1], round=1)
         if action == "review":
             return 200, dict(job=job, round=int(number), review=service.query().review(rec, int(number)))
