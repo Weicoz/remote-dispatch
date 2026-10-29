@@ -1,0 +1,38 @@
+{
+  "request": {
+    "method": "POST",
+    "path": "/v1/runs",
+    "headers": {
+      "Content-Type": "application/json",
+      "Idempotency-Key": "write-runs-suggestion"
+    },
+    "body": {
+      "project": "demo",
+      "prompt": "做 b",
+      "host": "target",
+      "plan_item": "b",
+      "initiator_session": "app:device"
+    }
+  },
+  "response": {
+    "status": 200,
+    "body": {
+      "suggestion": {
+        "suggest": true,
+        "reason": null,
+        "line": "a",
+        "previous": "fixture-job",
+        "host": "target",
+        "token": "tok-1",
+        "fingerprint": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+        "expires_at": "2026-10-30 00:00:00",
+        "items": {
+          "completed": ["a"],
+          "current": "b",
+          "pending": []
+        }
+      }
+    }
+  },
+  "events": []
+}

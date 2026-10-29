@@ -150,6 +150,9 @@ rdispatch run --no-line --plan-item <工作项> --prompt-file task.md   # 拒绝
 rdispatch board                        # 派单数量、目标机、模型、时长、待派与阻塞
 rdispatch gate <ref> [--host H]        # 合入前门禁：对提交跑一次全量测试
 rdispatch inbox --orphans              # 没有发起会话的派单，集中签收
+rdispatch line prefix <job> <工作项...> [--branch B]   # 线上前 k 个工作项都已验收后，在验收轮 head 建前缀分支供先合入
+rdispatch line close <job>             # 关闭工作线；之后该派单按合入状态进入回收
+rdispatch takeover <job> --initiator-session <会话>    # 同一用户 ID 的其他会话接手工作线，写入交接记录
 rdispatch clean --slim [<job>] [--dry-run]   # 瘦身：只删可再生子路径，保留 worktree 与代码
 ```
 
@@ -157,6 +160,7 @@ rdispatch clean --slim [<job>] [--dry-run]   # 瘦身：只删可再生子路径
 - **无人值守**：用户不在场时不调 `suggest` 等人，按默认方式派出；会话已设派单模式 `line` 时由 `run` 自己判断接线。
 - **上下文来源**：派新工作项时，用 `--context-from` 取该工作项依赖边上的前序派单（`plan` 里 `--depends` 工作项所关联的派单，以及 `--after` 派单），可重复。不靠自己转述前序内容。
 - 工作线管理用 `rdispatch plan chain <线名>`（`--clear`、`--revoke-accept`）。`board` 只读，不连目标机。
+- `line prefix` 的工作项必须是线上顺序的前 k 个且已验收，提交需先 `fetch` 取回；`line close` 在线上有运行中轮次或目标机不可达时拒绝。`takeover` 只限同一 `RD_USER_ID` 与工作线，其他情况一律拒绝。
 - `clean --slim` 后下次 `resume` 会重新跑 setup；`inbox --orphans` 的输出带可直接执行的 `ack` 命令。
 - **局限：rdispatch 不能强制代理先调 `suggest`。** 这条规则只靠本技能提示，代理跳过时 `run` 照常按默认方式派出，不报错。用户要求必须先建议时，编排方自己核对每次派单前有没有跑过 `suggest`。
 

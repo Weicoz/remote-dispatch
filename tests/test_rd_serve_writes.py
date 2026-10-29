@@ -462,6 +462,7 @@ class ServeWriteTests(unittest.TestCase):
         status, body = self.post("/v1/runs", self.run_body())
         self.assertEqual(status, 200, body)
         self.assertEqual(body["suggestion"], self.SUGGESTION)
+        self.assert_contract("write-runs-suggestion", (status, body))
         self.assertNotIn("job", body)
         self.assertEqual([call[0] for call in calls], ["suggest"])
 

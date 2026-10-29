@@ -118,6 +118,10 @@
   明确验收通过的累计轮次数；`project.changed` 的统计变体另带 `host/accepted_round_count`。
   机器迁移前的轮次按回执目标机归属。App 同步契约时保留可选字段兼容。
 
+- `write-runs-suggestion.json`：`POST /v1/runs` 带 `plan_item` 且有工作线建议时的两步派单第一步，
+  返回 200 `{suggestion}`（内容同 `rdispatch suggest --json`），此时不派单。App 确认后用新幂等键
+  再 POST 同一请求体并加 `suggestion`，成功返回 201 `job, round, line`；详情见 `docs/serve.md`。
+  样例由 `tests/test_rd_serve_writes.py` 经真实 serve 校验结构。
 - `write-idempotency-reused.json` / `network-idempotency-reused.json`：同调用方的幂等键
   先执行可选 `previous_request`，再执行同键的 `request`；幂等键
   已绑定其他方法、路径或规范 JSON 请求体时返回 422 `idempotency_key_reused`，不执行动作。
