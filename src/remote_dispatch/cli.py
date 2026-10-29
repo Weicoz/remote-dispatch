@@ -34,6 +34,7 @@ from . import __version__
 from . import rd_profiles as profiles
 from . import rd_native as native
 from . import rd_messages as messages
+from . import rd_slim as slim
 from . import rd_timings as timings
 from . import rd_health as health
 from . import rd_agents as agents
@@ -156,6 +157,7 @@ wpid=$!
 wait $cpid; rc=$?
 killtree $wpid
 echo "body_seconds=$(( $(date +%s) - rd_t1 ))" >> "$RD_JOB_DIR/timing.r$RD_ROUND"
+@@REGEN@@
 [ -f "$RD_JOB_DIR/timed_out" ] && rc=124
 git rev-parse HEAD > "$RD_JOB_DIR/head" 2>/dev/null
 git status --porcelain 2>/dev/null | wc -l | tr -d ' ' > "$RD_JOB_DIR/dirty"
@@ -324,7 +326,12 @@ class Config:
         return [h for h in map(self.host, names) if h["enabled"].lower() in ("1", "true", "yes")]
 
     def project(self, name):
-        return self._section("project", name) or {}
+        section = self._section("project", name) or {}
+        try:
+            slim.parse_paths(section.get("regenerable_paths", ""))
+        except ValueError as error:
+            self.fail(f"[project:{name}] regenerable_paths {error}", 4)
+        return section
 
     def agent(self, name):
         a = dict(AGENTS.get(name, {}))
@@ -1184,7 +1191,38 @@ def cmd_result(a, cfg):
     print(json.dumps(result, ensure_ascii=False, indent=2))
 
 
+def cmd_orphans(a, cfg):
+    """列出当前用户 ID 下没有发起会话的派单及其待收取回执，供集中签收。"""
+    uid = require_user()
+    recs = [r for r in all_jobs() if r.get("user_id") == uid and not r.get("initiator_session")]
+    states = job_states(cfg, recs)
+    rows = []
+    for rec in recs:
+        snapshot = states.get(rec["job"], {})
+        row = dict(job=rec["job"], host=rec.get("host"), project=rec.get("project"), branch=rec.get("branch"),
+                   state=snapshot.get("state"), rounds=rec.get("rounds"), pending_receipts=[])
+        if snapshot.get("state") != "unreachable":
+            collect_result(cfg, rec, snapshot)
+            for path in sorted(result_path(rec, 1).parent.glob("r*.json")):
+                if re.fullmatch(r"r[0-9]+\.json", path.name):
+                    receipt = messages.read_json(path)
+                    if not queries(cfg).acknowledgement(rec, receipt):
+                        row["pending_receipts"].append(dict(round=receipt["round"], receipt_id=receipt["receipt_id"]))
+        rows.append(row)
+    if getattr(a, "json", False):
+        print(json.dumps(rows, ensure_ascii=False, indent=2))
+        return
+    if not rows:
+        print("没有无主派单。")
+    for row in rows:
+        pending = "；".join(f"第 {p['round']} 轮待收取，签收：rdispatch ack {row['job']} --round {p['round']} --receipt-id {p['receipt_id']}"
+                            for p in row["pending_receipts"]) or "无待收取回执"
+        print(f"{row['job']} [{row['state'] or '未知'}] {row['host']}：{pending}")
+
+
 def cmd_inbox(a, cfg):
+    if getattr(a, "orphans", False):
+        return cmd_orphans(a, cfg)
     owner = initiator_session(a)
     if not owner:
         die("inbox 需要 --initiator-session 或 RD_INITIATOR_SESSION。", 4)
@@ -1314,6 +1352,10 @@ def build_run_script(host, rec, round_no, timeout):
             "MAX_HEAVY": host["max_heavy"], "ENV_FILE": env_file, "KILLTREE": KILLTREE,
             "TIMEOUT": str(int(timeout)), "PUSH": push, "SHARED_ROOT": root_expr(shared),
             "CACHE_ENV": cache_env_script(host, rec.get("user_id")), "IDENTITY": identity, "EXEC": command, "REPORT_ENV": report_env, "REPORT_FINISH": report_finish}
+    subs["REGEN"] = "\n".join(
+        f'rd_sz=$(du -sk "$RD_WT"/{shlex.quote(p)} 2>/dev/null | cut -f1); '
+        f'printf "path_size_kb=%s\\t%s\\n" "${{rd_sz:-0}}" {shlex.quote(p)} >> "$RD_JOB_DIR/timing.r$RD_ROUND"'
+        for p in rec.get("regenerable_paths") or [])
     text = RUN_TEMPLATE
     for k, v in subs.items():
         text = text.replace(f"@@{k}@@", v)
@@ -1725,7 +1767,8 @@ def cmd_run(a, cfg):
                "agent_kind": a.agent, "isolated": bool(a.agent), "permission_mode": permission,
                "auth_file": host[spec["auth_key"]] if a.agent else host["codex_auth_file"],
                "worker_platform": host["platform"], "worker_python": host["python"], "heavy": a.heavy,
-               "handoff_version": 1, "initiator_session": owner, "test": bool(a.test)}
+               "handoff_version": 1, "initiator_session": owner, "test": bool(a.test),
+               "regenerable_paths": slim.parse_paths(proj.get("regenerable_paths", ""))}
         if plan_item:
             rec["plan_item"] = plan_item
         rec["round_prompts"] = {"1": prompt}
@@ -2447,7 +2490,7 @@ BLOCK_RUNNING = "running"
 BLOCK_PREPARING = "preparing"
 BLOCK_UNREACHABLE = "unreachable"
 BLOCK_NOT_FINISHED = "not_finished"
-BLOCK_SOURCE_MISSING = "source_missing"
+BLOCK_NEEDS_CONFIRM = "needs_confirmation"
 BLOCK_UNVERIFIABLE = "unverifiable"
 BLOCK_ORPHAN = "worktree_orphan"
 BLOCK_NOT_FETCHED = "not_fetched"
@@ -2471,7 +2514,41 @@ def merge_block_code(reason):
     return BLOCK_UNVERIFIABLE
 
 
-def reclaim_check(cfg, rec, snapshot, host, *, single=False, force=False, a=None, into=None, mode="merged"):
+def source_missing_report(host, rec):
+    """源仓库已删除时，用目标机 bare 仓库核对 worktree 提交是否仍可取回或已合入；返回给人看的核对结果。"""
+    prefix = f"源仓库不存在：{rec['repo']}；"
+    if host["platform"] == "windows":
+        return prefix + "Windows 目标机无法核对 bare 仓库，请人工确认提交已取回或不再需要。"
+    j, b = rec["job"], rec["branch"]
+    bare = f'"$ROOT/{rec.get("bare", "repos/" + rec["project"] + ".git")}"'
+    wt = f'"$ROOT/wt/{messages.job_id(j)}"'
+    try:
+        r = ssh(host, f'head=$(git -C {wt} rev-parse HEAD 2>/dev/null); echo "head=$head"; '
+                      f'if git -C {bare} rev-parse --git-dir >/dev/null 2>&1; then echo bare=yes; '
+                      f'echo "tip=$(git -C {bare} rev-parse -q --verify {shlex.quote("refs/heads/" + b)} 2>/dev/null)"; '
+                      f'if [ -n "$head" ] && git -C {bare} cat-file -e "$head^{{commit}}" 2>/dev/null; then echo present=yes; '
+                      f'echo "merged=$(git -C {bare} for-each-ref --contains "$head" --format="%(refname:short)" refs/heads '
+                      f'| grep -vxF {shlex.quote(b)} | head -3 | tr "\\n" " ")"; fi; fi', check=False)
+    except (OSError, ValueError, SystemExit, subprocess.SubprocessError) as error:
+        return prefix + f"bare 仓库核对失败：{error}"
+    fields = dict(line.partition("=")[::2] for line in (r.stdout or "").splitlines()) if r and not r.returncode else {}
+    head, tip = fields.get("head", ""), fields.get("tip", "")
+    if fields.get("bare") != "yes":
+        return prefix + "目标机上的 bare 仓库不存在或无法读取，无法核对。"
+    if not head:
+        return prefix + f"worktree 已不可读，无法核对；bare 仓库分支 {b} " + (f"位于 {tip[:12]}。" if tip else "不存在。")
+    if head == rec["base"]:
+        return prefix + "目标机 bare 仓库核对：worktree 没有新提交，删除不丢提交。"
+    merged = fields.get("merged", "").strip()
+    if fields.get("present") != "yes":
+        return prefix + f"目标机 bare 仓库核对：缺少 worktree head {head[:12]} 的提交，删除后无法恢复。"
+    if head == tip:
+        return prefix + f"目标机 bare 仓库核对：分支 {b} 已含 worktree head {head[:12]}，提交可从 bare 取回。"
+    where = f"，已合入 bare 分支 {merged}" if merged else "，但不在任何分支上"
+    return prefix + f"目标机 bare 仓库核对：有 worktree head {head[:12]} 的提交{where}；分支 {b} 位于 {tip[:12] or '无'}。"
+
+
+def reclaim_check(cfg, rec, snapshot, host, *, single=False, force=False, a=None, into=None, mode="merged", confirmed=False):
     """回收安全条件的唯一判定点，单个 clean 与批量清理共用。
 
     返回 (code, detail, head, reasons)：code 为 None 表示安全条件全部满足。
@@ -2493,6 +2570,8 @@ def reclaim_check(cfg, rec, snapshot, host, *, single=False, force=False, a=None
             receipt = collect_result(cfg, rec, snapshot)
             if not receipt or delivery(rec, receipt) != "received":
                 return BLOCK_RECEIPT_PENDING, "先用 rdispatch result 收取结果，再用 rdispatch ack 确认；未交付回执不清理。", None, []
+        if not Path(rec["repo"]).is_dir() and not (force or confirmed):
+            return BLOCK_NEEDS_CONFIRM, source_missing_report(host, rec), None, []
         if state == "missing" or force:
             return None, "", None, []
         j, b = rec["job"], rec["branch"]
@@ -2512,8 +2591,8 @@ def reclaim_check(cfg, rec, snapshot, host, *, single=False, force=False, a=None
                                   "确认可以丢弃后用 --force。"), head, []
         if dirty.strip() != "0":
             return BLOCK_DIRTY, f"{dirty.strip()} uncommitted file(s) in the remote worktree would be lost. Check them, or --force.", head, []
-        if not Path(rec["repo"]).is_dir():
-            return BLOCK_SOURCE_MISSING, f"源仓库不存在：{rec['repo']}；确认可以丢弃后用 --force。", head, []
+        if confirmed:
+            return None, "", head, []
         have = git(["rev-parse", "-q", "--verify", f"refs/remotes/rd/{b}"], rec["repo"], check=False).stdout.strip()
         if head and head != rec["base"] and head != have:
             return BLOCK_NOT_FETCHED, "the job has commits you have not fetched. Run rdispatch fetch first, or --force.", head, []
@@ -2527,7 +2606,7 @@ def reclaim_check(cfg, rec, snapshot, host, *, single=False, force=False, a=None
             return BLOCK_UNREACHABLE, "连接不可达", None, []
         return BLOCK_NOT_FINISHED, "未确认任务已结束", None, []
     if not Path(rec["repo"]).is_dir():
-        return BLOCK_SOURCE_MISSING, f"源仓库不存在：{rec['repo']}", None, []
+        return BLOCK_NEEDS_CONFIRM, source_missing_report(host, rec) + "批量清理不代为确认；改用 rdispatch clean JOB。", None, []
     try:
         head, paths = worktree_changes(host, rec)
         reasons = merge_check(rec, head, into)
@@ -2640,7 +2719,108 @@ def cmd_keep(a, cfg):
     save_job(rec)
 
 
+def slim_block(rec, snapshot):
+    """瘦身的前置条件：任务已结束、目标机可达、worktree 在。返回 (阻塞码, 说明) 或 (None, "")。"""
+    state = snapshot.get("state")
+    if state == "running" or state == "starting" or rec.get("dispatch_state") in ("preparing", "launching"):
+        return BLOCK_RUNNING, "任务运行中或准备中，不能瘦身"
+    if state == "unreachable":
+        return BLOCK_UNREACHABLE, "连接不可达"
+    if state == "missing":
+        return BLOCK_NOT_FINISHED, "目标机上没有该任务"
+    if not rec.get("regenerable_paths"):
+        return BLOCK_NOT_FINISHED, "该任务没有声明 regenerable_paths（项目配置里未声明，或任务早于该功能）"
+    return None, ""
+
+
+def slim_worktree(host, rec, dry_run):
+    """在目标机上执行瘦身；返回 (已删/将删 [{path, kb}], 跳过 [{path, reason}])。"""
+    j, paths = rec["job"], slim.parse_paths(";".join(rec.get("regenerable_paths") or []))
+    if host["platform"] == "windows":
+        reply = native.request(host, "slim", {"job": j, "paths": paths, "dry_run": dry_run})
+        return reply["removed"], reply["skipped"]
+    wt, job_dir = f'"$ROOT/wt/{messages.job_id(j)}"', f'"$ROOT/jobs/{j}"'
+    drop = ":" if dry_run else f'rm -f {job_dir}/setup.done'
+    body = [f'WT={wt}; [ -d "$WT" ] || {{ echo "worktree 不存在" >&2; exit 1; }}; WR=$(cd "$WT" && pwd -P)',
+            'skip() { printf "skipped\t%s\t%s\n" "$1" "$2"; }',
+            'slim_one() { rel=$1; p="$WT/$rel"; [ -e "$p" ] || [ -L "$p" ] || return 0',
+            '  par=$(cd "$(dirname "$p")" 2>/dev/null && pwd -P) || { skip "$rel" "父目录不可读"; return 0; }',
+            '  case "$par" in "$WR"|"$WR"/*) ;; *) skip "$rel" "路径越出 worktree"; return 0;; esac',
+            '  if [ -n "$(git -C "$WT" ls-files -- "$rel" 2>/dev/null | head -n 1)" ]; then skip "$rel" "含已跟踪文件"; return 0; fi',
+            '  kb=$(du -sk "$p" 2>/dev/null | cut -f1)']
+    if dry_run:
+        body.append('  printf "removed\t%s\t%s\n" "$rel" "${kb:-0}"; }')
+    else:
+        body += ['  [ -L "$p" ] || chmod -R u+rwx "$p" 2>/dev/null',
+                 '  if rm -rf "$p"; then printf "removed\t%s\t%s\n" "$rel" "${kb:-0}"; else skip "$rel" "删除失败"; fi }']
+    body += [f'slim_one {shlex.quote(p)}' for p in paths] + [drop]
+    reply = ssh(host, "\n".join(body))
+    removed, skipped = [], []
+    for line in (reply.stdout or "").splitlines():
+        verb, _, rest = line.partition("\t")
+        rel, _, detail = rest.partition("\t")
+        if verb == "removed":
+            removed.append(dict(path=rel, kb=int(detail) if detail.isdigit() else 0))
+        elif verb == "skipped":
+            skipped.append(dict(path=rel, reason=detail))
+    return removed, skipped
+
+
+def slim_summary(removed, skipped):
+    text = "、".join(f"{r['path']} {r['kb']} KB" for r in removed) or "没有可删的声明路径"
+    if skipped:
+        text += "；跳过：" + "、".join(f"{r['path']}（{r['reason']}）" for r in skipped)
+    return text
+
+
+def cmd_slim(a, cfg):
+    """clean --slim：只删声明的可再生子路径和 setup 完成标记，保留 worktree、代码与其余文件；下次续跑重新 setup。"""
+    if a.merged or getattr(a, "expired", False) or a.force or a.delete_branch or a.discard_reports or getattr(a, "into", None):
+        die("--slim 不与 --merged、--expired、--force、--delete-branch、--discard-reports 或 --into 混用。", 4)
+    as_json = getattr(a, "json", False)
+    dry_run = getattr(a, "dry_run", False)
+    if as_json and not dry_run:
+        die("--json 只能与 --dry-run 一起使用。", 4)
+    if a.job:
+        rec = load_job(a.job)
+        if rec.get("user_id") and rec["user_id"] != require_user():
+            die("只能瘦身当前 RD_USER_ID 的任务。", 4)
+        recs = [rec]
+    else:
+        recs = scoped_jobs(a, cfg)
+    if not recs:
+        print("[]" if as_json else "no jobs.")
+        return
+    states = job_states(cfg, recs)
+    rows = []
+    for rec in recs:
+        j = rec["job"]
+        row = dict(job=j, slimmable=False, reason="", removed=[], skipped=[])
+        code, detail = slim_block(rec, states.get(j, {}))
+        if code:
+            row["reason"] = detail
+            if a.job:
+                die(detail, 1)
+        else:
+            try:
+                row["removed"], row["skipped"] = slim_worktree(job_host(cfg, rec), rec, dry_run)
+                row["slimmable"] = True
+                row["reason"] = slim_summary(row["removed"], row["skipped"])
+            except (OSError, ValueError, SystemExit, subprocess.SubprocessError) as error:
+                row["reason"] = f"瘦身失败，保留未删除内容：{error}"
+                if a.job:
+                    die(row["reason"], 1)
+        rows.append(row)
+        if not as_json:
+            verb = "would slim" if dry_run and row["slimmable"] else "slimmed" if row["slimmable"] else "skip"
+            print(f"{verb} {j}: {row['reason']}")
+    if as_json:
+        print(json.dumps(rows, ensure_ascii=False, indent=2))
+
+
 def cmd_clean(a, cfg):
+    if getattr(a, "slim", False):
+        return cmd_slim(a, cfg)
     if getattr(a, "merged", False) and getattr(a, "expired", False):
         die("--merged 与 --expired 只能选一个。", 4)
     if getattr(a, "merged", False):
@@ -2654,6 +2834,15 @@ def cmd_clean(a, cfg):
     j = rec["job"]
     st = remote_state(host, [j]).get(j, {})
     code, detail, _, _ = reclaim_check(cfg, rec, st, host, single=True, force=a.force, a=a)
+    if code == BLOCK_NEEDS_CONFIRM:
+        if not sys.stdin.isatty():
+            die(detail + "确认删除请加 --force。", 4)
+        print(detail)
+        if input("确认删除此派单的目标机 worktree？[y/N] ").strip().lower() not in ("y", "yes"):
+            die("未确认，保留 worktree 与登记。", 1)
+        code, detail, _, _ = reclaim_check(cfg, rec, st, host, single=True, a=a, confirmed=True)
+    elif a.force and not Path(rec["repo"]).is_dir():
+        print(source_missing_report(host, rec))
     if code:
         die(detail, 4 if code == BLOCK_RECEIPT_PENDING else 1)
     remove_job(a, rec, host)
@@ -3208,6 +3397,8 @@ def main(argv=None, *, forwarded=None):
 
     p = sub.add_parser("inbox", help="列出当前发起会话待收取的结果")
     p.add_argument("--initiator-session")
+    p.add_argument("--orphans", action="store_true", help="改列当前用户 ID 下没有发起会话的派单，供集中签收")
+    p.add_argument("--json", action="store_true", help="与 --orphans 合用：输出 JSON（inbox 默认即 JSON）")
     p.set_defaults(fn=cmd_inbox)
 
     p = sub.add_parser("ack", help="确认已收取特定回执，不自动验收或续派")
@@ -3272,6 +3463,7 @@ def main(argv=None, *, forwarded=None):
 
     p = sub.add_parser("clean", parents=[repo_parser], help="remove a finished job's worktree and logs from the worker")
     p.add_argument("job", nargs="?")
+    p.add_argument("--slim", action="store_true", help="只删项目声明的可再生子路径（regenerable_paths）和 setup 完成标记，保留 worktree 与代码；省略 job 时处理当前范围内已结束的 job，可配 --dry-run / --json / --project")
     p.add_argument("--merged", action="store_true", help="按合入、回执及未提交路径条件批量清理当前员工已结束的 job")
     p.add_argument("--expired", action="store_true", help="同 --merged 的安全条件，再按续跑可能性分级保留：命令任务确认即回收、已合入 24 小时、未合入 7 天；见 [retention]")
     p.add_argument("--into", help="合入目标 REF；默认各 job 的 source_branch")
