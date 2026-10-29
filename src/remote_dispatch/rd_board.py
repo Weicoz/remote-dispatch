@@ -5,6 +5,7 @@ CLI `board --json` 与 serve `GET /v1/board` 共用 build() 的返回结构。
 """
 import time
 
+from . import rd_line as workline
 from . import rd_plan as plans
 from . import rd_usage as usage
 
@@ -98,6 +99,8 @@ def row_for(query, rec, snapshot, project_row, unit, referrers, now):
                reclaim_block=reclaim_block(query, rec, snapshot, receipt, referrers))
     if isinstance(sizes, dict) and sizes:
         row["regenerable_kb"] = sizes
+    if workline.sync_for_round(rec, number):
+        row["integration_sync"] = workline.sync_for_round(rec, number)
     return row
 
 
@@ -151,4 +154,7 @@ def render(board):
             lines.append(f"    回收阻塞 [{row['reclaim_block']['code']}]：{row['reclaim_block']['reason']}")
         if row.get("regenerable_kb"):
             lines.append("    可再生目录：" + size_text(row["regenerable_kb"]))
+        if row.get("integration_sync"):
+            sync = row["integration_sync"]
+            lines.append(f"    已同步 integration {sync['integration'][:10]}（{sync['from_head'][:10]} -> {sync['head'][:10]}）")
     return "\n".join(lines)

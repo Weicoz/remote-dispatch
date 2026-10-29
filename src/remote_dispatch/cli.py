@@ -1774,6 +1774,74 @@ def line_wiring(cfg, a, uid, owner, rec, item, include_paths):
     return ok, reason, facts.get("head")
 
 
+def line_sync_plan(cfg, rec, repo, ref, head):
+    """接线前的 integration 同步预检，只在控制端做：返回 dict(needed, ...)。
+
+    integration 新头 = 控制端解析的 ref。它已是验收提交 head 的祖先就不需要同步；
+    否则先取回前序提交，再用 git merge-tree 预检 head 与新头能否无冲突合并，precheck 为 clean/conflict/error。
+    不在目标机上试合并，也不写目标机。
+    """
+    resolved = git(["rev-parse", "--verify", (ref or "HEAD") + "^{commit}"], repo, check=False)
+    integration = resolved.stdout.strip()
+    if resolved.returncode or not integration:
+        return dict(needed=False)
+    if git(["cat-file", "-e", head + "^{commit}"], repo, check=False).returncode:
+        try:
+            fetch_job_branch(cfg, dict(rec, repo=repo))
+        except (Exception, SystemExit) as error:
+            return dict(needed=True, integration=integration, from_head=head, precheck="error",
+                        reason=f"无法取回前序验收提交 {head[:10]}：{error}")
+        if git(["cat-file", "-e", head + "^{commit}"], repo, check=False).returncode:
+            return dict(needed=True, integration=integration, from_head=head, precheck="error",
+                        reason=f"取回后仍缺少前序验收提交 {head[:10]}")
+    if git(["merge-base", "--is-ancestor", integration, head], repo, check=False).returncode == 0:
+        return dict(needed=False)
+    plan = dict(needed=True, integration=integration, from_head=head)
+    if job_host(cfg, rec).get("platform") == "windows":
+        return dict(plan, precheck="error", reason="Windows 目标机暂不支持同步 integration 新头")
+    merged = git(["merge-tree", "--write-tree", "--name-only", "--no-messages", head, integration], repo, check=False)
+    if merged.returncode == 0:
+        return dict(plan, precheck="clean")
+    if merged.returncode == 1:
+        files = [name for name in merged.stdout.splitlines()[1:] if name.strip()]
+        return dict(plan, precheck="conflict", files=files,
+                    reason=f"integration 新头 {integration[:10]} 与前序验收提交 {head[:10]} 预检有冲突"
+                           + (f"（{'、'.join(files)}）" if files else ""))
+    return dict(plan, precheck="error", reason="合并预检失败：" + (merged.stderr or "").strip())
+
+
+def line_sync_apply(cfg, rec, repo, plan):
+    """接受建议才执行的写操作：推 integration 新头到目标机 bare，在 worktree 里合并。
+
+    返回 (成功, 原因, 新 head)。合并冲突时中止并确认 worktree 回到合并前；任何失败都不改派单记录。
+    """
+    host = job_host(cfg, rec)
+    bare = rec.get("bare", f"repos/{rec['project']}.git")
+    pushed = git(["push", "--porcelain", "--no-follow-tags", "--force", scp_path(host, bare),
+                  f"{plan['integration']}:refs/rd-sync/{rec['job']}"], repo, check=False, env=git_ssh_env(host))
+    if pushed.returncode:
+        return False, "推送 integration 新头到目标机失败：" + (pushed.stderr or "").strip(), None
+    script = (f'cd "$ROOT/wt/{rec["job"]}" 2>/dev/null || {{ echo status=missing; exit 0; }}\n'
+              f'pre=$(git rev-parse HEAD)\n'
+              f'[ "$pre" = {shlex.quote(plan["from_head"])} ] || {{ echo status=moved; exit 0; }}\n'
+              f'[ -z "$(git status --porcelain --untracked-files=no)" ] || {{ echo status=dirty; exit 0; }}\n'
+              f'if git -c user.name=rdispatch -c user.email=rdispatch@localhost merge --no-edit -q '
+              f'{shlex.quote(plan["integration"])} >/dev/null 2>&1; then echo status=merged\n'
+              f'else git merge --abort >/dev/null 2>&1 || git reset -q --hard "$pre"; echo status=conflict; fi\n'
+              f'echo head=$(git rev-parse HEAD)\n')
+    try:
+        out = ssh(host, script, check=False, timeout=120)
+    except (Exception, SystemExit) as error:
+        return False, f"目标机合并未完成：{error}", None
+    fields = dict(row.partition("=")[::2] for row in out.stdout.splitlines()) if out and out.returncode == 0 else {}
+    status, head = fields.get("status"), fields.get("head")
+    if status == "merged" and head:
+        return True, None, head
+    reasons = dict(conflict="实际合并有冲突，已中止并恢复 worktree 到合并前状态", missing="前序 worktree 已不存在",
+                   moved="worktree 已偏离验收提交，不同步", dirty="worktree 有未提交的跟踪文件改动，不同步")
+    return False, reasons.get(status) or "目标机合并结果无法确认：" + ((out.stderr if out else "") or "").strip(), None
+
+
 def line_wire(a, cfg, uid, owner, plan_store, item, after, include_paths, prompt):
     """line 模式：满足严格接线条件就把本工作项作为前序派单的新轮次追加，返回 True；否则打印原因返回 False。"""
     previous, reason = workline.predecessor(plan_store.read(), item, after)
@@ -1787,11 +1855,25 @@ def line_wire(a, cfg, uid, owner, plan_store, item, after, include_paths, prompt
             if not ok:
                 print(f"工作线未接线：{reason}；按默认方式派出。")
                 return False
+            sync = None
+            repo = local_repo(get_dir(a))
+            plan = line_sync_plan(cfg, rec, repo, getattr(a, "ref", None), base)
+            if plan["needed"]:
+                if plan["precheck"] != "clean":
+                    print(f"工作线未接线：{plan['reason']}；按默认方式派出。")
+                    return False
+                synced, why, merged = line_sync_apply(cfg, rec, repo, plan)
+                if not synced:
+                    print(f"工作线未接线：同步 integration 新头失败，{why}；按默认方式派出。")
+                    return False
+                sync = dict(integration=plan["integration"], from_head=base, head=merged, at=messages.utc_now())
+                print(f"已同步 integration {plan['integration'][:10]} 到 worktree（{base[:10]} -> {merged[:10]}）。")
+                base = merged
             resume_args = argparse.Namespace(
                 job=previous, agent=None, session=None, host=None, model=a.model, effort=a.effort,
                 timeout=a.timeout, force_host=a.force_host, permission_mode=getattr(a, "permission_mode", None),
                 prompt_file=None, new_context=False, retry_after_repair=None, initiator_session=owner)
-            resume_job(resume_args, cfg, rec, prompt=prompt, line_item=dict(item=item, base=base),
+            resume_job(resume_args, cfg, rec, prompt=prompt, line_item=dict(item=item, base=base, sync=sync),
                        before_launch=lambda: plan_store.attach_job(item, previous, after))
     except JobBusy:
         die("round_in_progress: round in progress; another operation holds the job lock; retry after it finishes", 4)
@@ -1843,8 +1925,12 @@ def build_suggestion(cfg, a, scope=None, issue=True):
         return refuse(f"前序目标机 {rec['host']} 探测失败：{error}", previous=previous, line=chain)
     if busy:
         return refuse(f"前序目标机 {rec['host']} 离线或暂时无法接单（{'; '.join(busy)}）", previous=previous, line=chain)
+    plan = line_sync_plan(cfg, rec, scope.repo, getattr(a, "ref", None), base)
+    if plan["needed"] and plan["precheck"] != "clean":
+        return refuse(plan["reason"], previous=previous, line=chain)
+    sync = {key: plan[key] for key in ("needed", "integration", "from_head", "precheck") if key in plan}
     done = list(rec["line"]["items"]) if rec.get("line") else [workline.first_item(rec)]
-    content = dict(line=chain, previous=previous, host=rec["host"], branch=rec["branch"], harness=rec.get("agent"),
+    content = dict(sync=sync, line=chain, previous=previous, host=rec["host"], branch=rec["branch"], harness=rec.get("agent"),
                    model=rec.get("model"), permission_mode=rec.get("permission_mode"), include=sorted(include),
                    base=base, items=dict(completed=done, current=scope.plan_item,
                                          pending=suggestions.descendants(items, scope.plan_item)))
@@ -1869,6 +1955,9 @@ def cmd_suggest(a, cfg):
     print(f"建议接入工作线 {result['line']}（前序派单 {result['previous']}）")
     print(f"  工作项顺序：已完成 {'、'.join(steps['completed'])}；本项 {steps['current']}；"
           f"后续待派 {'、'.join(steps['pending']) or '无'}")
+    sync = result["sync"]
+    print("  同步 integration：" + (f"需要（新头 {sync['integration'][:10]}，预检无冲突；接受后推送并在 worktree 合并）"
+                                 if sync["needed"] else "不需要"))
     print(f"  目标机 {result['host']}，分支 {result['branch']}，权限档位 {result['permission_mode'] or '默认'}，基线 {result['base'][:10]}")
     print(f"  接受：rdispatch run --line {result['line']} --accept {result['token']}（可加 --accept-chain 常驻同意；其余参数同本次）")
     print(f"  不接受：rdispatch run --no-line（其余参数同本次）")
@@ -2605,7 +2694,7 @@ def resume_job(a, cfg, rec, *, prompt=None, before_launch=None, rollback_stack=N
     rec["receiver_session"] = session
     rec["rounds"] += 1
     if line_item:
-        workline.start_item(rec, line_item["item"], rec["rounds"], line_item["base"])
+        workline.start_item(rec, line_item["item"], rec["rounds"], line_item["base"], line_item.get("sync"))
     else:
         workline.note_round(rec, rec["rounds"])
     rec["session"] = session
@@ -2672,6 +2761,17 @@ def migrate_job(rec, source, target):
 
 def cmd_fetch(a, cfg):
     rec = load_job(a.job)
+    fetch_job_branch(cfg, rec)
+    repo, b = rec["repo"], rec["branch"]
+    log = git(["log", "--oneline", f"{rec['base']}..rd/{b}"], repo).stdout.strip()
+    print(f"fetched into rd/{b}")
+    print(log if log else "(no commits on top of the dispatched base)")
+    if log:
+        print(f"review: git diff {rec['base'][:10]}..rd/{b}     take it: git merge --ff-only rd/{b}")
+
+
+def fetch_job_branch(cfg, rec):
+    """把派单分支取回控制端 refs/remotes/rd/<分支>；fetch 与 suggest 的同步预检共用。"""
     host = job_host(cfg, rec)
     repo, b = rec["repo"], rec["branch"]
     spec = f"+refs/heads/{b}:refs/remotes/rd/{b}"
@@ -2685,11 +2785,6 @@ def cmd_fetch(a, cfg):
             git(["fetch", str(bundle), spec], repo)
     else:
         git(["fetch", scp_path(host, rec.get("bare", f"repos/{rec['project']}.git")), spec], repo, env=git_ssh_env(host))
-    log = git(["log", "--oneline", f"{rec['base']}..rd/{b}"], repo).stdout.strip()
-    print(f"fetched into rd/{b}")
-    print(log if log else "(no commits on top of the dispatched base)")
-    if log:
-        print(f"review: git diff {rec['base'][:10]}..rd/{b}     take it: git merge --ff-only rd/{b}")
 
 
 @locked_job
