@@ -41,6 +41,7 @@ from . import rd_query as query
 from . import rd_projects as projects
 from . import rd_review as reviews
 from . import rd_events as events
+from . import rd_plan as plans
 from .rd_lock import JobBusy, JobLock
 from . import rd_initiator as initiators
 from .rd_session_defaults import SessionDefaults, resolve_mode, validate_mode
@@ -1543,6 +1544,39 @@ def cmd_session_default(a, cfg):
     print(json.dumps(result, ensure_ascii=False))
 
 
+def cmd_plan(a, cfg):
+    uid = require_user()
+    project = a.project
+    if not project:
+        project = project_name(local_repo(get_dir(a)))[0]
+    store = plans.PlanStore(STATE, uid, project)
+    action = a.action
+    if action == "add":
+        store.add(a.item, a.title, a.depends, a.after)
+    elif action == "set":
+        if a.title is None and a.depends is None and a.after is None:
+            die("plan set 至少需要 --title、--depends 或 --after 之一；清空依赖传空串。", 4)
+        store.update(a.item, a.title, [d for d in a.depends if d] if a.depends is not None else None,
+                     [j for j in a.after if j] if a.after is not None else None)
+    elif action in ("done", "cancel"):
+        store.set_status(a.item, plans.DONE if action == "done" else plans.CANCELLED)
+    elif action == "remove":
+        store.remove(a.item)
+    if action != "list":
+        print(f"plan {action} {a.item}")
+        return
+    rows = store.rows()
+    if a.json:
+        print(json.dumps(dict(project=project, summary=store.summary(), items=rows), ensure_ascii=False, indent=2))
+        return
+    if not rows:
+        print("no plan items.")
+    for row in rows:
+        extra = f" 等待 {'、'.join(row['blocked_by'])}" if row["blocked_by"] else ""
+        jobs = f" 派单 {'、'.join(row['jobs'])}" if row["jobs"] else ""
+        print(f"{row['id']} [{row['state']}] {row['title']}{extra}{jobs}")
+
+
 def cmd_run(a, cfg):
     uid = require_user()
     forwarded_origin = getattr(a, "_forwarded_origin", None)
@@ -1569,6 +1603,17 @@ def cmd_run(a, cfg):
     project = a.project or project
     if not re.fullmatch(r"[A-Za-z0-9._-]+", project) or project in (".", ".."):
         die("项目名必须是英文、数字、点、下划线或连字符，不得包含路径。", 4)
+    plan_item, after = getattr(a, "plan_item", None), getattr(a, "after", None) or []
+    if after and not plan_item:
+        die("--after 需要同时指定 --plan-item。", 4)
+    if plan_item:
+        plan_store = plans.PlanStore(STATE, uid, project)
+        try:
+            plan_store.get(plan_store.read(), plan_item)
+        except ValueError as error:
+            die(str(error), 4)
+        for earlier in after:
+            load_job(messages.job_id(earlier))
     if a.test:
         a.cmd = proj.get("test") or die(f"--test needs 'test = <command>' under [project:{project}] in {CONFIG}")
         a.heavy = a.heavy or proj.get("test_heavy", "true").lower() in ("1", "true", "yes")
@@ -1666,6 +1711,8 @@ def cmd_run(a, cfg):
                "auth_file": host[spec["auth_key"]] if a.agent else host["codex_auth_file"],
                "worker_platform": host["platform"], "worker_python": host["python"], "heavy": a.heavy,
                "handoff_version": 1, "initiator_session": owner, "test": bool(a.test)}
+        if plan_item:
+            rec["plan_item"] = plan_item
         rec["round_prompts"] = {"1": prompt}
         source = dict(forwarded_origin) if forwarded_origin else initiators.origin(origin_harness, rec["created"])
         source["initiator_herdr"] = dict(source["initiator_herdr"], captured_at=rec["created"])
@@ -1678,6 +1725,8 @@ def cmd_run(a, cfg):
         rec["bare"] = bare
         rec["dispatch_state"] = "preparing"
         projects.ProjectIndex(STATE, uid).register(rec)
+        if plan_item:
+            plan_store.attach_job(plan_item, job, after)
         try:
             if host["platform"] == "windows":
                 native_init(host, rec, repo, sha, proj.get("origin_url") or origin_url)
@@ -2394,6 +2443,7 @@ BLOCK_RECEIPT_PENDING = "receipt_pending"
 BLOCK_DIRTY = "uncommitted"
 BLOCK_PINNED = "pinned"
 BLOCK_RETENTION = "retention_not_expired"
+BLOCK_PLAN_REFERENCED = "plan_referenced"
 RECLAIM_OK = "ok"
 
 
@@ -2414,6 +2464,10 @@ def reclaim_check(cfg, rec, snapshot, host, *, single=False, force=False, a=None
     reasons 是 merge_check 的原文，供保留期分级使用。"""
     state = snapshot.get("state")
     unlaunched = rec.get("dispatch_state") in ("preparing", "preparation_failed")
+    if rec.get("project") and not (single and force):
+        referrers = plans.PlanStore(STATE, rec.get("user_id") or require_user(), rec["project"]).referrers(rec["job"])
+        if referrers:
+            return BLOCK_PLAN_REFERENCED, "待派登记中后续工作项仍引用该派单：" + "、".join(referrers), None, []
     if single:
         if state == "running" or (state == "starting" and not unlaunched):
             return BLOCK_RUNNING, "the job is still running; rdispatch stop it first", None, []
@@ -3056,7 +3110,24 @@ def main(argv=None, *, forwarded=None):
     p.add_argument("--timeout", type=int, help="seconds before the job is killed")
     p.add_argument("--initiator-session", help="发起方会话ID；默认 RD_INITIATOR_SESSION，再读取父进程链识别的 harness 会话变量")
     p.add_argument("--dispatch-mode", help="派单模式：suggest、line、ticket；默认读会话默认值，再读 [defaults] dispatch_mode")
+    p.add_argument("--plan-item", help="把本次派单关联到待派登记（rdispatch plan）里的工作项")
+    p.add_argument("--after", action="append", default=[], help="本工作项依赖的前序派单 ID（可重复）；需要 --plan-item")
     p.set_defaults(fn=cmd_run)
+
+    p = sub.add_parser("plan", parents=[repo_parser], help="待派登记：登记还没派出的工作项及其依赖")
+    p.add_argument("--project", help="项目名；默认当前仓库的 origin 仓库名")
+    actions = p.add_subparsers(dest="action", required=True)
+    q = actions.add_parser("list", help="列出工作项及已派、待派、阻塞状态")
+    q.add_argument("--json", action="store_true")
+    for name, text in (("add", "登记工作项"), ("set", "修改工作项（只改传入的字段）")):
+        q = actions.add_parser(name, help=text)
+        q.add_argument("item")
+        q.add_argument("--title")
+        q.add_argument("--depends", action="append", default=None if name == "set" else [], help="依赖的工作项（可重复）；set 时传空串清空")
+        q.add_argument("--after", action="append", default=None if name == "set" else [], help="依赖的前序派单 ID（可重复）；set 时传空串清空")
+    for name, text in (("done", "标记完成"), ("cancel", "标记取消"), ("remove", "删除（不得被其他工作项依赖）")):
+        actions.add_parser(name, help=text).add_argument("item")
+    p.set_defaults(fn=cmd_plan)
 
     p = sub.add_parser("session-default", help="读取、设置或清除会话派单默认值")
     p.add_argument("session", help="发起会话 ID；--pane 时为 Herdr 窗格 ID")
