@@ -102,6 +102,7 @@ test_full = <完整测试命令>
   | 只配 `test_quick` | `test_quick` | 报错 |
   | 只配 `test_full` | `test_full` | `test_full` |
 
+- `rdispatch gate <ref> [--host H]` 是合入前门禁：对 `<ref>` 在目标机跑一次 `test_full`（自动按重命令排队）。不带 `--host` 时，用该项目全量测试（`test_tier=full`）历史里退出码为 0 的中位主体耗时，选最快且有空闲重命令名额、能接单的目标机；没有历史时用 `[defaults] host`，也没有则报错。输出目标机与选择理由。派单记录和回执带 `gate = {ref, commit}`。
 - 每次派单会注入环境变量 `RD_BASE`（本派单的基线提交），POSIX 与 Windows 原生目标机、代理派单与命令派单都有。快测命令可以据此只测改动部分。
 - `origin_url` 只在远端访问仓库的地址和本机不同时才写。
 - `regenerable_paths` 声明 worktree 内可以再生成的子路径，多项用分号分隔，例如 `regenerable_paths = target; node_modules`。必须是相对 worktree 的具体子路径：不得指向 worktree 根、不得含 `..`、通配符，路径任一层不得叫 `evidence`、`reports` 或 `.git`；违反时加载配置报错。每轮结束时回执 `report.regenerable_kb` 记录各路径大小（KB，路径不存在记 0）。

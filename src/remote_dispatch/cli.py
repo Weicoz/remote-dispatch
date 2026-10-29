@@ -1619,6 +1619,51 @@ def cmd_plan(a, cfg):
         print(f"{row['id']} [{row['state']}] {row['title']}{extra}{jobs}")
 
 
+def gate_choose(a, cfg, project, uid):
+    """返回 (目标机名, 选择理由)。只用全量测试（test_tier=full）的成功历史，挑最快且有空闲重命令名额的机器。"""
+    if a.host:
+        return a.host, f"--host 指定 {a.host}"
+    records = [rec for rec in all_jobs() if rec.get("user_id") in (None, "", uid) and rec.get("test_tier") == "full"]
+    rows = timings.history(STATE, records, project=project, kind="test")
+    medians = timings.median_body_by_host(rows, success_only=True)
+    hosts = {h["name"]: h for h in cfg.hosts()}
+    ranked = sorted((seconds, name) for name, seconds in medians.items() if name in hosts)
+    if not ranked:
+        default = cfg.cp["defaults"].get("host") if cfg.cp.has_section("defaults") else None
+        if not default or default == "auto":
+            die("没有全量测试历史，且未配置默认目标机；请用 --host 指定，或在 [defaults] 设置 host。", 4)
+        return default, "无数据，用默认目标机"
+    skipped = []
+    for seconds, name in ranked:
+        info = probe(hosts[name])
+        used = num(info.get("heavy")) or 0
+        if not assess(hosts[name], info) and used < int(hosts[name]["max_heavy"]):
+            reason = f"历史全量测试中位耗时 {seconds:g}s，最快且有空闲重命令名额"
+            if skipped:
+                reason = f"历史全量测试中位耗时 {seconds:g}s；更快的 {'、'.join(skipped)} 满载或不可用"
+            return name, reason
+        skipped.append(f"{name}({seconds:g}s)")
+    die(f"有历史的目标机均无空闲重命令名额或不可用（{'、'.join(skipped)}）；未派出。", 3)
+
+
+def cmd_gate(a, cfg):
+    """合入前门禁：对指定提交在选定目标机跑一次全量测试，复用 run 的派单、排队与回执路径。"""
+    uid = require_user()
+    repo = local_repo(get_dir(a))
+    project = a.project or project_name(repo)[0]
+    sha = git(["rev-parse", "--verify", a.ref + "^{commit}"], repo).stdout.strip()
+    host, reason = gate_choose(a, cfg, project, uid)
+    print(f"gate: 目标机 {host}（{reason}）；被测提交 {sha[:10]}")
+    values = dict(force_host=False, tag=[], include=[], branch=None, wip=False, timeout=None, initiator_session=None)
+    values.update(vars(a))
+    values.update(test=False, test_full=True, agent=None, cmd=None, prompt_file=None, heavy=True,
+                  model=None, effort=None, gate={"ref": a.ref, "commit": sha})
+    run_args = argparse.Namespace(**values)
+    run_args.host = host
+    run_args.name = a.name or "gate"
+    cmd_run(run_args, cfg)
+
+
 def cmd_run(a, cfg):
     uid = require_user()
     forwarded_origin = getattr(a, "_forwarded_origin", None)
@@ -1761,6 +1806,8 @@ def cmd_run(a, cfg):
                "handoff_version": 1, "initiator_session": owner, "test": bool(a.test or test_full),
                "test_tier": ("full" if test_full or not proj.get("test_quick") else "quick") if (a.test or test_full) else None,
                "regenerable_paths": slim.parse_paths(proj.get("regenerable_paths", ""))}
+        if getattr(a, "gate", None):
+            rec["gate"] = a.gate
         if plan_item:
             rec["plan_item"] = plan_item
         rec["round_prompts"] = {"1": prompt}
@@ -3348,6 +3395,13 @@ def main(argv=None, *, forwarded=None):
     p.add_argument("--into", help="合入目标 REF；默认各 job 的 source_branch")
     p.add_argument("--project", help="限定项目；未指定时 --unmerged 在当前仓库内筛选")
     p.set_defaults(fn=cmd_status)
+
+    p = sub.add_parser("gate", parents=[repo_parser], help="合入前门禁：对指定提交跑一次全量测试（按历史耗时自动选目标机）")
+    p.add_argument("ref", help="被测提交")
+    p.add_argument("--host", help="指定目标机，覆盖自动选择")
+    p.add_argument("--project", help="project name (default: name of the origin repository)")
+    p.add_argument("--timeout", type=int, help="seconds before the job is killed")
+    p.set_defaults(fn=cmd_gate)
 
     p = sub.add_parser("timings", help="按项目与目标机查询各轮次 setup 与主体耗时（读本地已保存回执）")
     p.add_argument("--project")

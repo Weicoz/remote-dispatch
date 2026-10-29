@@ -97,7 +97,7 @@ class Query:
                        receiver_session=receiver, report=report,
                        head=snapshot.get("head"), dirty=snapshot.get("dirty"),
                        needs_initiator_review=True)
-        receipt.update({key: rec[key] for key in ("user_id", "project", "origin", "created", "agent", "model") if key in rec})
+        receipt.update({key: rec[key] for key in ("user_id", "project", "origin", "created", "agent", "model", "gate") if key in rec})
         receipt.update(self.measured(rec, number))
         receipt["receipt_id"] = receipt_id(receipt)
         receipt["captured_at"] = messages.utc_now()

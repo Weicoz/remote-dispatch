@@ -1468,5 +1468,89 @@ class DispatchTests(unittest.TestCase):
         self.assertTrue(env["CARGO_HOME"].replace("\\", "/").endswith("/users/employee_a/cache/cargo"), env)
 
 
+class GateTests(unittest.TestCase):
+    """gate 子命令：CLI 接缝；探针与回执历史以真实文件和打桩探针提供。"""
+
+    def setUp(self):
+        # 复用 DispatchTests 的临时仓库与本机 shell 夹具；组合而非继承，避免重复运行其用例。
+        self.d = DispatchTests("test_full_flag_queues_through_rd_heavy")
+        self.d.setUp()
+        self.addCleanup(self.d.doCleanups)
+        self.root, self.repo, self.base = self.d.root, self.d.repo, self.d.base
+        self.dispatch, self.capture = self.d.dispatch, self.d.capture
+        for name in ("slow", "fast", "mid"):
+            with open(rd.CONFIG, "a") as stream:
+                stream.write(f"\n[host:{name}]\nssh={name}.invalid\nworkdir={self.root / name}\nsync=direct\n"
+                             f"path={os.environ['PATH']}\n")
+        self.d.configure_project(test_quick="echo quick", test_full="echo full")
+        self.busy = set()
+        self.probed = []
+
+    def probe(self, host):
+        self.probed.append(host["name"])
+        return dict(reachable=True, memfree="80", disk="100", load1="0.1", ncpu="8",
+                    heavy="1" if host["name"] in self.busy else "0")
+
+    def history(self, **seconds):
+        for name, body in seconds.items():
+            rec = self.dispatch(project="app", cmd=None, test_full=True, host=name, name="old-" + name)
+            path = Path(rd.STATE) / "results" / rec["job"] / "r1.json"
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(json.dumps(dict(host=name, report=dict(body_seconds=body, executor_exit=0))))
+
+    def gate(self, **kwargs):
+        values = dict(dir=str(self.repo), ref="baseline", host=None, project="app", timeout=15, initiator_session=None,
+                      force_host=False, tag=[], include=[], name=None, branch=None, wip=False)
+        values.update(kwargs)
+        before = {r["job"] for r in rd.all_jobs()}
+        with patch.object(rd, "probe", side_effect=self.probe):
+            output = self.d.capture(rd.cmd_gate, argparse.Namespace(**values))
+        jobs = [r for r in rd.all_jobs() if r["job"] not in before]
+        return output, (jobs[0] if jobs else None)
+
+    def test_fastest_idle_host_with_history_is_chosen_and_explained(self):
+        self.history(slow=900, fast=300, mid=600)
+        output, rec = self.gate()
+        self.assertEqual(rec["host"], "fast")
+        self.assertIn("fast", output)
+        self.assertIn("300", output)
+
+    def test_gate_job_is_full_heavy_test_marked_with_commit(self):
+        self.history(fast=300)
+        _, rec = self.gate()
+        self.assertEqual((rec["cmd"], rec["heavy"], rec["test_tier"]), ("echo full", True, "full"))
+        self.assertEqual(rec["gate"], {"ref": "baseline", "commit": self.base})
+        receipt = rd.queries(self.d.cfg).result(rec, 1, dict(state="done", exit=0, round=1))
+        self.assertEqual(receipt["gate"], {"ref": "baseline", "commit": self.base})
+
+    def test_without_history_uses_default_host(self):
+        with open(rd.CONFIG, "a") as stream:
+            stream.write("\n[defaults]\nhost=mid\n")
+        self.d.cfg = rd.Config()
+        output, rec = self.gate()
+        self.assertEqual(rec["host"], "mid")
+        self.assertIn("无数据，用默认目标机", output)
+
+    def test_fastest_host_without_free_heavy_slot_falls_to_next(self):
+        self.history(slow=900, fast=300, mid=600)
+        self.busy.add("fast")
+        _, rec = self.gate()
+        self.assertEqual(rec["host"], "mid")
+
+    def test_quick_tier_history_is_ignored(self):
+        quick = self.dispatch(project="app", cmd=None, test=True, host="fast", name="quick")
+        path = Path(rd.STATE) / "results" / quick["job"] / "r1.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(dict(host="fast", report=dict(body_seconds=1, executor_exit=0))))
+        self.history(slow=900)
+        _, rec = self.gate()
+        self.assertEqual(rec["host"], "slow")
+
+    def test_host_flag_overrides_selection(self):
+        self.history(fast=300)
+        _, rec = self.gate(host="slow")
+        self.assertEqual(rec["host"], "slow")
+
+
 if __name__ == "__main__":
     unittest.main()
