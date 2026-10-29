@@ -2,6 +2,7 @@
 
 ## 未发布
 
+- **serve 定时回收**：`[features] scheduled_reclaim = true`（默认关闭）后，serve 每小时按目标机 `max_worktree_gb` 检查 worktree 总量，超限先瘦身、仍超限再按保留期从旧到新删除，删除只走统一回收判定、只处理当前用户 ID、离线目标机跳过；启用后前 7 天只出计划（起点持久化，重启不重计），计划与结果写入事件 `reclaim.planned` / `reclaim.result`，并显示在看板 `reclaim_plan`、`GET /v1/board` 和新增的 `GET /v1/reclaim`。详见 `docs/cache-retention.md`。
 - **看板 `rdispatch board`**：一屏显示已派、运行中、待派、阻塞四个数字，及每个派单的工作单元、目标机、harness 与模型、派出时刻、已运行时长、轮次、最新进度、状态、回收阻塞原因和可再生目录大小（有记录时）。默认当前发起会话，`--all` 为该用户全部派单；支持 `--json`。serve 新增只读 `GET /v1/board`，结构相同。不写状态。详见 `docs/board.md`。
 - **每轮记录 setup 与主体耗时**：回执 `report` 新增 `setup_seconds`、`body_seconds`（命令派单为命令耗时，`--test` 为测试耗时）；跳过 setup 时 `setup_seconds` 为 0 并带 `setup_note: 已跳过`；setup 失败只有 setup 耗时。POSIX 运行脚本与 Windows 原生 runner 都记录。新增 `rdispatch timings [--project] [--host] [--kind test|command|agent]` 与 `rd_timings.history()` 按项目、目标机查询已保存回执，供门禁选机使用。
 - **可选 rollout 增强**：`[features] rollout_stats = true` 时，Codex 轮次回执附 `rollout_calls`（逐次调用数与用量汇总）；默认关闭，读取失败只记「未记录」。

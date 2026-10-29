@@ -87,6 +87,8 @@ DEFAULTS = {
     "min_swap_free_gb": "1",
     "swap_active_mb_s": "1",
     "timeout": "3600",
+    # worktree 总量上限（GB）；0 表示不限。仅 serve 定时回收使用，见 docs/cache-retention.md。
+    "max_worktree_gb": "0",
 }
 
 # worktree 只被同一任务的 rdispatch resume 复用；保留时长按续跑可能性分级。
@@ -256,6 +258,10 @@ class Config:
         """[features] rollout_stats：读取 Codex rollout 逐次调用用量，默认关闭；取值无效按关闭处理。"""
         return self.cp.get("features", "rollout_stats", fallback="false").strip().lower() in ("1", "true", "yes", "on")
 
+    def scheduled_reclaim(self):
+        """[features] scheduled_reclaim：serve 每小时按 max_worktree_gb 回收，默认关闭；取值无效按关闭处理。"""
+        return self.cp.get("features", "scheduled_reclaim", fallback="false").strip().lower() in ("1", "true", "yes", "on")
+
     def retention_hours(self):
         """过期回收的保留时长（小时），从最后一次回执确认算起；环境变量优先。"""
         hours = {}
@@ -291,6 +297,12 @@ class Config:
         if self.cp.has_section("defaults"):
             h.update(self.cp["defaults"])
         h.update(sec)
+        try:
+            limit = float(h.get("max_worktree_gb") or 0)
+        except (TypeError, ValueError):
+            limit = -1
+        if not math.isfinite(limit) or limit < 0:
+            self.fail(f"[host:{name}] max_worktree_gb 必须是有限的非负数（GB）；0 或留空表示不限。", 4)
         for key in ("warn_load_per_core", "warn_free_mem_pct", "warn_free_disk_gb", "warn_cpu_pct"):
             try:
                 value = float(h[key])

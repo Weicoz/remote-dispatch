@@ -89,3 +89,14 @@ python3 "$RD_JOB_DIR/rd_cache.py" \
 工具拒绝跨员工、越界／符号链接、跟踪文件、未合入来源、未关闭过程、重叠路径；每次删除都更新0600回执，失败也保存已删清单。输出回执位于待删缓存之外。没有可用关闭证据时标未清理，继续产品交付，不为回收缓存重跑测试。
 
 POSIX文件与Git夹具可直接验证；Windows不能凭本地夹具声称实际清理通过。此入口不改共享锁、代理、系统配置，也不取代`rdispatch clean`删除worktree所需的现有确认流程。
+
+## serve 定时回收与 worktree 上限
+
+`[features] scheduled_reclaim = true` 后（默认关闭，改回 false 即停），serve 每小时对在线目标机检查一次；目标机配置 `[host:NAME] max_worktree_gb = 50`（GB，留空或 0 表示不限，Windows 目标机暂不处理）。当前用户 ID 名下的 worktree 总量超过上限时：
+
+1. 先瘦身：对已结束且声明了 `regenerable_paths` 的派单，只删声明路径和 setup 完成标记。
+2. 仍超限，再按最后回执确认时间从旧到新删除。删除只走 `reclaim_check` 与 `clean --expired` 同一套判定和保留期，被阻塞的派单（回执未收、有未提交内容、待派登记引用、钉住、未过保留期等）保留。
+
+只处理当前 `RD_USER_ID` 的派单；离线目标机直接跳过；不调用 `git clean`，不删未声明的文件。
+
+启用后前 7 天只出计划，不瘦身也不删除。起点写在 `RD_STATE/reclaim-schedule.json`，serve 重启不重新计时。第 8 天起执行。每台超限目标机每次产生 `reclaim.planned` 事件（计划），执行期另产生 `reclaim.result` 事件（逐项结果、回收后用量），见 [事件](events.md)。计划与最近结果同时显示在 `rdispatch board`（`reclaim_plan` 字段与文本末尾）、`GET /v1/board` 和 `GET /v1/reclaim`。
