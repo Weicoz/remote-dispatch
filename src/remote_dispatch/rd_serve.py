@@ -43,6 +43,7 @@ from . import rd_reclaim_plan as reclaim_plan
 
 # 只允许 serve 子进程执行、不让 CLI 自动转发给 serve 的命令（suggest 仍由 CLI 直接运行）。
 FORWARD_ONLY = {"suggest"}
+RECLAIM_JOIN_SECONDS = 5
 WRITE_COMMANDS = {"session-default", "run", "resume", "ack", "review", "stop", "project", "inbox", "keep", "clean", "plan"}
 SOCKET_NAME = "serve.sock"
 VERSION_ROUTE = "/v1/version"
@@ -458,7 +459,8 @@ class Service:
             self.poller.join()
             self.poller = None
         if self.reclaim_poller is not None:
-            self.reclaim_poller.join()
+            # 回收线程可能卡在 ssh/du；它是守护线程，超时后放弃等待。
+            self.reclaim_poller.join(timeout=RECLAIM_JOIN_SECONDS)
             self.reclaim_poller = None
         self.reports.close()
         # Drain an accepted CLI write before another service can own this state.
@@ -969,7 +971,8 @@ class Service:
             own = [rec for rec in records if rec.get("user_id") == self.user_id
                    and (everything or rec.get("initiator_session") == owner)]
             return 200, board.build(self.state, query, own, query.states(own) if own else {}, user_id=self.user_id,
-                                    scope="all" if everything else "session", initiator_session=owner)
+                                    scope="all" if everything else "session", initiator_session=owner,
+                                    stale_days=self.config.line_stale_days())
         match = re.fullmatch(r"/v1/jobs/([^/]+)(?:/rounds/([1-9][0-9]*)/(receipt|logs|progress))?", path)
         if match:
             job, number, kind = match.groups()

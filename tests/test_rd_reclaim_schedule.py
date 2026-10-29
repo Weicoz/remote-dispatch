@@ -1,6 +1,9 @@
 """serve 定时回收的接缝测试：Service.reclaim.run_once 与状态、事件、看板、/v1/reclaim 输出。
 本机目标机，不连接远端，不调用模型。"""
+import contextlib
+import io
 import json
+import threading
 import time
 import unittest
 from unittest.mock import patch
@@ -8,6 +11,7 @@ from unittest.mock import patch
 from remote_dispatch import cli as rd
 from remote_dispatch import rd_board as board
 from remote_dispatch import rd_events as events
+from remote_dispatch import rd_serve
 from remote_dispatch.rd_serve import Service
 from test_rd_reclaim_unblock import ReclaimFixture
 
@@ -163,6 +167,116 @@ class ExecuteTest(ScheduleFixture):
         self.assertTrue(self.exists(theirs))
         self.assertTrue((self.paths(theirs)[0] / "target").exists())
         self.assertFalse(self.exists(mine))
+
+
+class ResumedAfterPlanTest(ScheduleFixture):
+    def test_job_resumed_between_plan_and_execute_is_not_slimmed(self):
+        rec = self.dispatch(BUILD)
+        self.configure(limit="0.0012")
+        service = self.service()
+        service.reclaim.run_once(now=T0)
+        real = rd.job_states
+        calls = []
+
+        def states(cfg, recs):
+            calls.append(1)
+            # 第一次是计划阶段的快照；之后任务已被 resume，处于运行中。
+            snapshot = real(cfg, recs)
+            return snapshot if len(calls) == 1 else {r["job"]: dict(state="running") for r in recs}
+
+        with patch.object(rd, "job_states", states):
+            plan = service.reclaim.run_once(now=T0 + 8 * DAY)["self"]
+        self.assertGreater(len(calls), 1)
+        slim = [r for r in plan["results"] if r["action"] == "slim"]
+        self.assertEqual([(r["ok"], r["reason"]) for r in slim], [(False, rd.BLOCK_RUNNING)])
+        self.assertTrue((self.paths(rec)[0] / "target" / "a.bin").exists())
+
+
+class LoopResilienceTest(ScheduleFixture):
+    class FakeStop:
+        def __init__(self, rounds):
+            self.rounds = rounds
+
+        def is_set(self):
+            return self.rounds <= 0
+
+        def wait(self, _):
+            self.rounds -= 1
+
+    def test_unexpected_exception_does_not_kill_loop_and_is_logged(self):
+        self.configure()
+        service = self.service()
+        service.stop = self.FakeStop(2)
+        runs = []
+
+        def run_once(now=None):
+            runs.append(1)
+            if len(runs) == 1:
+                raise KeyError("boom")
+
+        service.reclaim.run_once = run_once
+        with contextlib.redirect_stdout(io.StringIO()) as out:
+            service.reclaim.loop()
+        self.assertEqual(len(runs), 2)
+        self.assertIn("KeyError", out.getvalue())
+
+
+class StopTest(ScheduleFixture):
+    def test_run_once_stops_between_hosts_when_service_is_stopping(self):
+        self.dispatch(BUILD)
+        self.configure(limit="0.0025")
+        service = self.service()
+        service.stop.set()
+        with patch.object(rd, "probe") as probe:
+            self.assertEqual(service.reclaim.run_once(now=T0 + 30 * DAY), {})
+        probe.assert_not_called()
+
+    def test_close_does_not_wait_forever_for_a_stuck_reclaim_thread(self):
+        service = self.service()
+        release = threading.Event()
+        self.addCleanup(release.set)
+        service.reclaim_poller = threading.Thread(target=release.wait, daemon=True)
+        service.reclaim_poller.start()
+        started = time.monotonic()
+        with patch.object(rd_serve, "RECLAIM_JOIN_SECONDS", 0.2):
+            service.close()
+        self.assertLess(time.monotonic() - started, 3)
+        self.assertIsNone(service.reclaim_poller)
+
+
+class SharedVerdictTest(ScheduleFixture):
+    def test_scheduled_reclaim_uses_the_same_verdict_as_clean_expired(self):
+        rec = self.dispatch(BUILD)
+        self.configure(limit="0.0001")
+        calls = []
+        real = rd.expiry_verdict
+
+        def spy(*args, **kwargs):
+            calls.append(args[1]["job"])
+            return real(*args, **kwargs)
+
+        service = self.service()
+        service.reclaim.run_once(now=T0)
+        with patch.object(rd, "expiry_verdict", spy):
+            service.reclaim.run_once(now=T0 + 8 * DAY)
+        self.assertIn(rec["job"], calls)
+
+    def test_low_disk_tightens_scheduled_retention_like_clean_expired(self):
+        rec = self.dispatch(BUILD)
+        self.configure(limit="0.0001")
+        # 默认保留期内：磁盘不紧张时不删；紧张时按收紧后的保留期，与 clean --expired 一致。
+        with patch.object(rd, "disk_low", return_value=True), patch.object(
+                rd, "RETENTION_LOW_DISK_HOURS", {"accepted": 0, "unmerged": 0, "command": 0}):
+            expected = self.rows()[rec["job"]]
+            plan = self.service().reclaim.run_once(now=T0)["self"]
+        self.assertTrue(expected["reclaimable"], expected)
+        self.assertIn(rec["job"], [r["job"] for r in plan["actions"] if r["action"] == "delete"])
+
+    def rows(self):
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            rd.cmd_clean(self.clean_args(), self.cfg)
+        return {row["job"]: row for row in json.loads(out.getvalue())}
 
 
 if __name__ == "__main__":

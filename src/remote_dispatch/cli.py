@@ -3282,6 +3282,22 @@ def retention_verdict(rec, head, reasons, activity, hours, now, lapsed=False):
     return True, f"{label}，最后确认于 {age:.1f} 小时前，超过保留期 {hours[kind]:g} 小时", None
 
 
+def expiry_verdict(cfg, rec, head, reasons, host, now, pressure=None):
+    """clean --expired 与 serve 定时回收共用的保留期判定：含工作线停滞与磁盘紧张收紧。
+    pressure 是 {(host, worker_root): bool} 缓存，避免同一目标机重复探测磁盘。返回 (可回收, 说明, 阻塞码)。"""
+    pressure = {} if pressure is None else pressure
+    hours = cfg.retention_hours()
+    key = (rec["host"], rec.get("worker_root"))
+    if key not in pressure:
+        pressure[key] = disk_low(host)
+    limits = {k: min(v, RETENTION_LOW_DISK_HOURS[k]) for k, v in hours.items()} if pressure[key] else hours
+    lapsed = bool(rec.get("project")) and line_lapsed(cfg, rec, plan_referrers(rec), now)
+    expired, note, code = retention_verdict(rec, head, reasons, last_activity(rec), limits, now, lapsed)
+    if pressure[key]:
+        note += "；目标机磁盘不足，保留期已收紧"
+    return expired, note, code
+
+
 def cmd_clean_batch(a, cfg, mode):
     """--merged 只看合入；--expired 另按续跑可能性分级保留，过期才回收。两者共用 reclaim_check 的安全条件。"""
     if a.job or a.force or a.delete_branch or getattr(a, "discard_reports", False):
@@ -3294,7 +3310,6 @@ def cmd_clean_batch(a, cfg, mode):
         print("[]" if as_json else "no jobs.")
         return
     states = job_states(cfg, recs)
-    hours = cfg.retention_hours() if mode == "expired" else None
     pressure = {}
     now = time.time()
     rows = []
@@ -3315,14 +3330,7 @@ def cmd_clean_batch(a, cfg, mode):
                 continue
             note = "reports 将保存，分支保留"
             if mode == "expired":
-                key = (rec["host"], rec.get("worker_root"))
-                if key not in pressure:
-                    pressure[key] = disk_low(host)
-                limits = {k: min(v, RETENTION_LOW_DISK_HOURS[k]) for k, v in hours.items()} if pressure[key] else hours
-                lapsed = bool(rec.get("project")) and line_lapsed(cfg, rec, plan_referrers(rec), now)
-                expired, note, code = retention_verdict(rec, head, reasons, last_activity(rec), limits, now, lapsed)
-                if pressure[key]:
-                    note += "；目标机磁盘不足，保留期已收紧"
+                expired, note, code = expiry_verdict(cfg, rec, head, reasons, host, now, pressure)
                 if not expired:
                     report(j, code, note, f"keep {j} [{code}]: {note}")
                     continue

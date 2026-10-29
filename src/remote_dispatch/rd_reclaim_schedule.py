@@ -74,9 +74,13 @@ class ScheduledReclaim:
             try:
                 if self.service.config.scheduled_reclaim() and self.due(self.clock()):
                     self.run_once()
-            except ERRORS:
-                print("rdispatch: reclaim_unavailable: scheduled reclaim failed", flush=True)
+            except Exception as error:
+                # 守护线程不能因单次异常退出：记录后等下一轮。
+                print(f"rdispatch: reclaim_unavailable: scheduled reclaim failed: {type(error).__name__}: {error}", flush=True)
             stop.wait(30)
+
+    def stopping(self):
+        return self.service.stop.is_set()
 
     def run_once(self, now=None):
         """对每台在线且配置了上限的目标机执行一次；返回各目标机的计划。功能关闭时返回 None。"""
@@ -94,6 +98,8 @@ class ScheduledReclaim:
         execute = now >= data["enabled_at"] + store.PLAN_ONLY_SECONDS
         plans = {}
         for host in config.hosts():
+            if self.stopping():
+                break
             limit = host_limit(host)
             if limit is None or host["platform"] == "windows":
                 continue
@@ -139,10 +145,10 @@ class ScheduledReclaim:
     def delete_candidates(self, config, host, recs, states, sizes, slimmed, over_kb):
         """按最后确认时间从旧到新选可回收的 worktree，直到预计释放量够；被阻塞的派单只记录原因。"""
         picked, blocked, freed = [], [], 0
-        hours = config.retention_hours()
         now = self.clock()
+        pressure = {}
         for rec in sorted(recs, key=self.activity):
-            if freed >= over_kb:
+            if freed >= over_kb or self.stopping():
                 break
             j = rec["job"]
             try:
@@ -151,7 +157,7 @@ class ScheduledReclaim:
                 if code:
                     blocked.append(dict(job=j, code=code))
                     continue
-                expired, _, why = cli.retention_verdict(rec, head, reasons, self.activity(rec), hours, now)
+                expired, _, why = cli.expiry_verdict(config, rec, head, reasons, cli.job_host(config, rec), now, pressure)
             except ERRORS:
                 blocked.append(dict(job=j, code=cli.BLOCK_UNVERIFIABLE))
                 continue
@@ -168,7 +174,7 @@ class ScheduledReclaim:
         recs = self.owned(name)
         sizes = worktree_sizes(host, recs, self.service.user_id)
         used = sum(sizes.values())
-        if used <= limit:
+        if used <= limit or self.stopping():
             return None
         states = cli.job_states(config, recs) if recs else {}
         slims = self.slim_candidates(host, recs, states)
@@ -180,7 +186,7 @@ class ScheduledReclaim:
                     estimated_gb=gb(used - sum(row["kb"] for row in actions)),
                     blocked=blocked, actions=actions)
         self.emit("reclaim.planned", name, plan, blocked_count=len(blocked))
-        if not execute:
+        if not execute or self.stopping():
             return plan
         return self.execute(config, host, limit, plan, recs, states)
 
@@ -188,15 +194,19 @@ class ScheduledReclaim:
         by_job = {rec["job"]: rec for rec in recs}
         results = []
         for row in [r for r in plan["actions"] if r["action"] == "slim"]:
+            if self.stopping():
+                break
             rec = by_job[row["job"]]
-            results.append(dict(row, **self.slim_one(cli.job_host(config, rec), rec, states)))
+            results.append(dict(row, **self.slim_one(config, rec["job"])))
         sizes = worktree_sizes(host, recs, self.service.user_id)
         after = sum(sizes.values())
-        if after > limit:
+        if after > limit and not self.stopping():
             # 瘦身不够：重新核对状态，再从旧到新删除。
             fresh = cli.job_states(config, recs) if recs else {}
             picked, _ = self.delete_candidates(config, host, recs, fresh, sizes, {}, after - limit)
             for row in picked:
+                if self.stopping():
+                    break
                 results.append(dict(row, **self.delete_one(config, row["job"])))
             after = sum(worktree_sizes(host, recs, self.service.user_id).values())
         plan = dict(plan, results=results, after_gb=gb(after))
@@ -209,13 +219,16 @@ class ScheduledReclaim:
     def count(results, action):
         return sum(1 for r in results if r["action"] == action and r["ok"])
 
-    def slim_one(self, host, rec, states):
+    def slim_one(self, config, job):
+        """锁内重新读取登记与状态再判定，计划之后被 resume 的任务不瘦身（与 delete_one 一致）。"""
         try:
-            with self.service.job_guard(rec["job"]), JobLock(self.service.state, rec["job"]):
-                code, _ = cli.slim_block(rec, states.get(rec["job"], {}))
+            with self.service.job_guard(job), JobLock(self.service.state, job):
+                rec = cli.load_job(job)
+                state = cli.job_states(config, [rec]).get(job, {})
+                code, _ = cli.slim_block(rec, state)
                 if code:
                     return dict(ok=False, reason=code)
-                cli.slim_worktree(host, rec, False)
+                cli.slim_worktree(cli.job_host(config, rec), rec, False)
             return dict(ok=True)
         except JobBusy:
             return dict(ok=False, reason="busy")
@@ -232,8 +245,7 @@ class ScheduledReclaim:
                 code, _, head, reasons = cli.reclaim_check(config, rec, state, host, mode="expired")
                 if code:
                     return dict(ok=False, reason=code)
-                expired, _, why = cli.retention_verdict(rec, head, reasons, self.activity(rec),
-                                                        config.retention_hours(), self.clock())
+                expired, _, why = cli.expiry_verdict(config, rec, head, reasons, host, self.clock())
                 if not expired:
                     return dict(ok=False, reason=why)
                 cli.remove_job(argparse.Namespace(delete_branch=False, discard_reports=False), rec, host)
