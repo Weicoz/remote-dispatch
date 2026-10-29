@@ -47,6 +47,17 @@ rdispatch clean --expired              # 只回收过期且安全的 worktree
 | `uncommitted` | 有未提交内容（批量时指非 `--include` 路径） |
 | `pinned` | 已被 `rdispatch keep` 钉住（仅 `--expired`） |
 | `retention_not_expired` | 未到保留期（仅 `--expired`） |
+| `plan_referenced` | 待派登记里后续工作项仍引用该派单（见下节）；单个 clean 可用 `--force` 跳过 |
+
+## 待派登记 `rdispatch plan`
+
+`rdispatch plan [--project 项目] add|set|done|cancel|remove|list` 登记还没派出的工作项及依赖：
+
+- `add <工作项> [--title] [--depends 工作项]... [--after 派单]...`；`set` 只改传入的字段，传空串清空；依赖成环或依赖不存在时退出码 4。
+- `list --json` 输出 `project`、`summary`（`dispatched`／`pending`／`blocked`／`done`／`cancelled` 各自数量）和 `items`。待派的工作项只要有依赖的工作项未完成就是 `blocked`。
+- `rdispatch run --plan-item <工作项> [--after <派单>]...` 把派单关联到工作项，该项显示为已派。
+- 数据存在状态目录 `plan/<用户ID>/<项目>.json`，写入持文件锁，serve 在线时与其他写命令一样转交 serve。
+- 尚无派单、未完成未取消的工作项，若 `--after` 点名某派单，或依赖的工作项已关联该派单，该派单回收时返回 `plan_referenced`；工作项派出、完成或取消后不再引用。
 
 ## 合票后的缓存回收
 

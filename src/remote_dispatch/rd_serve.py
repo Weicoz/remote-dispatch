@@ -38,7 +38,7 @@ from .rd_reports import Reports, read_reports
 from .rd_serve_cache import LocalFiles
 
 
-WRITE_COMMANDS = {"session-default", "run", "resume", "ack", "review", "stop", "project", "inbox", "keep", "clean"}
+WRITE_COMMANDS = {"session-default", "run", "resume", "ack", "review", "stop", "project", "inbox", "keep", "clean", "plan"}
 SOCKET_NAME = "serve.sock"
 VERSION_ROUTE = "/v1/version"
 MAX_REQUEST_BYTES = 8 * 1024 * 1024
