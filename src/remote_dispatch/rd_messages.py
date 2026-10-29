@@ -346,6 +346,57 @@ def agy_result(directory, number):
     return None
 
 
+def phase_timings(directory, number):
+    """读取 run 脚本写的 timing.rN（key=value 行）；缺失或损坏的字段不写，查询时视为未记录。"""
+    path = Path(directory) / ("timing.r" + str(number))
+    result = {}
+    if not path.is_file() or path.is_symlink():
+        return result
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except (OSError, ValueError):
+        return result
+    for line in lines:
+        key, _, value = line.partition("=")
+        if key in ("setup_seconds", "body_seconds"):
+            try:
+                seconds = float(value)
+            except ValueError:
+                continue
+            if 0 <= seconds < 10 ** 8:
+                result[key] = int(seconds) if seconds == int(seconds) else round(seconds, 1)
+        elif key == "setup_note" and value == "已跳过":
+            result[key] = value
+    return result
+
+
+def rollout_calls(directory):
+    """汇总 Codex rollout 里逐次调用的用量；任何读取或解析失败都返回「未记录」，不影响派单。"""
+    try:
+        total = dict(count=0, input_tokens=0, cached_input_tokens=0, output_tokens=0)
+        for path in sorted((Path(directory) / "codex" / "sessions").rglob("rollout-*.jsonl")):
+            if path.is_symlink() or not path.is_file():
+                continue
+            with path.open("rb") as stream:
+                for raw in stream:
+                    try:
+                        row = json.loads(raw)
+                        payload = row["payload"]
+                        if row["type"] != "event_msg" or payload["type"] != "token_count":
+                            continue
+                        usage = payload["info"]["last_token_usage"]
+                        values = [int(usage.get(key) or 0) for key in ("input_tokens", "cached_input_tokens", "output_tokens")]
+                    except (ValueError, KeyError, TypeError, AttributeError):
+                        continue
+                    total["count"] += 1
+                    total["input_tokens"] += values[0]
+                    total["cached_input_tokens"] += values[1]
+                    total["output_tokens"] += values[2]
+        return total if total["count"] else "未记录"
+    except (OSError, ValueError):
+        return "未记录"
+
+
 def finish(directory, job, number, code, agent=None):
     directory, job, number = Path(directory).resolve(), job_id(job), round_id(number)
     agent = agent or os.environ.get("RD_AGENT")
@@ -369,6 +420,11 @@ def finish(directory, job, number, code, agent=None):
         data["started_at"] = started.read_text(encoding="utf-8").strip()
     data.update(executor_exit=int(code), finished_at=utc_now(),
                 reply_file="last.r" + str(number) + ".txt", stdout_file="stdout.r" + str(number) + ".log")
+    for key in ("setup_seconds", "body_seconds", "setup_note", "rollout_calls"):
+        data.pop(key, None)
+    data.update(phase_timings(directory, number))
+    if agent == "codex" and os.environ.get("RD_ROLLOUT_STATS") == "1":
+        data["rollout_calls"] = rollout_calls(directory)
     data.pop("runtime_failure", None)
     data.pop("denied_actions", None)
     denied = final.get("denied_actions") if final else None

@@ -1,0 +1,2 @@
+{"event":"init","conversation_id":"c-1","model":"gemini-3-pro"}
+{"event":"result","conversation_id":"c-1","usage":{"input_tokens":1500,"cache_read_input_tokens":1000,"cache_creation_input_tokens":0,"output_tokens":300}}
