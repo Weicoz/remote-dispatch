@@ -180,6 +180,7 @@ ln -s "$PWD/skills/weicoz-remote-dispatch" ~/.agents/skills/weicoz-remote-dispat
 - `docs/serve.md`：本机 Unix socket HTTP、事件流与 CLI 转交
 - `docs/cache-retention.md`：运行状态与缓存保留
 - `docs/board.md`：看板 `board` 与 serve 只读接口
+- `docs/glossary.md`：术语表（工作项、工作线、派单模式等）
 
 ## 开发
 
