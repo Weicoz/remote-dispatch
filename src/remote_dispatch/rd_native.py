@@ -365,6 +365,8 @@ def run_job(spec_file):
     env.update(RD_USER_ID=spec["user_id"], RD_JOB=spec["job"], RD_WT=str(wt), RD_JOB_DIR=str(directory),
                RD_LOCK_DIR=spec["lock_dir"], RD_MAX_HEAVY=str(spec["max_heavy"]), RD_ROUND=str(spec["round"]),
                PATH=spec["bin"] + os.pathsep + env.get("PATH", ""))
+    if spec.get("base"):
+        env["RD_BASE"] = spec["base"]
     if spec.get("handoff_version"):
         env["RD_REPORTER"] = str(directory / "rd_messages.py")
     os.chdir(wt)

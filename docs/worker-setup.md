@@ -70,13 +70,25 @@ max_heavy = 1
 ```ini
 [project:myrepo]
 setup = <在新 worktree 里装依赖的命令>
-test = <完整测试命令>
+test_quick = <快测命令>
+test_full = <完整测试命令>
 ```
 
 小节名是 `origin` 地址的仓库名（没有 `origin` 时是目录名）。
 
 - `setup` 在每个任务第一次启动前执行一次，失败则任务以 97 结束。新 worktree 没有依赖环境，不配这一项的话，代理第一件事就是自己摸索怎么装，既慢又不稳定。
-- `test` 是 `rdispatch run --test` 跑的命令，默认按重命令排队。不需要排队时加 `test_heavy = false`。
+- `test_quick` 是 `rdispatch run --test` 跑的快测，`test_full` 是 `rdispatch run --test-full` 跑的全量测试。`--test-full` 一律按重命令排队；`--test` 默认也排队，加 `test_heavy = false` 可让快测不排队。
+- 旧的 `test` 继续有效，视同 `test_full`。各配置下的取值：
+
+  | 配置 | `--test` | `--test-full` |
+  |---|---|---|
+  | 只配 `test` | `test` | `test` |
+  | 配 `test_quick` 与 `test_full` | `test_quick` | `test_full` |
+  | 三者都配 | `test_quick` | `test_full`（优先于 `test`） |
+  | 只配 `test_quick` | `test_quick` | 报错 |
+  | 只配 `test_full` | `test_full` | `test_full` |
+
+- 每次派单会注入环境变量 `RD_BASE`（本派单的基线提交），POSIX 与 Windows 原生目标机、代理派单与命令派单都有。快测命令可以据此只测改动部分。
 - `origin_url` 只在远端访问仓库的地址和本机不同时才写。
 
 ## 6. 体检
