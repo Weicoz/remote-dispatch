@@ -34,6 +34,7 @@ from . import __version__
 from . import rd_profiles as profiles
 from . import rd_native as native
 from . import rd_messages as messages
+from . import rd_slim as slim
 from . import rd_timings as timings
 from . import rd_health as health
 from . import rd_agents as agents
@@ -154,6 +155,7 @@ wpid=$!
 wait $cpid; rc=$?
 killtree $wpid
 echo "body_seconds=$(( $(date +%s) - rd_t1 ))" >> "$RD_JOB_DIR/timing.r$RD_ROUND"
+@@REGEN@@
 [ -f "$RD_JOB_DIR/timed_out" ] && rc=124
 git rev-parse HEAD > "$RD_JOB_DIR/head" 2>/dev/null
 git status --porcelain 2>/dev/null | wc -l | tr -d ' ' > "$RD_JOB_DIR/dirty"
@@ -322,7 +324,12 @@ class Config:
         return [h for h in map(self.host, names) if h["enabled"].lower() in ("1", "true", "yes")]
 
     def project(self, name):
-        return self._section("project", name) or {}
+        section = self._section("project", name) or {}
+        try:
+            slim.parse_paths(section.get("regenerable_paths", ""))
+        except ValueError as error:
+            self.fail(f"[project:{name}] regenerable_paths {error}", 4)
+        return section
 
     def agent(self, name):
         a = dict(AGENTS.get(name, {}))
@@ -1298,6 +1305,10 @@ def build_run_script(host, rec, round_no, timeout):
             "MAX_HEAVY": host["max_heavy"], "ENV_FILE": env_file, "KILLTREE": KILLTREE,
             "TIMEOUT": str(int(timeout)), "PUSH": push, "SHARED_ROOT": root_expr(shared),
             "CACHE_ENV": cache_env_script(host, rec.get("user_id")), "IDENTITY": identity, "EXEC": command, "REPORT_ENV": report_env, "REPORT_FINISH": report_finish}
+    subs["REGEN"] = "\n".join(
+        f'rd_sz=$(du -sk "$RD_WT"/{shlex.quote(p)} 2>/dev/null | cut -f1); '
+        f'printf "path_size_kb=%s\\t%s\\n" "${{rd_sz:-0}}" {shlex.quote(p)} >> "$RD_JOB_DIR/timing.r$RD_ROUND"'
+        for p in rec.get("regenerable_paths") or [])
     text = RUN_TEMPLATE
     for k, v in subs.items():
         text = text.replace(f"@@{k}@@", v)
@@ -1665,7 +1676,8 @@ def cmd_run(a, cfg):
                "agent_kind": a.agent, "isolated": bool(a.agent), "permission_mode": permission,
                "auth_file": host[spec["auth_key"]] if a.agent else host["codex_auth_file"],
                "worker_platform": host["platform"], "worker_python": host["python"], "heavy": a.heavy,
-               "handoff_version": 1, "initiator_session": owner, "test": bool(a.test)}
+               "handoff_version": 1, "initiator_session": owner, "test": bool(a.test),
+               "regenerable_paths": slim.parse_paths(proj.get("regenerable_paths", ""))}
         rec["round_prompts"] = {"1": prompt}
         source = dict(forwarded_origin) if forwarded_origin else initiators.origin(origin_harness, rec["created"])
         source["initiator_herdr"] = dict(source["initiator_herdr"], captured_at=rec["created"])
@@ -2571,7 +2583,108 @@ def cmd_keep(a, cfg):
     save_job(rec)
 
 
+def slim_block(rec, snapshot):
+    """瘦身的前置条件：任务已结束、目标机可达、worktree 在。返回 (阻塞码, 说明) 或 (None, "")。"""
+    state = snapshot.get("state")
+    if state == "running" or state == "starting" or rec.get("dispatch_state") in ("preparing", "launching"):
+        return BLOCK_RUNNING, "任务运行中或准备中，不能瘦身"
+    if state == "unreachable":
+        return BLOCK_UNREACHABLE, "连接不可达"
+    if state == "missing":
+        return BLOCK_NOT_FINISHED, "目标机上没有该任务"
+    if not rec.get("regenerable_paths"):
+        return BLOCK_NOT_FINISHED, "该任务没有声明 regenerable_paths（项目配置里未声明，或任务早于该功能）"
+    return None, ""
+
+
+def slim_worktree(host, rec, dry_run):
+    """在目标机上执行瘦身；返回 (已删/将删 [{path, kb}], 跳过 [{path, reason}])。"""
+    j, paths = rec["job"], slim.parse_paths(";".join(rec.get("regenerable_paths") or []))
+    if host["platform"] == "windows":
+        reply = native.request(host, "slim", {"job": j, "paths": paths, "dry_run": dry_run})
+        return reply["removed"], reply["skipped"]
+    wt, job_dir = f'"$ROOT/wt/{messages.job_id(j)}"', f'"$ROOT/jobs/{j}"'
+    drop = ":" if dry_run else f'rm -f {job_dir}/setup.done'
+    body = [f'WT={wt}; [ -d "$WT" ] || {{ echo "worktree 不存在" >&2; exit 1; }}; WR=$(cd "$WT" && pwd -P)',
+            'skip() { printf "skipped\t%s\t%s\n" "$1" "$2"; }',
+            'slim_one() { rel=$1; p="$WT/$rel"; [ -e "$p" ] || [ -L "$p" ] || return 0',
+            '  par=$(cd "$(dirname "$p")" 2>/dev/null && pwd -P) || { skip "$rel" "父目录不可读"; return 0; }',
+            '  case "$par" in "$WR"|"$WR"/*) ;; *) skip "$rel" "路径越出 worktree"; return 0;; esac',
+            '  if [ -n "$(git -C "$WT" ls-files -- "$rel" 2>/dev/null | head -n 1)" ]; then skip "$rel" "含已跟踪文件"; return 0; fi',
+            '  kb=$(du -sk "$p" 2>/dev/null | cut -f1)']
+    if dry_run:
+        body.append('  printf "removed\t%s\t%s\n" "$rel" "${kb:-0}"; }')
+    else:
+        body += ['  [ -L "$p" ] || chmod -R u+rwx "$p" 2>/dev/null',
+                 '  if rm -rf "$p"; then printf "removed\t%s\t%s\n" "$rel" "${kb:-0}"; else skip "$rel" "删除失败"; fi }']
+    body += [f'slim_one {shlex.quote(p)}' for p in paths] + [drop]
+    reply = ssh(host, "\n".join(body))
+    removed, skipped = [], []
+    for line in (reply.stdout or "").splitlines():
+        verb, _, rest = line.partition("\t")
+        rel, _, detail = rest.partition("\t")
+        if verb == "removed":
+            removed.append(dict(path=rel, kb=int(detail) if detail.isdigit() else 0))
+        elif verb == "skipped":
+            skipped.append(dict(path=rel, reason=detail))
+    return removed, skipped
+
+
+def slim_summary(removed, skipped):
+    text = "、".join(f"{r['path']} {r['kb']} KB" for r in removed) or "没有可删的声明路径"
+    if skipped:
+        text += "；跳过：" + "、".join(f"{r['path']}（{r['reason']}）" for r in skipped)
+    return text
+
+
+def cmd_slim(a, cfg):
+    """clean --slim：只删声明的可再生子路径和 setup 完成标记，保留 worktree、代码与其余文件；下次续跑重新 setup。"""
+    if a.merged or getattr(a, "expired", False) or a.force or a.delete_branch or a.discard_reports or getattr(a, "into", None):
+        die("--slim 不与 --merged、--expired、--force、--delete-branch、--discard-reports 或 --into 混用。", 4)
+    as_json = getattr(a, "json", False)
+    dry_run = getattr(a, "dry_run", False)
+    if as_json and not dry_run:
+        die("--json 只能与 --dry-run 一起使用。", 4)
+    if a.job:
+        rec = load_job(a.job)
+        if rec.get("user_id") and rec["user_id"] != require_user():
+            die("只能瘦身当前 RD_USER_ID 的任务。", 4)
+        recs = [rec]
+    else:
+        recs = scoped_jobs(a, cfg)
+    if not recs:
+        print("[]" if as_json else "no jobs.")
+        return
+    states = job_states(cfg, recs)
+    rows = []
+    for rec in recs:
+        j = rec["job"]
+        row = dict(job=j, slimmable=False, reason="", removed=[], skipped=[])
+        code, detail = slim_block(rec, states.get(j, {}))
+        if code:
+            row["reason"] = detail
+            if a.job:
+                die(detail, 1)
+        else:
+            try:
+                row["removed"], row["skipped"] = slim_worktree(job_host(cfg, rec), rec, dry_run)
+                row["slimmable"] = True
+                row["reason"] = slim_summary(row["removed"], row["skipped"])
+            except (OSError, ValueError, SystemExit, subprocess.SubprocessError) as error:
+                row["reason"] = f"瘦身失败，保留未删除内容：{error}"
+                if a.job:
+                    die(row["reason"], 1)
+        rows.append(row)
+        if not as_json:
+            verb = "would slim" if dry_run and row["slimmable"] else "slimmed" if row["slimmable"] else "skip"
+            print(f"{verb} {j}: {row['reason']}")
+    if as_json:
+        print(json.dumps(rows, ensure_ascii=False, indent=2))
+
+
 def cmd_clean(a, cfg):
+    if getattr(a, "slim", False):
+        return cmd_slim(a, cfg)
     if getattr(a, "merged", False) and getattr(a, "expired", False):
         die("--merged 与 --expired 只能选一个。", 4)
     if getattr(a, "merged", False):
@@ -3180,6 +3293,7 @@ def main(argv=None, *, forwarded=None):
 
     p = sub.add_parser("clean", parents=[repo_parser], help="remove a finished job's worktree and logs from the worker")
     p.add_argument("job", nargs="?")
+    p.add_argument("--slim", action="store_true", help="只删项目声明的可再生子路径（regenerable_paths）和 setup 完成标记，保留 worktree 与代码；省略 job 时处理当前范围内已结束的 job，可配 --dry-run / --json / --project")
     p.add_argument("--merged", action="store_true", help="按合入、回执及未提交路径条件批量清理当前员工已结束的 job")
     p.add_argument("--expired", action="store_true", help="同 --merged 的安全条件，再按续跑可能性分级保留：命令任务确认即回收、已合入 24 小时、未合入 7 天；见 [retention]")
     p.add_argument("--into", help="合入目标 REF；默认各 job 的 source_branch")
