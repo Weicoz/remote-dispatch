@@ -1,0 +1,23 @@
+{
+  "scope": "all",
+  "initiator_session": null,
+  "summary": {"dispatched": 1, "running": 1, "pending": 1, "blocked": 0},
+  "rows": [
+    {
+      "unit": "api",
+      "job": "demo-20261025-000000-a1b2",
+      "project": "demo",
+      "host": "target",
+      "harness": "codex",
+      "model": "gpt-5.5",
+      "created": "2026-10-25 00:00:00",
+      "elapsed_seconds": 600,
+      "rounds": 1,
+      "state": "running",
+      "progress": {"phase": "implementing", "summary": "实现中", "updated_at": "2026-10-25T00:09:00Z"},
+      "initiator_session": "original-session",
+      "reclaim_block": {"code": "running", "reason": "任务运行中"},
+      "regenerable_sizes": {"target": 5242880}
+    }
+  ]
+}

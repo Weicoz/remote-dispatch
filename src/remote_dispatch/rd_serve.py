@@ -22,6 +22,7 @@ from . import __version__
 from . import cli
 from .rd_lock import JobBusy, JobLock
 from . import rd_events as events
+from . import rd_board as board
 from . import rd_messages as messages
 from . import rd_serve_network as network
 from .rd_query import Query, result_path
@@ -943,6 +944,16 @@ class Service:
         records = self.records()
         if path == "/v1/jobs":
             return 200, {"jobs": [self.card(rec, query) for rec in records]}
+        if path == "/v1/board":
+            # 与 CLI board --json 同一结构；ADR 0004：本人派单不要求原发起会话。
+            everything = args.get("all", [""])[0] in ("1", "true")
+            owner = None if everything else args.get("initiator_session", [None])[0]
+            if not everything and not owner:
+                raise ValueError("invalid_board_scope")
+            own = [rec for rec in records if rec.get("user_id") == self.user_id
+                   and (everything or rec.get("initiator_session") == owner)]
+            return 200, board.build(self.state, query, own, query.states(own) if own else {}, user_id=self.user_id,
+                                    scope="all" if everything else "session", initiator_session=owner)
         match = re.fullmatch(r"/v1/jobs/([^/]+)(?:/rounds/([1-9][0-9]*)/(receipt|logs|progress))?", path)
         if match:
             job, number, kind = match.groups()
