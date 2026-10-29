@@ -46,6 +46,24 @@ report_merge_window_seconds = 5
 文件和事件使用现有回滚边界；普通写盘失败后可重试。与现有状态写入一样，
 不提供跨多个文件的断电原子事务。
 
+## 定时进度摘要
+
+serve 按间隔检查看板数据，按发起会话分组，只汇总运行中的派单。某会话的摘要指纹
+（派单、目标机、轮次、状态、最新进度与看板计数，不含已运行时长）与上一份不同才生成一条
+`kind: "digest"` 的汇报；无变化不推送，运行结束的会话清除指纹，状态变化汇报仍照常。
+摘要写入同一汇报存储，沿用 Herdr 送达与 `report.created` 事件（App 经事件取得）。
+指纹和到期时间随 `RD_STATE/reports/<用户>.json` 持久保存，重启后不重复推送上一份；
+首次启用时从一个完整间隔之后开始。
+
+```ini
+[features]
+progress_digest = true        # false 关闭
+
+[monitor]
+report_interval_seconds = 900 # 摘要默认间隔；同时仍是 watch 的超时
+digest_interval_seconds = 900 # 可选，单独指定摘要间隔
+```
+
 ## 经 Herdr 送达（票 48）
 
 serve 通过现有 `rd_herdr.Herdr.input` 写入文本并发送 `enter`，只允许已验证的
