@@ -13,6 +13,8 @@ from tests import test_rd_serve as serve
 
 
 class DefaultsTests(unittest.TestCase):
+    snapshot = serve.ServeTests.snapshot
+    quiet_snapshot = serve.ServeTests.quiet_snapshot
     setUp = sessions.SessionTests.setUp
     agent = sessions.SessionTests.agent
     save_fixture = sessions.SessionTests.save_fixture
