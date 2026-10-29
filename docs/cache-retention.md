@@ -23,6 +23,31 @@ rdispatch clean --expired --dry-run    # 先看计划：每个任务给出 keep 
 rdispatch clean --expired              # 只回收过期且安全的 worktree
 ```
 
+## 回收判定与阻塞原因
+
+单个 `rdispatch clean <job>` 与批量 `--merged` / `--expired` 共用 `reclaim_check` 一处判定。`--dry-run` 每个派单输出一行：`skip <job> [<code>]: 原因`、`keep <job> [<code>]: 原因` 或 `would clean <job> [ok] (说明)`。
+
+`rdispatch clean --merged|--expired --dry-run --json` 输出数组，元素为 `{job, reclaimable, code, reason}`；`--json` 必须与 `--dry-run` 同用。`code` 是稳定枚举值，`reason` 是给人看的中文说明，不保证稳定。
+
+| code | 含义 |
+| --- | --- |
+| `ok` | 可回收 |
+| `running` | 任务运行中 |
+| `preparing` | 任务准备中或启动结果待核实 |
+| `unreachable` | 目标机连接不可达 |
+| `not_finished` | 未确认任务已结束 |
+| `source_missing` | 源仓库目录缺失，无法核验取回与合入 |
+| `unverifiable` | 无法核验 worktree head、未提交内容或合入关系 |
+| `worktree_orphan` | worktree 已不在 git 登记中（仅单个 clean） |
+| `not_fetched` | 有未取回的提交 |
+| `not_merged` | 已取回但未合入目标（仅 `--merged`） |
+| `into_required` | 没有合入目标，需 `--into`（仅 `--merged`） |
+| `ref_invalid` | `--into` 的 REF 不存在或不是提交（仅 `--merged`） |
+| `receipt_pending` | 回执未收取或未 `ack` |
+| `uncommitted` | 有未提交内容（批量时指非 `--include` 路径） |
+| `pinned` | 已被 `rdispatch keep` 钉住（仅 `--expired`） |
+| `retention_not_expired` | 未到保留期（仅 `--expired`） |
+
 ## 合票后的缓存回收
 
 merger实际接受、合入后，在当前授权内执行；本工具不会赋予删除旧目录、工作树或备份的授权。只操作本任务`RD_USER_ID`／`RD_JOB`／`RD_WT`，可以选择其`private/worktrees/`内的票据工作树。
