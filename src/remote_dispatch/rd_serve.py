@@ -37,6 +37,8 @@ from .rd_serve_history import instant
 from .rd_host_metrics import host_metrics
 from .rd_reports import Reports, read_reports
 from .rd_serve_cache import LocalFiles
+from .rd_reclaim_schedule import ScheduledReclaim
+from . import rd_reclaim_plan as reclaim_plan
 
 
 WRITE_COMMANDS = {"session-default", "run", "resume", "ack", "review", "stop", "project", "inbox", "keep", "clean", "plan"}
@@ -364,6 +366,8 @@ class Service:
         self.poller = None
         self.session_poller = None
         self.config_poller = None
+        self.reclaim = ScheduledReclaim(self)
+        self.reclaim_poller = None
         self.project_routes = ProjectRoutes(self)
         self.sensitive = set()
         self.sessions = Sessions(self)
@@ -413,6 +417,8 @@ class Service:
             self.config_poller.start()
             self.poller = threading.Thread(target=self.poll, daemon=True)
             self.poller.start()
+            self.reclaim_poller = threading.Thread(target=self.reclaim.loop, daemon=True)
+            self.reclaim_poller.start()
             self.reports.start()
             return self
         except BaseException:
@@ -449,6 +455,9 @@ class Service:
         if self.poller is not None:
             self.poller.join()
             self.poller = None
+        if self.reclaim_poller is not None:
+            self.reclaim_poller.join()
+            self.reclaim_poller = None
         self.reports.close()
         # Drain an accepted CLI write before another service can own this state.
         with self.writes.lock, self.writer:
@@ -941,6 +950,11 @@ class Service:
             with self.cache_lock:
                 return 200, {"hosts": list(self.hosts),
                              "config_reload": dict(self.config_reload)}
+        if path == "/v1/reclaim":
+            # 定时回收状态：从未运行时 reclaim 为 null；只读状态文件，不连目标机。
+            data = reclaim_plan.read(self.state, self.user_id)
+            return 200, {"enabled": self.config.scheduled_reclaim(),
+                         "reclaim": reclaim_plan.view(data, time.time())}
         records = self.records()
         if path == "/v1/jobs":
             return 200, {"jobs": [self.card(rec, query) for rec in records]}

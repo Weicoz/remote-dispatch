@@ -6,6 +6,7 @@ CLI `board --json` 与 serve `GET /v1/board` 共用 build() 的返回结构。
 import time
 
 from . import rd_plan as plans
+from . import rd_reclaim_plan as reclaim_plan
 from . import rd_usage as usage
 
 UNRECORDED = usage.UNRECORDED
@@ -121,7 +122,8 @@ def build(state, query, records, states, *, user_id, scope="all", initiator_sess
                 counts[item["state"]] += 1
     summary = dict(dispatched=len(rows), running=sum(row["state"] in RUNNING_STATES for row in rows),
                    pending=counts[plans.PENDING], blocked=counts[plans.BLOCKED])
-    return dict(scope=scope, initiator_session=initiator_session, summary=summary, rows=rows)
+    return dict(scope=scope, initiator_session=initiator_session, summary=summary, rows=rows,
+                reclaim_plan=reclaim_plan.view(reclaim_plan.read(state, user_id), now))
 
 
 def duration(value):
@@ -138,6 +140,19 @@ def size_text(sizes):
     return "、".join(f"{path} {one(n)}" for path, n in sorted(sizes.items()))
 
 
+def reclaim_lines(plan):
+    """定时回收计划：首周只出计划，之后显示最近一次计划与结果。"""
+    if not plan or not plan["hosts"]:
+        return []
+    until = time.strftime("%Y-%m-%d %H:%M", time.localtime(plan["plan_only_until"])) if plan["plan_only_until"] else "未知"
+    lines = ["定时回收（" + ("只出计划，执行从 " + until + " 起" if plan["mode"] == "plan" else "已执行") + "）"]
+    for host, item in sorted(plan["hosts"].items()):
+        todo = "、".join(f"{a['action']} {a['job']}" for a in item["actions"]) or "无"
+        lines.append(f"    [{host}] 用量 {item['used_gb']}GB / 上限 {item['limit_gb']}GB  计划：{todo}"
+                     f"  阻塞 {len(item['blocked'])} 个")
+    return lines
+
+
 def render(board):
     """文本看板：头部四个数字，每派单一行，阻塞与可再生目录大小另起缩进行。"""
     s = board["summary"]
@@ -151,4 +166,5 @@ def render(board):
             lines.append(f"    回收阻塞 [{row['reclaim_block']['code']}]：{row['reclaim_block']['reason']}")
         if row.get("regenerable_kb"):
             lines.append("    可再生目录：" + size_text(row["regenerable_kb"]))
+    lines += reclaim_lines(board.get("reclaim_plan"))
     return "\n".join(lines)

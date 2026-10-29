@@ -19,5 +19,6 @@
       "reclaim_block": {"code": "running", "reason": "任务运行中"},
       "regenerable_kb": {"target": 5120}
     }
-  ]
+  ],
+  "reclaim_plan": null
 }
