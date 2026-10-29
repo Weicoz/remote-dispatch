@@ -38,8 +38,8 @@ def current_item(rec):
     return line["current"] if line else first_item(rec)
 
 
-def start_item(rec, item, number, base):
-    """新工作项从第 number 轮开始；线不存在时先把已有轮次记到第一个工作项上。"""
+def start_item(rec, item, number, base, sync=None):
+    """新工作项从第 number 轮开始；线不存在时先把已有轮次记到第一个工作项上。sync 为接线时同步 integration 的结果。"""
     line = rec.get("line")
     if not line:
         first = first_item(rec)
@@ -47,6 +47,17 @@ def start_item(rec, item, number, base):
     line["items"][item] = [number]
     line["bases"][item] = base
     line["current"] = item
+    if sync:
+        line.setdefault("syncs", {})[item] = sync
+
+
+def sync_for_round(rec, number):
+    """某一轮所属工作项接线时同步 integration 的记录；没有同步返回 None。回执与看板读它。"""
+    line = rec.get("line") or {}
+    for item, rounds in line.get("items", {}).items():
+        if number in rounds:
+            return (line.get("syncs") or {}).get(item)
+    return None
 
 
 def note_round(rec, number):

@@ -72,7 +72,7 @@ reuse_max_interval_seconds = 3600  ; 距上一轮最后回执确认的秒数上�
 
 `rdispatch suggest`（参数同 `run`，另有 `--json`）只读判断本工作项能否接线，退出码恒为 0。判断在生成派单 ID 和代理预检之前，
 条件为：严格接线条件（`rd_line.decide`，经 `cli.line_wiring`，不另写一份）、本链未拒绝过建议、前序派单所在目标机在线且可接单
-（只读探测）。integration 同步预检不在本版。不满足时输出原因，不生成令牌。
+（只读探测）、integration 同步预检无冲突（见下）。不满足时输出原因，不生成令牌。
 
 满足时输出工作项顺序（已完成、本项、后续待派，按依赖拓扑排序）、线名、目标机、分支、权限档位、基线、不接受时的派法和令牌。
 令牌绑定建议内容指纹、用户 ID 和发起会话，30 分钟内单次有效，存于控制端 `state/suggest/<用户ID>/`。
@@ -83,6 +83,12 @@ reuse_max_interval_seconds = 3600  ; 距上一轮最后回执确认的秒数上�
 - 常驻同意：该线有常驻同意时，`run --line <线名>` 免令牌；每次仍校验严格接线条件，不满足就按默认方式派出并写明原因。
   `--line` 既无有效令牌又无常驻同意，退出码 4。
 - 拒绝：`run --no-line` 按默认方式派出，只在待派登记里记「本链不再建议」和拒绝次数。
+- integration 同步：integration 新头取控制端解析的 `--ref`。它已是前序验收提交的祖先就不同步。否则控制端先取回前序提交，
+  再用 `git merge-tree --write-tree` 预检二者能否无冲突合并，结果写入建议的 `sync`（`needed`、`integration`、`from_head`、
+  `precheck`）并计入指纹；预检有冲突不给建议并列出冲突文件。不在目标机上试合并。接受即授权一次写操作：把新头推到目标机 bare
+  的 `refs/rd-sync/<派单>`，在 worktree 里合并（只在 worktree 停在验收提交且无跟踪文件改动时执行），新工作项基线取合并后的 head。
+  实际合并冲突时 `merge --abort`，worktree 回到合并前，按默认方式派出并写明原因。同步记录写入派单 `line.syncs`、
+  回执 `integration_sync` 和看板。Windows 目标机本版不同步。
 - 管理：`rdispatch plan chain <线名>` 查看；`--clear` 清除拒绝设置并恢复建议；`--revoke-accept` 撤销常驻同意。
 
 ### 前缀合入与关闭线

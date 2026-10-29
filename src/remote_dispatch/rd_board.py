@@ -126,6 +126,8 @@ def row_for(query, rec, snapshot, project_row, unit, referrers, now, stale=None)
     residue = workline.current_residue(rec)
     if residue:
         row["residue"] = residue
+    if workline.sync_for_round(rec, number):
+        row["integration_sync"] = workline.sync_for_round(rec, number)
     return row
 
 
@@ -201,5 +203,8 @@ def render(board):
             lines.append(f"    回收阻塞 [{row['reclaim_block']['code']}]：{row['reclaim_block']['reason']}")
         if row.get("regenerable_kb"):
             lines.append("    可再生目录：" + size_text(row["regenerable_kb"]))
+        if row.get("integration_sync"):
+            sync = row["integration_sync"]
+            lines.append(f"    已同步 integration {sync['integration'][:10]}（{sync['from_head'][:10]} -> {sync['head'][:10]}）")
     lines += reclaim_lines(board.get("reclaim_plan"))
     return "\n".join(lines)

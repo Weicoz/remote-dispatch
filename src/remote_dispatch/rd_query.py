@@ -103,6 +103,8 @@ class Query:
         residue = workline.residue_for(rec, number)
         if residue:
             receipt["residue"] = residue
+        if workline.sync_for_round(rec, number):
+            receipt["integration_sync"] = workline.sync_for_round(rec, number)
         receipt["receipt_id"] = receipt_id(receipt)
         receipt["captured_at"] = messages.utc_now()
         return dict(receipt, **self.review(rec, number))
