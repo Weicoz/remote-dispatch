@@ -134,6 +134,9 @@ def row_for(query, rec, snapshot, project_row, unit, referrers, now, stale=None,
                **line_view(rec, plan_items))
     if isinstance(sizes, dict) and sizes:
         row["regenerable_kb"] = sizes
+    if (receipt or {}).get("credential_suspect"):
+        row["credential_suspect"] = True
+        row["credential_hint"] = receipt.get("credential_hint")
     if stale:
         row["stale"] = stale
     residue = workline.current_residue(rec)
@@ -228,6 +231,8 @@ def render(board):
             lines.append(f"    回收阻塞 [{row['reclaim_block']['code']}]：{row['reclaim_block']['reason']}")
         if row.get("regenerable_kb"):
             lines.append("    可再生目录：" + size_text(row["regenerable_kb"]))
+        if row.get("credential_suspect"):
+            lines.append("    认证疑似失败：" + str(row.get("credential_hint") or ""))
         if row.get("integration_sync"):
             sync = row["integration_sync"]
             lines.append(f"    已同步 integration {sync['integration'][:10]}（{sync['from_head'][:10]} -> {sync['head'][:10]}）")

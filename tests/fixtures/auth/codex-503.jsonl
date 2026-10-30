@@ -1,0 +1,4 @@
+{"type":"thread.started","thread_id":"t-codex"}
+{"type":"turn.started"}
+{"type":"error","message":"unexpected status 503 Service Unavailable: upstream connect error"}
+{"type":"turn.failed","error":{"message":"unexpected status 503 Service Unavailable: upstream connect error"}}

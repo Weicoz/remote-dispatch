@@ -93,11 +93,22 @@ class AgyRuntimeTests(unittest.TestCase):
         self.assertEqual(stat.S_IMODE(copied.stat().st_mode), 0o600)
         self.assertTrue((home / "rd-isolation.json").exists())
 
-    def test_resume_recopies_refreshed_token(self):
+    def test_resume_keeps_task_token_unless_refresh_requested(self):
         home = profiles.prepare_agy_runtime(str(self.job), str(self.token))
         self.token.write_text("refreshed", encoding="utf-8")
         profiles.prepare_agy_runtime(str(self.job), str(self.token))
-        self.assertEqual((home / profiles.AGY_TOKEN).read_text(encoding="utf-8"), "refreshed")
+        self.assertEqual((home / profiles.AGY_TOKEN).read_text(encoding="utf-8"), "fixture-token")
+        profiles.prepare_agy_runtime(str(self.job), "")  # 续跑不再要求认证文件
+        profiles.prepare_agy_runtime(str(self.job), str(self.token), refresh=True)
+        copied = home / profiles.AGY_TOKEN
+        self.assertEqual(copied.read_text(encoding="utf-8"), "refreshed")
+        self.assertEqual(stat.S_IMODE(copied.stat().st_mode), 0o600)
+
+    def test_refresh_without_auth_file_is_refused_and_keeps_old_token(self):
+        home = profiles.prepare_agy_runtime(str(self.job), str(self.token))
+        with self.assertRaises(ValueError):
+            profiles.prepare_agy_runtime(str(self.job), str(self.root / "absent"), refresh=True)
+        self.assertEqual((home / profiles.AGY_TOKEN).read_text(encoding="utf-8"), "fixture-token")
 
     def test_missing_token_and_unmarked_home_are_refused(self):
         with self.assertRaises(ValueError):
