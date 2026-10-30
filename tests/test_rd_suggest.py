@@ -317,6 +317,18 @@ class SuggestTests(unittest.TestCase):
         self.rerun("b", no_line=True)
         self.assertEqual(json.loads(self.plan("chain", "a", "--json"))["rejections"], 2)
 
+    def test_refused_dispatch_does_not_count_a_decline(self):
+        self.patch_probe()
+        self.accepted_first()
+        # 目标机忙时派单被拒（退出码 3），不得留下拒绝记录
+        with patch.object(rd, "pick_host", side_effect=SystemExit(3)):
+            self.rerun("b", expect=3, no_line=True, force_host=False)
+            self.rerun("b", expect=3, no_line=True, force_host=False)
+        setting = json.loads(self.plan("chain", "a", "--json"))
+        self.assertEqual((setting["no_suggest"], setting["rejections"]), (False, 0))
+        self.rerun("b", no_line=True)
+        self.assertEqual(json.loads(self.plan("chain", "a", "--json"))["rejections"], 1)
+
     def test_flag_combinations_are_validated(self):
         self.patch_probe()
         self.accepted_first()

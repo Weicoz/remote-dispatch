@@ -2106,7 +2106,6 @@ def line_ask(a, cfg, scope, include_paths, prompt):
             return line_accept(a, cfg, scope, include_paths, prompt), None
         if answer in ("n", "no"):
             a.no_line = True
-            line_decline(scope)
             return False, None
 
 
@@ -2237,7 +2236,6 @@ def cmd_run(a, cfg):
     if no_line:
         if not plan_item:
             die("--no-line 需要同时指定 --plan-item。", 4)
-        line_decline(scope)
     elif line:
         if line_accept(a, cfg, scope, include_paths, prompt):
             return
@@ -2333,6 +2331,9 @@ def cmd_run(a, cfg):
         projects.ProjectIndex(STATE, uid).register(rec)
         if plan_item:
             plan_store.attach_job(plan_item, job, after)
+        if getattr(a, "no_line", False):
+            # 拒绝建议只在派单确实登记时记一次；被拒的派单（目标机忙、预检失败）不计。
+            line_decline(scope)
         try:
             if host["platform"] == "windows":
                 native_init(host, rec, repo, sha, proj.get("origin_url") or origin_url)
