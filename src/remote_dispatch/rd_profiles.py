@@ -412,7 +412,7 @@ DSH_AGENTS_PLACEHOLDER = """# 本任务员工规范
 
 
 def prepare_dsh_runtime(job_dir, auth_file="", refresh=False):
-    """首轮复制凭据；续跑沿用任务内副本，只有 refresh=True 才重新复制。"""
+    """首轮复制凭据；续跑沿用任务内副本，只有 refresh=True 才重新复制；副本缺失时报错，不自动补复制。"""
     job_dir = Path(job_dir).resolve()
     home = job_dir / "dsh-home"
     marker = home / "rd-isolation.json"
@@ -453,15 +453,17 @@ AGY_TOKEN = Path(".gemini") / "antigravity-cli" / "antigravity-oauth-token"
 
 def prepare_agy_runtime(job_dir, auth_file="", refresh=False):
     """AGY 无配置目录变量：给任务独立 HOME，只放目标机自己的登录凭据，隔离个人 MCP、技能、插件与会话。
-    首轮复制凭据；续跑沿用任务内副本，只有 refresh=True 才重新复制。"""
+    首轮复制凭据；续跑沿用任务内副本，只有 refresh=True 才重新复制；副本缺失时报错，不自动补复制。"""
     job_dir = Path(job_dir).resolve()
     home = job_dir / "agy-home"
     marker = home / "rd-isolation.json"
     if home.exists() and not marker.exists():
         raise ValueError("任务 AGY 配置目录存在但缺少隔离标记；检查后重派，不覆盖现有目录。")
     token = home / AGY_TOKEN
-    if marker.exists() and not refresh and token.is_file():
-        return home
+    if marker.exists() and not refresh:
+        if token.is_file():
+            return home
+        raise ValueError("任务内 AGY 登录凭据缺失；不会自动重新复制。确认后运行 rdispatch resume <job> --refresh-auth。")
     auth = Path(os.path.expandvars(os.path.expanduser(auth_file))) if auth_file else None
     if auth is None or not auth.is_file():
         raise ValueError("目标机没有 AGY 登录凭据；先在目标机运行 agy 登录，不得回退其他账号。")

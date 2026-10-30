@@ -20,7 +20,7 @@
 
 ### 凭据只在首轮复制
 
-Codex（`codex_auth_file`）、DSH（`dsh_auth_file`）、AGY（`agy_auth_file`）的认证文件只在首轮复制进任务隔离目录，续跑沿用。首轮没有配置凭据、之后才补配时，同样需要 `--refresh-auth` 才会复制。`rdispatch resume JOB --refresh-auth --prompt-file ...` 只在本轮重新复制认证文件、权限 0600；员工配置副本、会话与 worktree 不动。POSIX 与 Windows 原生目标（仅 Codex）都支持。
+Codex（`codex_auth_file`）、DSH（`dsh_auth_file`）、AGY（`agy_auth_file`）的认证文件只在首轮复制进任务隔离目录，续跑沿用。首轮没有配置凭据、之后才补配时，同样需要 `--refresh-auth` 才会复制。AGY 续跑时任务内 token 文件缺失，不再自动从 `agy_auth_file` 补复制，而是报错并提示 `rdispatch resume <job> --refresh-auth`。`rdispatch resume JOB --refresh-auth --prompt-file ...` 只在本轮重新复制认证文件、权限 0600；员工配置副本、会话与 worktree 不动。POSIX 与 Windows 原生目标（仅 Codex）都支持。
 
 本轮失败输出出现明确认证失败（Codex 的 `401 Unauthorized`、AGY 的 `authentication failed`／未登录、DSH 的 `MISSING_CREDENTIAL`）时，回执记 `credential_suspect: true` 和 `credential_hint`，`result`、`inbox`、`board` 显示重新复制的命令。rdispatch 不自动重复制、不自动续跑；识别不了的失败不标记。判定集中在 `rd_messages.credential_suspect()`。
 
