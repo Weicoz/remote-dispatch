@@ -249,6 +249,22 @@ class LineTests(unittest.TestCase):
             self.assertIn(expected, launched)
         self.assertNotIn("故障", launched.split("上下文包")[0])
 
+    def test_rotation_does_not_repeat_a_pack_already_given_by_context_from(self):
+        record, head = self.accepted_first()
+        prompts = []
+
+        def spy(host, rec, number, command, prompt, timeout):
+            prompts.append(prompt)
+            return self.finish(host, rec, number, command, prompt, timeout)
+
+        with patch.object(rd, "launch", side_effect=spy):
+            self.run_item("b", keep_session=False, context_from=[record["job"]])
+        launched, = prompts
+        self.assertEqual(launched.count("来源 " + record["job"]), 1)
+        line = rd.load_job(record["job"])
+        self.assertIsNone(line["receiver_session"])
+        self.assertEqual([h["reason"] for h in line["context_history"]], ["policy"])
+
     def test_policy_and_fault_reasons_are_recorded_separately(self):
         record, _ = self.accepted_first()
         self.run_item("b")

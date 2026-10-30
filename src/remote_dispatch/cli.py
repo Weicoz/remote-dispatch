@@ -1943,7 +1943,9 @@ def line_wire(a, cfg, uid, owner, plan_store, item, after, include_paths, prompt
                 base = merged
             line_item = dict(item=item, base=base, sync=sync)
             if action == "rotate":
-                line_item["handoff"] = context_pack(cfg, uid, [previous])
+                # --context-from 已带前序派单的上下文包时不再重复拼一份。
+                given = {messages.job_id(job) for job in getattr(a, "context_from", None) or []}
+                line_item.update(rotate=True, handoff="" if previous in given else context_pack(cfg, uid, [previous]))
             resume_args = argparse.Namespace(
                 job=previous, agent=None, session=None, host=None, model=a.model, effort=a.effort,
                 timeout=a.timeout, force_host=a.force_host, permission_mode=getattr(a, "permission_mode", None),
@@ -2839,12 +2841,12 @@ def resume_job(a, cfg, rec, *, prompt=None, before_launch=None, rollback_stack=N
         session = None
         prompt = ("原接收会话因上下文故障退役；沿用当前工作树、模型、员工配置和原授权，仅完成本轮剩余项。"
                   "旧失败和回执保留，不重复已完成工作。\n\n" + prompt)
-    if line_item and line_item.get("handoff"):
+    if line_item and line_item.get("rotate"):
         rec.setdefault("context_history", []).append(dict(receiver_session=session, from_round=rec["rounds"],
                                                           receipt_id=receipt["receipt_id"], reason="policy", at=messages.utc_now()))
         session = None
         prompt = ("工作线按策略换新会话；沿用当前工作树、模型和授权，以下交接包为前序工作摘要。\n\n"
-                  + line_item["handoff"] + "\n" + prompt)
+                  + (line_item["handoff"] + "\n" if line_item["handoff"] else "") + prompt)
     if getattr(a, "retry_after_repair", None):
         rec.setdefault("recovery_repairs", []).append(dict(from_round=rec["rounds"],
                                                            evidence=a.retry_after_repair, at=messages.utc_now()))
