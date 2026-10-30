@@ -151,7 +151,10 @@
   `status/reason/pane_id/delivered_at`；旧汇报读取时补排队显示字段，不写回状态。
   `report-delivered.json` 是成功写入 Herdr 后的 `report.delivered` 事件，
   仅含汇报标识与送达元数据，不含正文；状态和原因键见 `docs/reports.md`。
-- 票 61：`reports-unsubmitted.json` 展示文本已写入、回车失败的
+- 汇报提醒改版（票 01）：`reports.json` 的 `delivery` 改为 `status`（`notified`／`inbox_only`）与 `channels`；
+  `report-delivered.json` 的 `data` 改为成功通道名列表 `channels`，仅在提醒成功后发布；
+  `reports-unsubmitted.json` 标为历史状态样例，老记录的旧状态与原因键原样返回。
+- 票 61：`reports-unsubmitted.json`（历史状态样例）展示文本已写入、回车失败的
   `delivery.status=text_delivered/reason=session_submit_failed`；保留写入时间，
   不发布 `report.delivered`、不重发。`session-dispatch-defaults-closed.json`
   展示给不存在或已关闭窗格 PUT 默认值的 404 `session_closed`，不保存默认值或发布事件。

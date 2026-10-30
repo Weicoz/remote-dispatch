@@ -325,7 +325,7 @@ class ReportTests(unittest.TestCase):
         service.reports.tick(now=66)
         self.assertEqual(len(self.reports(service)), 2)
 
-    def test_session_closed_during_merge_window_is_kept_in_inbox(self):
+    def test_session_closed_during_merge_window_is_kept_in_inbox_without_input(self):
         self.receipt(self.job())
         service = self.service()
         service.reports.tick(now=0)
@@ -334,8 +334,7 @@ class ReportTests(unittest.TestCase):
         service.sessions.collect()
         service.reports.tick(now=5)
         report = self.reports(service)[0]
-        self.assertEqual(report['delivery']['status'], 'inbox_only')
-        self.assertEqual(report['delivery']['reason'], 'session_closed')
+        self.assertEqual(report['delivery'], dict(status='inbox_only', channels=[]))
 
     def test_failed_receipt_without_summary_preserves_exit_reason(self):
         rec = self.job()
