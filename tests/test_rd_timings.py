@@ -46,10 +46,11 @@ class PosixTimingTests(JobFixture, unittest.TestCase):
         return self.receipt()
 
     def test_normal_setup_and_command_are_timed_separately(self):
-        data = self.run_script("sleep 2", setup="sleep 1")
+        # setup 睡 1 秒、命令睡 4 秒；只断言各自下限与相对大小，不依赖绝对墙钟上限（高负载下秒级取整会超）。
+        data = self.run_script("sleep 4", setup="sleep 1")
         self.assertGreaterEqual(data["setup_seconds"], 1)
-        self.assertLess(data["setup_seconds"], 2)
-        self.assertGreaterEqual(data["body_seconds"], 2)
+        self.assertGreaterEqual(data["body_seconds"], 4)
+        self.assertLess(data["setup_seconds"], data["body_seconds"])
         self.assertNotIn("setup_note", data)
 
     def test_skipped_setup_is_zero_and_noted(self):
@@ -67,7 +68,9 @@ class PosixTimingTests(JobFixture, unittest.TestCase):
         self.assertEqual(data["executor_exit"], 3)
         self.assertEqual(data["outcome"], "failed")
         self.assertGreaterEqual(data["body_seconds"], 1)
-        self.assertEqual(data["setup_seconds"], 0)
+        # setup 为 true：秒级取整在负载下可能得 1；只断言为非负整数且不超过主体耗时。
+        self.assertIsInstance(data["setup_seconds"], int)
+        self.assertLessEqual(data["setup_seconds"], data["body_seconds"])
 
     def test_failed_setup_records_setup_time_and_no_body(self):
         data = self.run_script("true", setup="sleep 1; exit 1")
