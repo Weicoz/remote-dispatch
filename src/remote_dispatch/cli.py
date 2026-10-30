@@ -1278,16 +1278,34 @@ def cmd_inbox_wait(a, cfg):
     deadline = time.monotonic() + a.timeout if a.timeout else None
 
     signed = set()  # 签收不可撤销：已签收的 (派单, 轮次) 不再重读
+    probes = {}  # (派单, 轮次) -> 只读探测到的回执或 None，避免每轮重复远程读取
+
+    def valid(receipt):
+        return isinstance(receipt, dict) and bool(receipt.get("receipt_id")) and receipt.get("round") is not None
+
+    def probe(rec, number):
+        """本地无回执时只读探测（不落盘、不签收）；探测不到（含派单已删、目标机不可达）返回 None。"""
+        key = (rec["job"], number)
+        if key not in probes:
+            try:
+                receipt = queries(cfg).result(rec, number, job_states(cfg, [rec]).get(rec["job"], {}))
+            except Exception:
+                receipt = None
+            probes[key] = receipt if valid(receipt) else None
+        return probes[key]
 
     def status(rec, number):
-        """acked / unacked / unknown：判定复用 inbox 的 acknowledgement；回执尚未收取到本地为 unknown。"""
-        if (rec["job"], number) in signed:
+        """acked / unacked / unknown：签收判定复用 inbox 的 acknowledgement；回执缺失或缺 receipt_id、round 按无回执处理。"""
+        key = (rec["job"], number)
+        if key in signed:
             return "acked"
         receipt = messages.read_json(result_path(rec, number))
-        if not receipt:
+        if not valid(receipt):
+            receipt = probe(rec, number)
+        if receipt is None:
             return "unknown"
         if queries(cfg).acknowledgement(rec, receipt):
-            signed.add((rec["job"], number))
+            signed.add(key)
             return "acked"
         return "unacked"
 
@@ -1299,14 +1317,14 @@ def cmd_inbox_wait(a, cfg):
         return [row for row in read_reports(STATE, uid, owner) if row.get("kind") != "digest"]
 
     def stored(baseline):
-        # 只有 inbox 会列出的未签收项才唤醒：派单仍在、属于本会话、是当前最新轮次。
-        # 回执未收取（unknown）时，命令开始前已存在的汇报按已存在处理，只有新汇报才唤醒，避免空转。
+        # 与 inbox 一致：派单仍在、属于本会话的任意轮次，未签收且回执可得就唤醒；
+        # 回执取不到时，命令开始前已存在的汇报算已存在，只有新汇报才唤醒，避免空转。
         jobs = own_jobs()
         found = {}
         for row in report_rows():
             for e in row["entries"]:
                 rec = jobs.get(e["job"])
-                if rec is None or e["round"] < rec["rounds"]:
+                if rec is None:
                     continue
                 state = status(rec, e["round"])
                 if state == "unacked" or (state == "unknown" and row["id"] not in baseline):
@@ -1322,7 +1340,7 @@ def cmd_inbox_wait(a, cfg):
                 for rec in recs if states.get(rec["job"], {}).get("state") in ("done", "dead", "missing")}
 
     def terminal(baseline):
-        # 终态轮次（含 dead/missing 无回执）：已有回执按签收判定；无回执时命令开始前已是终态的算已存在，新进入终态才唤醒。
+        # 离线时看当前终态轮次；回执取不到（含 dead/missing 无回执）时，开始前已是终态的算已存在，新进入终态才唤醒。
         found = {}
         for key, (rec, snapshot) in terminal_all().items():
             state = status(rec, key[1])
