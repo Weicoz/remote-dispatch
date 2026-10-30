@@ -43,9 +43,10 @@ class InboxWaitTests(unittest.TestCase):
             return {job: dict(self.state) for job in data["jobs"]}
         raise AssertionError(operation)
 
-    def add_report(self, job="fixture-job", number=1, state="completed", owner="sender"):
-        text = {"completed": "已完成", "failed": "失败"}[state]
+    def add_report(self, job="fixture-job", number=1, state="completed", owner="sender", kind=None):
+        text = {"completed": "已完成", "failed": "失败", "running": "运行中"}[state]
         self.rows.append(dict(id="r%d" % len(self.rows), initiator_session=owner,
+                              **(dict(kind=kind) if kind else {}),
                               created_at="2026-10-30T00:00:00+00:00",
                               entries=[dict(job=job, title="标题", host="fixture", round=number, state=state,
                                             state_text=text, summary=SECRET)],
@@ -136,6 +137,27 @@ class InboxWaitTests(unittest.TestCase):
         code, text = self.wait("--timeout", "5", during=lambda n: self.state.update(state="done", exit="1"))
         self.assertEqual(code, 0)
         self.assertIn("fixture-job 第1轮 失败", text)
+
+    def test_digest_does_not_wake_and_later_terminal_report_of_same_round_does(self):
+        def add(n):
+            if n == 1:
+                self.add_report(number=1, state="running", kind="digest")
+        code, _ = self.wait("--timeout", "0.1", during=add)
+        self.assertEqual(code, 2)
+        # 重挂：摘要进了基线，同一轮之后的完成汇报仍必须唤醒。
+        code, text = self.wait("--timeout", "5", during=lambda n: self.add_report(number=1) if n == 1 else None)
+        self.assertEqual(code, 0)
+        self.assertIn("fixture-job 第1轮 已完成", text)
+
+    def test_job_finished_while_serve_online_wakes_after_serve_goes_offline(self):
+        def finish_then_offline(n):
+            if n == 1:
+                self.state.update(state="done", exit="0")
+            elif n == 3:
+                self.online = False
+        code, text = self.wait("--timeout", "5", during=finish_then_offline)
+        self.assertEqual(code, 0)
+        self.assertIn("fixture-job 第1轮 已完成", text)
 
     def test_missing_initiator_session_exits_four(self):
         with patch.dict(os.environ, {"RD_INITIATOR_SESSION": ""}), \

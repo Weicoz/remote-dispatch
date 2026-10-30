@@ -1278,8 +1278,10 @@ def cmd_inbox_wait(a, cfg):
     deadline = time.monotonic() + a.timeout if a.timeout else None
 
     def stored():
-        return {(e["job"], e["round"]): e["state"]
-                for row in read_reports(STATE, uid, owner) for e in row["entries"]}
+        # 摘要汇报（kind=digest）是运行中进度，不唤醒；去重键含汇报 id，同一轮后续的终态汇报仍算新汇报。
+        return {(row["id"], e["job"], e["round"]): e["state"]
+                for row in read_reports(STATE, uid, owner) if row.get("kind") != "digest"
+                for e in row["entries"]}
 
     def terminal():
         recs = [r for r in all_jobs() if r.get("user_id") == uid and r.get("initiator_session") == owner]
@@ -1289,8 +1291,9 @@ def cmd_inbox_wait(a, cfg):
         return {(rec["job"], int(states[rec["job"]].get("round") or rec["rounds"])): states[rec["job"]]
                 for rec in recs if states.get(rec["job"], {}).get("state") in ("done", "dead", "missing")}
 
+    # 两路基线都在命令开始时取：在线期间结束、汇报仍在合并窗口内的派单，serve 离线后仍会唤醒。
     seen_reports = set(stored())
-    seen_states = None
+    seen_states = set(terminal())
     while True:
         found = []
         if serve_online():
@@ -1298,14 +1301,13 @@ def cmd_inbox_wait(a, cfg):
             seen_reports.update(key for key, _ in found)
         else:
             current = terminal()
-            if seen_states is not None:
-                found = [(key, wait_state_name(snap)) for key, snap in current.items() if key not in seen_states]
-            seen_states = set(current) | (seen_states or set())
+            found = [(key, wait_state_name(snap)) for key, snap in current.items() if key not in seen_states]
+            seen_states = set(current) | seen_states
         if found:
-            rows = [dict(job=key[0], round=key[1], state=state,
+            rows = [dict(job=key[-2], round=key[-1], state=state,
                          state_text={"completed": "已完成", "blocked": "卡住", "offline": "离线",
                                      "failed": "失败"}.get(state, state),
-                         view=f"rdispatch result {key[0]}") for key, state in sorted(found)]
+                         view=f"rdispatch result {key[-2]}") for key, state in sorted(found)]
             if a.json:
                 print(json.dumps(dict(initiator_session=owner, reports=rows), ensure_ascii=False, indent=2))
             else:
@@ -4174,7 +4176,7 @@ def main(argv=None, *, forwarded=None):
     p = sub.add_parser("inbox", help="列出当前发起会话待收取的结果")
     p.add_argument("--initiator-session")
     p.add_argument("--orphans", action="store_true", help="改列当前用户 ID 下没有发起会话的派单，供集中签收")
-    p.add_argument("--json", action="store_true", help="与 --orphans 合用：输出 JSON（inbox 默认即 JSON）")
+    p.add_argument("--json", action="store_true", help="与 --orphans 或 --wait 合用：输出 JSON（inbox 默认即 JSON）")
     p.add_argument("--wait", action="store_true", help="只读等待本会话新汇报：有新汇报退出 0，超时退出 2；不签收、不写回执")
     p.add_argument("--timeout", type=float, help="与 --wait 合用：最长等待秒数；省略则一直等")
     p.add_argument("--interval", type=float, default=5, help=argparse.SUPPRESS)
