@@ -16,10 +16,8 @@
         }
       ],
       "delivery": {
-        "status": "delivered",
-        "reason": null,
-        "pane_id": null,
-        "delivered_at": null
+        "status": "inbox_only",
+        "channels": []
       }
     }
   ]

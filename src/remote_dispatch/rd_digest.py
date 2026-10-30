@@ -77,8 +77,7 @@ def step(service, saved, now):
         entries = [service.redact(entry(row)) for row in group["rows"]]
         report_id = hashlib.sha256(json.dumps(["digest", owner, print_, now], separators=(",", ":")).encode()).hexdigest()
         saved["reports"].append(dict(id=report_id, kind="digest", initiator_session=owner,
-                                     created_at=messages.utc_now(), entries=entries,
-                                     delivery=dict(status="queued", reason=None, pane_id=None, delivered_at=None)))
+                                     created_at=messages.utc_now(), entries=entries))
         created.append(dict(report_id=report_id, user_id=service.user_id, initiator_session=owner,
                             job_count=len(entries)))
     # 已无运行中派单的会话清掉指纹，之后再有运行中派单时视为新变化。

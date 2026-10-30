@@ -1,4 +1,7 @@
-"""控制端汇报：消费状态事件、持久去重与按发起会话合并并经 Herdr 送达。"""
+"""控制端汇报：消费状态事件、持久去重与按发起会话合并，存入 inbox 并发布 report.created。
+
+汇报不写入任何会话输入框；提醒由 notify 单一入口记录结果。
+"""
 import copy
 import hashlib
 import json
@@ -12,20 +15,10 @@ from . import rd_digest as digest
 from . import rd_events as events
 from . import rd_messages as messages
 from .rd_query import result_path
-from .rd_lock import JobBusy, JobLock
-from .rd_herdr import InputNotSubmitted
 from .rd_serve_history import instant
 
 
 STATE_TEXT = {"completed": "已完成", "blocked": "卡住", "offline": "离线", "failed": "失败"}
-REPORT_TEXT_LIMIT = 8000
-
-
-def input_text(text, redact):
-    """外部汇报只能作为有界单行文本进入终端，不能携带终端控制字节。"""
-    single_line = " | ".join(text.splitlines())
-    clean = "".join(c for c in single_line if ord(c) >= 32 and not 127 <= ord(c) <= 159)
-    return redact(clean)[:REPORT_TEXT_LIMIT]
 
 
 def store_path(state, user_id):
@@ -119,6 +112,7 @@ class Reports:
                     saved["progress"][key] = self.service.redact(progress.get("summary", ""))
                 self.observe(saved, rec, number, snapshot, receipt, now, observed_at=stamp)
             saved["scan_due"] = now + 60
+        known = len(saved["reports"])
         created = digest.step(self.service, saved, now)
         for owner, group in list(saved["pending"].items()):
             if now < group["due"]:
@@ -126,12 +120,13 @@ class Reports:
             content = [owner, sorted("{job}:{round}:{state}".format(**entry) for entry in group["entries"]),
                        group["due"]]
             report_id = hashlib.sha256(json.dumps(content, ensure_ascii=False, separators=(",", ":")).encode()).hexdigest()
-            row = dict(id=report_id, initiator_session=owner, created_at=messages.utc_now(), entries=group["entries"],
-                       delivery=dict(status="queued", reason=None, pane_id=None, delivered_at=None))
+            row = dict(id=report_id, initiator_session=owner, created_at=messages.utc_now(), entries=group["entries"])
             saved["reports"].append(row)
             created.append(dict(report_id=report_id, user_id=self.service.user_id,
                                 initiator_session=owner, job_count=len(row["entries"])))
             del saved["pending"][owner]
+        for row in saved["reports"][known:]:
+            row["delivery"] = self.notify(saved, row)
         if saved != before:
             with events.write_transaction([self.path]):
                 messages.atomic_json(self.path, saved, limit=None)
@@ -140,7 +135,6 @@ class Reports:
         # Retain the batch on failure, so an in-process retry cannot lose events
         # already consumed by the incremental cursor.
         self.batch = None
-        self.deliver(saved)
 
     def initialize(self, records, now):
         """首次启用只记录当前状态；历史事件和终态不变成新汇报。"""
@@ -170,98 +164,13 @@ class Reports:
         saved["pending"] = {}
         messages.atomic_json(self.path, saved, limit=None)
 
-    def deliver(self, saved):
-        self.publish_deliveries(saved)
-        waiting = set()
-        for row in saved["reports"]:
-            if row.get("delivery", {}).get("status") == "sending":
-                row["delivery"]["status"] = "inbox_only"
-                messages.atomic_json(self.path, saved, limit=None)
-            if row.get("delivery", {}).get("status") not in (None, "queued"):
-                continue
-            owner = row["initiator_session"]
-            if owner in waiting:
-                continue
-            lock = JobLock(self.service.state, "sessions")
-            lock.path = self.service.state / "locks" / "sessions" / "input.lock"
-            try:
-                # Same ordering and lock as Sessions.write_input: text and enter
-                # must form one input operation, including across processes.
-                with self.service.writer, lock:
-                    if self.service.stop.is_set():
-                        return
-                    self.deliver_one(saved, row)
-            except JobBusy:
-                waiting.add(owner)
-                continue
-            if row.get("delivery", {}).get("status") in (None, "queued"):
-                waiting.add(owner)
-        self.publish_deliveries(saved)
+    def notify(self, saved, row):
+        """生成汇报后的提醒步骤，返回要写入 row["delivery"] 的结果。
 
-    def set_delivery(self, saved, row, status, reason, pane=None):
-        delivery = dict(status=status, reason=reason, pane_id=self.service.redact(pane), delivered_at=None)
-        if row.get("delivery") != delivery:
-            row["delivery"] = delivery
-            messages.atomic_json(self.path, saved, limit=None)
-
-    def deliver_one(self, saved, row):
-        if not self.service.sessions.allowed():
-            self.set_delivery(saved, row, "inbox_only", "session_access_disabled")
-            return
-        try:
-            items = self.service.sessions.discover()
-        except (OSError, ValueError, KeyError, TypeError):
-            self.set_delivery(saved, row, "inbox_only", "herdr_unavailable")
-            return
-        target = next((item["row"] for item in sorted(items, key=lambda item: item["row"]["probable"])
-                       if item["row"]["session_id"] == row["initiator_session"]), None)
-        if target is None:
-            self.set_delivery(saved, row, "inbox_only", "session_closed")
-            return
-        pane = target["pane_id"]
-        if target["probable"]:
-            self.set_delivery(saved, row, "inbox_only", "session_identity_unconfirmed", pane)
-            return
-        if target["harness"] not in {"codex", "claude"}:
-            self.set_delivery(saved, row, "inbox_only", "harness_not_verified", pane)
-            return
-        if target["status"] != "idle":
-            self.set_delivery(saved, row, "queued", "session_not_idle", pane)
-            return
-        self.set_delivery(saved, row, "sending", "delivery_result_unknown", pane)
-        text = "派单汇报\n" + "\n".join(
-            "{title} · {host} · 第{round}轮 · {state_text}\n{summary}".format(**entry)
-            for entry in row["entries"])
-        try:
-            self.service.sessions.herdr.input(pane, {"text": input_text(text, self.service.redact)})
-        except InputNotSubmitted:
-            row["delivery"].update(status="text_delivered", reason="session_submit_failed",
-                                   delivered_at=messages.utc_now())
-            messages.atomic_json(self.path, saved, limit=None)
-            return
-        except (OSError, ValueError):
-            self.set_delivery(saved, row, "inbox_only", "session_input_failed", pane)
-            return
-        row["delivery"].update(status="delivered", reason=None, delivered_at=messages.utc_now())
-        saved.setdefault("delivery_events", []).append(row["id"])
-        messages.atomic_json(self.path, saved, limit=None)
-        self.service.wake.set()
-
-    def publish_deliveries(self, saved):
-        pending = saved.get("delivery_events", [])
-        if not pending:
-            return
-        # Persist success before publishing. Failed event writes can then be
-        # retried without ever crossing the external input boundary again.
-        with events.write_transaction([self.path]):
-            saved["delivery_events"] = []
-            messages.atomic_json(self.path, saved, limit=None)
-            for row in saved["reports"]:
-                if row["id"] in pending:
-                    events.emit(self.service.state, "report.delivered", dict(
-                        user_id=self.service.user_id, report_id=row["id"],
-                        initiator_session=row["initiator_session"], pane_id=row["delivery"]["pane_id"],
-                        delivered_at=row["delivery"]["delivered_at"]))
+        这是唯一入口：通道在此接入，各通道结果追加到 channels。
+        没有启用任何通道时为 inbox_only；绝不写入会话输入框。
+        """
+        return dict(status="inbox_only", channels=[])
 
     def observe(self, saved, rec, number, snapshot, receipt, now, *, observed_at=None):
         report = receipt.get("report") or {}

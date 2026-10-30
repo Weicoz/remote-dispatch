@@ -1,4 +1,5 @@
 {
+  "_note": "历史状态样例：老记录中的 text_delivered/session_submit_failed 原样返回；新汇报不再产生此状态。",
   "reports": [
     {
       "id": "report-fixture",
