@@ -3,7 +3,7 @@
 ## 未发布
 
 - **App 推送通道**：`[monitor] notify` 含 `app` 时，汇报成功提醒后由 `rd_push` 按 `report.delivered` 事件向已配对设备发计数推送（`{"report_ready": 1}`，不含正文），沿用检查点；无推送设备记 `no_device`。详见 `docs/reports.md`。
-- **提醒通道与 Herdr 界面通知**：新增 `[monitor] notify`（`herdr`、`macos`、`app` 逗号分隔，默认三者全开，`none` 全关；非法取值退出码 4）。本版实现 `herdr` 通道：每条合并汇报调用 `herdr notification show`（失败用 `request` 提示音，其他 `done`），文本只含派单标题、目标机、轮次、状态文字，不含执行方摘要，不触碰 pane 输入；不可用记 `herdr_unavailable` 不重试；`macos`、`app` 暂记 `not_implemented`。结果写入 `delivery.channels`，至少一个通道成功为 `notified` 并发布 `report.delivered`。进度摘要默认不提醒，`[monitor] notify_digest = true` 时提醒。详见 `docs/reports.md`。
+- **提醒通道与 Herdr 界面通知**：新增 `[monitor] notify`（`herdr`、`macos`、`app` 逗号分隔，默认三者全开，`none` 全关；非法取值退出码 4）。本版实现 `herdr` 通道：每条合并汇报调用 `herdr notification show`（失败用 `request` 提示音，其他 `done`），文本只含派单标题、目标机、轮次、状态文字，不含执行方摘要，不触碰 pane 输入；不可用记 `herdr_unavailable` 不重试；`app` 暂记 `not_implemented`。新增 `macos` 通道：macOS 控制端经 `osascript` 发系统通知（文本以独立参数传入，不可注入；serve 作为 launchd 用户代理也能发），非 macOS 记 `unsupported_platform`，失败记 `notify_failed`，不影响其他通道。结果写入 `delivery.channels`，至少一个通道成功为 `notified` 并发布 `report.delivered`。进度摘要默认不提醒，`[monitor] notify_digest = true` 时提醒。详见 `docs/reports.md`。
 - **汇报不再对已结束轮次报离线**：一轮已报完成、失败或卡住后，后续连接不可达观察被忽略，不生成汇报、不改已记录状态；运行中轮次的离线汇报不变。详见 `docs/reports.md`。
 
 - **接单判定去掉 swap 检查**：`assess` 不再按换页速率或交换区剩余拒绝派单；`max_swap_io_mb_s`、`min_swap_free_gb`、`swap_active_mb_s` 已停用（旧配置照常加载）。探针仍采集 swap，`hosts`、看板、serve 指标照常显示；load、内存、磁盘等阈值不变。

@@ -9,6 +9,7 @@ from unittest.mock import patch
 
 from remote_dispatch import cli
 from remote_dispatch import rd_events as events
+from remote_dispatch import rd_notify
 from remote_dispatch.rd_serve import Service
 from tests import test_rd_serve_sessions as sessions
 
@@ -16,6 +17,20 @@ from tests import test_rd_serve_sessions as sessions
 class ReportTests(unittest.TestCase):
     def setUp(self):
         sessions.SessionTests.setUp(self)
+        # 测试中不得真的弹出 macOS 系统通知；调用记录在 self.macos_calls。
+        self.macos_calls = []
+        self.macos_fail = False
+
+        def fake_show_macos(title, body, sound):
+            self.macos_calls.append((title, body, sound))
+            if self.macos_fail:
+                raise OSError("fake")
+        patcher = patch.object(rd_notify, "show_macos", fake_show_macos)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        patcher = patch.object(rd_notify, "is_macos", lambda: True)
+        patcher.start()
+        self.addCleanup(patcher.stop)
         # Normal report tests start after first-use migration of an empty store.
         service = Service(cli.Config(), self.path)
         try:

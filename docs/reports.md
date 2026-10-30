@@ -100,6 +100,10 @@ notify_digest = false      # 默认 false；true 时进度摘要（kind: digest�
   `{channel: "app", ok: false, reason: "no_device"}`。推送由 `rd_push` 处理 `report.delivered`
   事件（`channels` 含 `app`）触发，沿用检查点与去重，serve 关闭期间的待推送重启后补发；
   负载只有计数 `{"report_ready": 1}`，不含汇报正文或执行方文字。
+- `macos` 通道：控制端为 macOS 时调用 `osascript` 发系统通知（serve 以 launchd 用户代理运行时同样可发），
+  内容规则同 `herdr`。标题、正文、提示音作为独立参数传给脚本，不拼进脚本文本，无法注入命令或脚本；
+  含失败的汇报用 Basso，其他用 Glass。非 macOS 跳过并记 `unsupported_platform`；调用失败或超时（5 秒）
+  记 `notify_failed`，不重试，不影响其他通道。
 - `herdr` 通道每条汇报调用一次 `herdr notification show <标题> --body <正文> --sound done|request`，
   含失败的汇报用 `request`，其他用 `done`。标题与正文只含派单标题、目标机、轮次、状态文字，
   不含执行方摘要或任何来自目标机的文字。只调用界面通知，不触碰任何 pane 输入。

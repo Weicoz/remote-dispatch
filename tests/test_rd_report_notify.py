@@ -1,10 +1,15 @@
 """提醒通道接缝：各配置组合下的通道调用与跳过；文本边界；失败记录；digest 默认不提醒。"""
 import json
 import unittest
+from unittest.mock import patch
+from unittest import mock
 
 from remote_dispatch import cli
 from remote_dispatch import rd_events as events
+from remote_dispatch import rd_notify
 from tests import test_rd_report_delivery as delivery_test
+
+REAL_SHOW_MACOS = rd_notify.show_macos  # setUp 会把它换成替身
 
 
 class NotifyChannelTests(unittest.TestCase):
@@ -37,12 +42,14 @@ class NotifyChannelTests(unittest.TestCase):
         self.tick_report(service)
         return service, self.reports(service)[0]
 
-    def test_default_config_notifies_herdr_and_skips_unimplemented_and_deviceless_channels(self):
+    def test_default_config_notifies_herdr_and_macos_and_skips_deviceless_channels(self):
         service, report = self.report_with('', summary='SECRET-摘要')
         self.assertEqual(report['delivery'], dict(status='notified', channels=[
             dict(channel='herdr', ok=True, reason=None),
-            dict(channel='macos', ok=False, reason='not_implemented'),
+            dict(channel='macos', ok=True, reason=None),
             dict(channel='app', ok=False, reason='no_device')]))
+        self.assertEqual(len(self.macos_calls), 1)
+        self.assertNotIn('SECRET', json.dumps(self.macos_calls, ensure_ascii=False))
         sent = self.notifications_sent()
         self.assertEqual(len(sent), 1)
         self.assertEqual(sent[0][:2], ['notification', 'show'])
@@ -54,14 +61,14 @@ class NotifyChannelTests(unittest.TestCase):
         self.assertEqual(self.writes_sent(), [])
         delivered = self.delivered_events()
         self.assertEqual(len(delivered), 1)
-        self.assertEqual(delivered[0]['data']['channels'], ['herdr'])
+        self.assertEqual(delivered[0]['data']['channels'], ['herdr', 'macos'])
         self.assertEqual(delivered[0]['data']['report_id'], report['id'])
         self.assertNotIn('实现汇报', json.dumps(delivered[0]['data'], ensure_ascii=False))
 
     def test_channel_combinations(self):
         cases = {
             'herdr': ('notified', ['herdr'], 1),
-            'macos': ('inbox_only', ['macos'], 0),
+            'macos': ('notified', ['macos'], 0),
             'app,herdr': ('notified', ['herdr', 'app'], 1),
             ' Herdr , app ': ('notified', ['herdr', 'app'], 1),
             'none': ('inbox_only', [], 0),
@@ -79,6 +86,44 @@ class NotifyChannelTests(unittest.TestCase):
                 self.assertEqual(sorted(c['channel'] for c in rows[0]['delivery']['channels']), sorted(names))
                 self.assertEqual(len(self.notifications_sent()), calls)
                 service.close()
+
+    def test_macos_unsupported_platform_is_skipped_and_herdr_still_sent(self):
+        with patch.object(rd_notify, 'is_macos', lambda: False):
+            service, report = self.report_with('[monitor]\nnotify=herdr,macos\n')
+        self.assertEqual(report['delivery'], dict(status='notified', channels=[
+            dict(channel='herdr', ok=True, reason=None),
+            dict(channel='macos', ok=False, reason='unsupported_platform')]))
+        self.assertEqual(self.macos_calls, [])
+        self.assertEqual(len(self.notifications_sent()), 1)
+
+    def test_macos_failure_is_recorded_and_does_not_affect_herdr(self):
+        self.macos_fail = True
+        service, report = self.report_with('[monitor]\nnotify=macos,herdr\n')
+        self.assertEqual(report['delivery'], dict(status='notified', channels=[
+            dict(channel='herdr', ok=True, reason=None),
+            dict(channel='macos', ok=False, reason='notify_failed')]))
+        self.assertEqual(len(self.notifications_sent()), 1)
+
+    def test_macos_failure_alone_is_inbox_only(self):
+        self.macos_fail = True
+        service, report = self.report_with('[monitor]\nnotify=macos\n', outcome='failed', summary='x')
+        self.assertEqual(report['delivery']['status'], 'inbox_only')
+        self.assertEqual(self.macos_calls[0][2], 'request')
+
+    def test_osascript_gets_text_as_argv_not_script(self):
+        evil = '"; do shell script "touch /tmp/x" --'
+        with patch.object(rd_notify.subprocess, 'run') as run:
+            run.return_value = mock.Mock(returncode=0)
+            REAL_SHOW_MACOS(evil, evil, 'done')
+        cmd = run.call_args[0][0]
+        self.assertEqual(cmd[0], 'osascript')
+        self.assertEqual(cmd[-4:], ['--', evil, evil, 'Glass'])
+        scripts = [cmd[i + 1] for i, a in enumerate(cmd) if a == '-e']
+        self.assertNotIn('touch', ' '.join(scripts))
+        with patch.object(rd_notify.subprocess, 'run') as run:
+            run.return_value = mock.Mock(returncode=1)
+            with self.assertRaises(OSError):
+                REAL_SHOW_MACOS('t', 'b', 'request')
 
     def test_failure_uses_request_sound(self):
         self.report_with('[monitor]\nnotify=herdr\n', outcome='failed', summary='x')
