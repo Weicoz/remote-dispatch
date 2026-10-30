@@ -1445,7 +1445,7 @@ def cmd_ack(a, cfg):
     signer = messages.identifier(getattr(a, "acked_by", None) or initiator_session(a) or "cli", "签收方")
     via = getattr(a, "via", "cli")
     path = result_path(rec, a.round)
-    receipt = queries(cfg).result(rec, a.round)
+    receipt = live_receipt(cfg, rec, a.round)
     if not receipt or receipt["receipt_id"] != a.receipt_id:
         die("回执 ID 或轮次不匹配；先收取并核对 rdispatch result。", 4)
     acknowledge_receipt(rec, receipt, signer, via)
@@ -1463,12 +1463,22 @@ def acknowledge_receipt(rec, receipt, signer, via):
                     suppress_push=receipt.get("suppress_push", False), **acknowledgement))
 
 
+def live_receipt(cfg, rec, number):
+    """取本轮回执；未落盘且目标机连不上时报 receipt_host_unavailable，不误报为轮次进行中或回执不匹配。"""
+    snapshot = None
+    if messages.read_json(result_path(rec, number)) is None:
+        snapshot = job_states(cfg, [rec]).get(rec["job"], {})
+        if snapshot.get("state") == "unreachable":
+            die(f"receipt_host_unavailable: {rec['host']} 暂时连不上，回执未取得；稍后重试。", 4)
+    return queries(cfg).result(rec, number, snapshot)
+
+
 @locked_job
 def cmd_review(a, cfg):
     rec = load_job(a.job)
     job_host(cfg, rec)
     reviewer = messages.identifier(a.reviewed_by or initiator_session(a) or "cli", "验收方")
-    receipt = queries(cfg).result(rec, a.round)
+    receipt = live_receipt(cfg, rec, a.round)
     if receipt is None:
         die("round_in_progress: 轮次尚无可验收回执。", 4)
     action = "rejected" if a.reject is not None else a.review_action
