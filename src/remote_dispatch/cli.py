@@ -86,6 +86,7 @@ DEFAULTS = {
     # 交换区已用量只反映历史累积（macOS 不主动回收冷页），超过它只提示不拦；
     # 拦派单看换页速率：持续高速换页，或交换区快用尽且仍在换页。
     "max_swap_used_gb": "15",
+    # 已停用：下面三项仍可加载，但不再参与接单判定
     "max_swap_io_mb_s": "10",
     "min_swap_free_gb": "1",
     "swap_active_mb_s": "1",
@@ -940,11 +941,6 @@ def assess(host, info):
     disk = num(info.get("disk"))
     if disk is not None and disk < float(host["min_free_disk_gb"]):
         why.append(f"only {disk:.0f} GB disk free")
-    io, free = swap_io_mb_s(info), mb(info.get("swapfree"))
-    if io is not None and io > float(host["max_swap_io_mb_s"]):
-        why.append(f"swapping {io:.1f} MB/s")
-    elif io is not None and io >= float(host["swap_active_mb_s"]) and free is not None and free / 1024 < float(host["min_swap_free_gb"]):
-        why.append(f"swap nearly full ({free / 1024:.1f} GB free) while swapping {io:.1f} MB/s")
     if info.get("os") == "Windows":
         cpu = num(info.get("cpu_pct"))
         if cpu is None:

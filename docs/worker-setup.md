@@ -40,7 +40,7 @@ sync = direct
 max_heavy = 1
 ```
 
-并发怎么定：**没有会话数上限**，一台机器同时能接几个任务由负载决定——每次派单前 `rdispatch` 都会实测负载、空闲内存和磁盘，超过 `max_load_per_core`、低于 `min_free_mem_pct` 或 `min_free_disk_gb` 就不派。交换区看换页速率而不是已用量：持续高速换页（`max_swap_io_mb_s`），或剩余低于 `min_swap_free_gb` 且仍在换页，才不派；已用量超过 `max_swap_used_gb` 只提示。`max_heavy` 不是会话上限，它是重命令的排队口：经 `rd-heavy` 或 `--heavy` 跑的完整测试这类命令同一时刻只放行这么多个，其余排队等，避免几套完整测试同时把内存耗尽。先看项目一个测试进程占多少内存，乘以并发数，不能超过机器的空闲内存；16 GB 的机器一般是 1。
+并发怎么定：**没有会话数上限**，一台机器同时能接几个任务由负载决定——每次派单前 `rdispatch` 都会实测负载、空闲内存和磁盘，超过 `max_load_per_core`、低于 `min_free_mem_pct` 或 `min_free_disk_gb` 就不派。交换区不参与接单判定：无论 swap 多满、换页多快都不拒绝派单，读数仍显示在 `hosts`、看板和 serve 指标里。`max_swap_io_mb_s`、`min_swap_free_gb`、`swap_active_mb_s` 已停用，旧配置照常加载但不生效；已用量超过 `max_swap_used_gb` 仍只提示。`max_heavy` 不是会话上限，它是重命令的排队口：经 `rd-heavy` 或 `--heavy` 跑的完整测试这类命令同一时刻只放行这么多个，其余排队等，避免几套完整测试同时把内存耗尽。先看项目一个测试进程占多少内存，乘以并发数，不能超过机器的空闲内存；16 GB 的机器一般是 1。
 
 ## 3. 远端装好要用的东西
 
