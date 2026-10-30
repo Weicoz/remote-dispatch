@@ -3,6 +3,7 @@
 ## 未发布
 
 - **汇报审查修复**：`inbox --wait` 在线时跳过摘要汇报，去重键改为汇报 id（先摘要后完成不再漏唤醒），两路基线都在命令开始时取（在线期间结束的派单在 serve 离线后仍唤醒）；提醒通道改在独立线程池调用，不阻塞汇报线程，新汇报先以 `delivery.status=queued` 落盘，通道返回后回写，事件写入失败重试不再重复通知；`inbox --json` 帮助与 Skill 补 `--wait`。详见 `docs/reports.md`。
+- **App 推送按派单与轮次去重**：同一轮的 `receipt.ready` 与 `report.delivered`（app 通道）只推一次，汇报优先（`report_ready`）；完成回执先延后「汇报合并窗口 + 30 秒」，超时无汇报仍推 `receipt_ready`；`blocked` 即时推送。`report.delivered` 新增 `rounds` 字段（`job:round`，不含正文），延后与已推送状态随推送检查点持久化。详见 `docs/reports.md`。
 - **App 推送通道**：`[monitor] notify` 含 `app` 时，汇报成功提醒后由 `rd_push` 按 `report.delivered` 事件向已配对设备发计数推送（`{"report_ready": 1}`，不含正文），沿用检查点；无推送设备记 `no_device`。详见 `docs/reports.md`。
 - **提醒通道与 Herdr 界面通知**：新增 `[monitor] notify`（`herdr`、`macos`、`app` 逗号分隔，默认三者全开，`none` 全关；非法取值退出码 4）。本版实现 `herdr` 通道：每条合并汇报调用 `herdr notification show`（失败用 `request` 提示音，其他 `done`），文本只含派单标题、目标机、轮次、状态文字，不含执行方摘要，不触碰 pane 输入；不可用记 `herdr_unavailable` 不重试；`app` 暂记 `not_implemented`。新增 `macos` 通道：macOS 控制端经 `osascript` 发系统通知（文本以独立参数传入，不可注入；serve 作为 launchd 用户代理也能发），非 macOS 记 `unsupported_platform`，失败记 `notify_failed`，不影响其他通道。结果写入 `delivery.channels`，至少一个通道成功为 `notified` 并发布 `report.delivered`。进度摘要默认不提醒，`[monitor] notify_digest = true` 时提醒。详见 `docs/reports.md`。
 - **汇报不再对已结束轮次报离线**：一轮已报完成、失败或卡住后，后续连接不可达观察被忽略，不生成汇报、不改已记录状态；运行中轮次的离线汇报不变。详见 `docs/reports.md`。

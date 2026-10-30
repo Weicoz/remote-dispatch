@@ -68,8 +68,12 @@ class Network:
         self.last_seen = {}
         self.seen_thread = None
         self.listen_addresses = self.configured_listeners()
-        self.push = PushDispatcher(service.state, service.user_id, push_sender,
-                                   stop=service.stop, is_active=self.push_active) if push_sender is not None else None
+        try:
+            hold = service.config.cp.getfloat("monitor", "report_merge_window_seconds", fallback=5) + 30
+        except ValueError:
+            hold = 35
+        self.push = PushDispatcher(service.state, service.user_id, push_sender, stop=service.stop,
+                                   is_active=self.push_active, hold=hold) if push_sender is not None else None
         self.push_thread = None
 
     def configured_listeners(self):

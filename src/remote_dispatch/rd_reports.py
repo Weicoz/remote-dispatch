@@ -183,6 +183,7 @@ class Reports:
                         events.emit(self.service.state, "report.delivered", dict(
                             user_id=self.service.user_id, report_id=row["id"],
                             initiator_session=row["initiator_session"],
+                            rounds=["%s:%s" % (e["job"], e["round"]) for e in row["entries"]],
                             channels=[c["channel"] for c in result["channels"] if c["ok"]],
                             delivered_at=messages.utc_now()))
             except (OSError, ValueError):

@@ -100,6 +100,11 @@ notify_digest = false      # 默认 false；true 时进度摘要（kind: digest�
   `{channel: "app", ok: false, reason: "no_device"}`。推送由 `rd_push` 处理 `report.delivered`
   事件（`channels` 含 `app`）触发，沿用检查点与去重，serve 关闭期间的待推送重启后补发；
   负载只有计数 `{"report_ready": 1}`，不含汇报正文或执行方文字。
+- 推送按「派单 + 轮次」去重：`report.delivered` 带 `rounds`（`job:round` 列表，不含正文）。
+  完成类 `receipt.ready` 先在检查点里延后（汇报合并窗口 + 30 秒），期间同轮汇报经 `app` 送达则只推
+  `report_ready`；超时仍无汇报（无发起会话、通道未启用 `app` 或汇报不可用）则推 `receipt_ready`，不丢失。
+  `blocked` 回执即时推送，同轮后到的汇报不再重复推送。延后与已推送轮次随 `network/push.json` 持久化，
+  serve 重启后不重复也不丢失。
 - `macos` 通道：控制端为 macOS 时调用 `osascript` 发系统通知（serve 以 launchd 用户代理运行时同样可发），
   内容规则同 `herdr`。标题、正文、提示音作为独立参数传给脚本，不拼进脚本文本，无法注入命令或脚本；
   含失败的汇报用 Basso，其他用 Glass。非 macOS 跳过并记 `unsupported_platform`；调用失败或超时（5 秒）
