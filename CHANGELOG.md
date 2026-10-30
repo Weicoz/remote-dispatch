@@ -2,6 +2,7 @@
 
 ## 未发布
 
+- **凭据只在首轮复制**：Codex、DSH、AGY 的认证文件只在首轮复制进任务隔离目录，续跑沿用（AGY 原先每轮重新复制，DSH 原先每轮覆盖，均改为沿用）。新增 `rdispatch resume JOB --refresh-auth`：本轮重新复制认证文件覆盖，不动员工配置副本、会话与 worktree，POSIX 与 Windows 原生路径都支持；首轮缺凭据配置时之后补配也要它才复制。本轮失败输出有明确认证失败时，回执记 `credential_suspect: true` 与 `credential_hint`，`result`、`inbox`、看板给出重新复制的命令提示；不自动重复制、不自动续跑，识别不了不标记。详见 `docs/agents.md`。
 - **工作线会话轮换**：工作线默认每个工作项换新会话，同一 worktree，提示词前附交接包（复用上下文包拼装）。上下文历史用 `reason: policy`（策略轮换）与 `context`（`--new-context` 故障换新）区分；循环重建保护只对故障换新生效。上一轮回执不健康时不做策略轮换并输出原因。可按 harness 在 `[line:<harness>]` 配置 `reuse_max_context_tokens`、`reuse_max_interval_seconds`，满足时续用当前会话。详见 `docs/session-dispatch-defaults.md`。
 - **工作线前缀合入与 `rdispatch line prefix|close`**：`line prefix <派单> <工作项...>` 在第 k 个工作项验收轮回执的 `head` 建前缀分支（只支持前 k 个，跳项或未验收退出码 4），可直接 `rdispatch gate <分支>`；线关闭前合入检查与 `clean --merged|--expired` 不把派单当作已合入；`line close` 在线上无运行中轮次时关闭线，之后按正常合入判定回收。详见 `docs/session-dispatch-defaults.md`。
 - **serve 定时回收**：`[features] scheduled_reclaim = true`（默认关闭）后，serve 每小时按目标机 `max_worktree_gb` 检查 worktree 总量，超限先瘦身、仍超限再按保留期从旧到新删除，删除只走统一回收判定、只处理当前用户 ID、离线目标机跳过；启用后前 7 天只出计划（起点持久化，重启不重计），计划与结果写入事件 `reclaim.planned` / `reclaim.result`，并显示在看板 `reclaim_plan`、`GET /v1/board` 和新增的 `GET /v1/reclaim`。详见 `docs/cache-retention.md`。

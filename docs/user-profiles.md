@@ -83,7 +83,7 @@ Windows 的目录由目标机 Python `Path` 处理，不沿用 Mac/Linux 的 HOM
 
 Codex 还必须支持命名 permission profiles。默认 `workspace-write` 将 worktree 指向的 Git 元数据保护为只读，直接提交会失败。运行脚本将这种模式编译为继承 `:workspace` 的任务权限，开放当前用户 `repos/` 内的 Git 公共目录、本任务 Git 目录及机器级 `locks/` 写入，供提交与 `rd-heavy` 排队使用；工作区其余文件保护保留。任务网络统一开启，用于依赖下载及连接测试，源配置的 `sandbox_workspace_write.network_access = false` 不再生成禁网权限。用户当次明确要求离线或平台强制限制仍按该限制处理。模型、规则和源配置版本不变；`read-only` 与 `danger-full-access` 不自动转换。任务目录不在用户命名空间或 Git 元数据越出当前用户 `repos/` 时停止启动。既有任务权限调整需有对应授权和恢复副本，不自动覆盖续跑快照。
 
-认证只从目标机提供：主机 `codex_auth_file` 指向已授权的认证文件，或 `env_file` 导出配置引用的 API 环境变量。认证文件只复制到当前任务配置，权限 0600；不进入同步包、Git 或日志。不自动读共享账号默认 `auth.json` 或钥匙串。首次登录、验证码和扫码由用户接管。目标机环境只向代理传递基础变量、RD 变量及配置明确引用的 API/MCP 变量。
+认证只从目标机提供：主机 `codex_auth_file` 指向已授权的认证文件，或 `env_file` 导出配置引用的 API 环境变量。认证文件只在首轮复制到当前任务配置，权限 0600，续跑沿用；`rdispatch resume JOB --refresh-auth` 才重新复制覆盖（只覆盖认证文件，不动员工配置副本）；不进入同步包、Git 或日志。不自动读共享账号默认 `auth.json` 或钥匙串。首次登录、验证码和扫码由用户接管。目标机环境只向代理传递基础变量、RD 变量及配置明确引用的 API/MCP 变量。
 
 用户配置包只用于 Codex。DSH 与 AGY 不读配置包，各用任务目录下的独立 `DSH_HOME` 或 `HOME`，只复制目标机上的凭据文件（`dsh_auth_file`、`agy_auth_file`），见 [代理适配](agents.md)。`kimi`、`claude` 阻止派单。旧版任务保留原路径，可查看、取回、停止和清理；旧任务无用户配置快照，不能直接续跑。`rdispatch status` 默认展示当前 ID 的任务及旧版任务，指定新任务 ID 时校验归属。ID 是操作防串用检查，不是安全授权边界。
 

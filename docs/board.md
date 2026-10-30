@@ -14,6 +14,7 @@
 `reclaim_block` 是回收阻塞原因（`code` 同 `clean --dry-run --json`，可回收为 `null`）。
 看板不连目标机，只判断登记引用、运行中、准备中、不可达、未结束、回执待收取；合入、未提交等检查仍由 `clean` 给出。
 回执带 `report.regenerable_kb`（可再生目录大小，单位 KB，票 04 记录）；行内字段名为 `regenerable_kb`时，行内追加该字段；没有数据不显示。
+本轮回执标记 `credential_suspect` 时，行内追加 `credential_suspect: true` 与 `credential_hint`（重新复制凭据的 `resume --refresh-auth` 命令提示），文本看板另起一行显示；不自动重复制或续跑。
 工作线字段：`mode`（`single` 单项／`line` 线）、`line`（线名，单项为 `null`）、`branch`、`line_items`（线上工作项按轮次顺序）、
 `pending_items`（当前工作项之后仍待派的数量）、`shared_branch`（线上多个工作项共用一个任务分支）、`line_hint`（见下）。
 顶层 `chains` 统计每条链被建议、被接受、被拒绝的次数（`suggested`、`accepted`、`rejected`）。

@@ -18,6 +18,12 @@
 
 未实跑的组合第一次使用时要确认两件事：启动后 `rdispatch logs <job>` 有输出、文件确实写进了 worktree；续跑时 `rdispatch resume` 打印出了会话编号。会话编号取不到，就在日志里找到它的字段名，按下面的方法改 `session_regex`。
 
+### 凭据只在首轮复制
+
+Codex（`codex_auth_file`）、DSH（`dsh_auth_file`）、AGY（`agy_auth_file`）的认证文件只在首轮复制进任务隔离目录，续跑沿用。首轮没有配置凭据、之后才补配时，同样需要 `--refresh-auth` 才会复制。`rdispatch resume JOB --refresh-auth --prompt-file ...` 只在本轮重新复制认证文件、权限 0600；员工配置副本、会话与 worktree 不动。POSIX 与 Windows 原生目标（仅 Codex）都支持。
+
+本轮失败输出出现明确认证失败（Codex 的 `401 Unauthorized`、AGY 的 `authentication failed`／未登录、DSH 的 `MISSING_CREDENTIAL`）时，回执记 `credential_suspect: true` 和 `credential_hint`，`result`、`inbox`、`board` 显示重新复制的命令。rdispatch 不自动重复制、不自动续跑；识别不了的失败不标记。判定集中在 `rd_messages.credential_suspect()`。
+
 ### dsh 的凭据
 
 `rdispatch run --agent dsh` 要求目标机配置 `dsh_auth_file`，本机目标也不例外。隔离 `DSH_HOME` 里只复制这份凭据与 `AGENTS.md`。
@@ -35,7 +41,7 @@ code: MISSING_CREDENTIAL
 
 AGY 没有配置目录变量，rdispatch 给每个任务一个独立 `HOME`（任务目录下的 `agy-home/`），只把目标机自己的登录凭据复制进去，权限 0600。个人 `~/.gemini` 里的技能、MCP、插件、设置与会话都不加载，任务会话也只写在 `agy-home/` 里。凭据不进员工配置包，也不跨机器同步。
 
-- 凭据位置由 `agy_auth_file` 指定，默认 `~/.gemini/antigravity-cli/antigravity-oauth-token`。目标机先由机器主人运行一次 `agy` 完成登录；缺这个文件时 `rdispatch run` 在推送任务分支前停止。每轮启动都会重新复制，目标机上刷新过的凭据优先。
+- 凭据位置由 `agy_auth_file` 指定，默认 `~/.gemini/antigravity-cli/antigravity-oauth-token`。目标机先由机器主人运行一次 `agy` 完成登录；缺这个文件时 `rdispatch run` 在推送任务分支前停止。凭据只在首轮复制进任务目录，之后续跑沿用任务内副本；目标机上刷新过凭据时，用 `rdispatch resume JOB --refresh-auth --prompt-file ...` 重新复制覆盖（见下文「凭据只在首轮复制」）。
 - `HOME` 换成任务目录后，git 通过 `GIT_CONFIG_GLOBAL` 继续读目标机账号的 `~/.gitconfig`，提交身份与凭据助手不变。
 - `--permission-mode` 必填，无默认值：`plan`、`accept-edits`、`auto`、`skip`（`--dangerously-skip-permissions`）。无人值守时 AGY 无法弹出确认，`plan` 与 `accept-edits` 会自动拒绝 shell 命令（包括 git 提交）；`auto` 在部分账号不可用，会退回默认模式。要代理改代码并提交，只能用 `skip`。续跑沿用原档位，显式传 `--permission-mode` 才改。
 - 被拒绝的权限操作不会让 AGY 报错：退出码仍为 0、状态仍为 `SUCCESS`。rdispatch 读到终态里的 `denied_actions` 时，把回执的 `outcome` 降为 `partial` 并列出被拒动作，`rdispatch result --summary` 可见。

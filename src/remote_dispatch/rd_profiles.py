@@ -297,7 +297,13 @@ def allow_task_git(runtime, job_dir):
     path.write_text("\n".join(json.dumps(k) + " = " + toml_value(v) for k, v in config.items()) + "\n", encoding="utf-8")
 
 
-def prepare_runtime(job_dir, expected, auth_file=""):
+def copy_credential(source, target):
+    shutil.copyfile(source, target)
+    target.chmod(0o600)
+
+
+def prepare_runtime(job_dir, expected, auth_file="", refresh=False):
+    """首轮建立任务配置并复制认证文件；续跑沿用，只有 refresh=True 才重新复制认证文件。"""
     job_dir = Path(job_dir).resolve()
     runtime = job_dir / "codex"
     marker = runtime / "rd-profile.json"
@@ -307,6 +313,11 @@ def prepare_runtime(job_dir, expected, auth_file=""):
             raise ValueError("续跑配置版本不匹配；不得切换原任务配置。")
         if not (runtime / "config.toml").is_file():
             raise ValueError("原任务配置已丢失；不得回退系统账号配置。")
+        if refresh:
+            auth = Path(os.path.expandvars(os.path.expanduser(auth_file))) if auth_file else None
+            if auth is None or not auth.is_file():
+                raise ValueError("--refresh-auth 需要目标机认证文件；指定的文件不存在，不得回退默认账号凭据。")
+            copy_credential(auth, runtime / "auth.json")
         allow_task_git(runtime, job_dir)
         return runtime
     if runtime.exists():
@@ -397,20 +408,21 @@ DSH_AGENTS_PLACEHOLDER = """# 本任务员工规范
 """
 
 
-def prepare_dsh_runtime(job_dir, auth_file=""):
+def prepare_dsh_runtime(job_dir, auth_file="", refresh=False):
+    """首轮复制凭据；续跑沿用任务内副本，只有 refresh=True 才重新复制。"""
     job_dir = Path(job_dir).resolve()
     home = job_dir / "dsh-home"
     marker = home / "rd-isolation.json"
     if home.exists() and not marker.exists():
         raise ValueError("任务 DSH 配置目录存在但缺少隔离标记；检查后重派，不覆盖现有目录。")
-    auth = Path(os.path.expandvars(os.path.expanduser(auth_file))) if auth_file else None
+    first = not marker.exists()
+    auth = Path(os.path.expandvars(os.path.expanduser(auth_file))) if auth_file and (first or refresh) else None
     if auth is not None and not auth.is_file():
         raise ValueError("指定的 DSH 认证文件不存在；不得回退宿主个人登录态。")
     home.mkdir(mode=0o700, exist_ok=True)
     home.chmod(0o700)
     if auth is not None:
-        shutil.copyfile(auth, home / ".credentials.yaml")
-        (home / ".credentials.yaml").chmod(0o600)
+        copy_credential(auth, home / ".credentials.yaml")
     agents = home / "AGENTS.md"
     if not agents.exists():
         agents.write_text(DSH_AGENTS_PLACEHOLDER, encoding="utf-8")
@@ -436,23 +448,24 @@ AGY_KEEP = ("PATH", "TMPDIR", "TMP", "TEMP", "LANG", "LC_ALL", "TERM", "USER", "
 AGY_TOKEN = Path(".gemini") / "antigravity-cli" / "antigravity-oauth-token"
 
 
-def prepare_agy_runtime(job_dir, auth_file=""):
-    """AGY 无配置目录变量：给任务独立 HOME，只放目标机自己的登录凭据，隔离个人 MCP、技能、插件与会话。"""
+def prepare_agy_runtime(job_dir, auth_file="", refresh=False):
+    """AGY 无配置目录变量：给任务独立 HOME，只放目标机自己的登录凭据，隔离个人 MCP、技能、插件与会话。
+    首轮复制凭据；续跑沿用任务内副本，只有 refresh=True 才重新复制。"""
     job_dir = Path(job_dir).resolve()
     home = job_dir / "agy-home"
     marker = home / "rd-isolation.json"
     if home.exists() and not marker.exists():
         raise ValueError("任务 AGY 配置目录存在但缺少隔离标记；检查后重派，不覆盖现有目录。")
+    token = home / AGY_TOKEN
+    if marker.exists() and not refresh and token.is_file():
+        return home
     auth = Path(os.path.expandvars(os.path.expanduser(auth_file))) if auth_file else None
     if auth is None or not auth.is_file():
         raise ValueError("目标机没有 AGY 登录凭据；先在目标机运行 agy 登录，不得回退其他账号。")
     home.mkdir(mode=0o700, exist_ok=True)
     home.chmod(0o700)
-    token = home / AGY_TOKEN
     token.parent.mkdir(parents=True, exist_ok=True)
-    # 续跑也重新复制：目标机上刷新过的凭据优先，任务内旧副本不回写。
-    shutil.copyfile(auth, token)
-    token.chmod(0o600)
+    copy_credential(auth, token)
     marker.write_text(json.dumps({"agent": "agy", "home": str(home)}), encoding="utf-8")
     return home
 
@@ -476,18 +489,19 @@ def agy_environment(home, inherited=None):
     return env
 
 
-def execute(job_dir, command, auth_file="", agent="codex"):
+def execute(job_dir, command, auth_file="", agent="codex", refresh=""):
+    refresh = refresh == "refresh"
     if agent == "agy":
-        home = prepare_agy_runtime(job_dir, auth_file)
+        home = prepare_agy_runtime(job_dir, auth_file, refresh)
         print("Remote Dispatch: AGY isolated home=" + str(home), flush=True)
         os.execvpe("sh", ["sh", command], agy_environment(home))
     if agent == "dsh":
-        home = prepare_dsh_runtime(job_dir, auth_file)
+        home = prepare_dsh_runtime(job_dir, auth_file, refresh)
         print("Remote Dispatch: DSH isolated home=" + str(home), flush=True)
         os.execvpe("sh", ["sh", command], dsh_environment(home))
     job_dir = Path(job_dir)
     expected = json.loads((job_dir / "profile.json").read_text(encoding="utf-8"))
-    runtime = prepare_runtime(job_dir, expected, auth_file)
+    runtime = prepare_runtime(job_dir, expected, auth_file, refresh)
     env = runtime_environment(runtime)
     print("Remote Dispatch: ID=" + expected["user_id"] + " config=" + str(runtime) + " version=" + expected["fingerprint"][:12], flush=True)
     os.execvpe("sh", ["sh", command], env)

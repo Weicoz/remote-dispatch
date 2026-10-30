@@ -365,6 +365,32 @@ class ProfileTests(FixtureBase, unittest.TestCase):
             home = profiles.prepare_runtime(job, manifest, str(auth))
         self.assertEqual((home / "auth.json").stat().st_mode & 0o777, 0o600)
 
+    def test_resume_keeps_auth_and_refresh_overwrites_only_auth(self):
+        manifest, job = self.install()
+        auth = self.root / "approved-auth.json"
+        auth.write_text('{"token":"first"}')
+        with patch.object(profiles, "host_skill_paths", return_value=[]):
+            home = profiles.prepare_runtime(job, manifest, str(auth))
+            (home / "AGENTS.md").write_text("员工副本已改")
+            auth.write_text('{"token":"second"}')
+            profiles.prepare_runtime(job, manifest, str(auth))
+            self.assertEqual((home / "auth.json").read_text(), '{"token":"first"}')
+            profiles.prepare_runtime(job, manifest, str(auth), refresh=True)
+        self.assertEqual((home / "auth.json").read_text(), '{"token":"second"}')
+        self.assertEqual((home / "auth.json").stat().st_mode & 0o777, 0o600)
+        self.assertEqual((home / "AGENTS.md").read_text(), "员工副本已改")
+
+    def test_first_round_without_auth_needs_refresh_to_copy_later(self):
+        manifest, job = self.install()
+        auth = self.root / "approved-auth.json"
+        auth.write_text('{"token":"late"}')
+        with patch.object(profiles, "host_skill_paths", return_value=[]):
+            home = profiles.prepare_runtime(job, manifest)
+            profiles.prepare_runtime(job, manifest, str(auth))
+            self.assertFalse((home / "auth.json").exists())
+            profiles.prepare_runtime(job, manifest, str(auth), refresh=True)
+        self.assertTrue((home / "auth.json").exists())
+
     def test_agent_resource_paths_are_mapped_to_target_job(self):
         (self.source / "config.toml").write_text('approval_policy="never"\n[agents.fixture]\nconfig_file="agents/fixture.toml"\n')
         agents = self.source / "agents"

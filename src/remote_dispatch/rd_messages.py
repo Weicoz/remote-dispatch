@@ -135,6 +135,45 @@ def runtime_failure(directory, number):
     return None
 
 
+# 认证失败的判定集中在这里：按 harness 只看各自输出里的错误字段；识别不了就不标记。
+AUTH_NEEDLES = {
+    "codex": ("401 unauthorized", "missing bearer or basic authentication", "invalid_api_key", "incorrect api key"),
+    "agy": ("authentication failed", "not logged in", "login required", "unauthenticated", "401 unauthorized"),
+    "dsh": ("missing_credential", "no api key for provider", "not logged in", "401 unauthorized"),
+}
+
+
+def credential_suspect(agent, text, exit_code):
+    """本轮失败输出里有明确认证失败返回 True。只在执行方非零退出时判定；不读取凭据内容，不调用 API。"""
+    needles = AUTH_NEEDLES.get(agent)
+    if not needles or not text or exit_code in (None, "", 0, "0"):
+        return False
+    errors = []
+    if agent == "dsh":
+        errors.append(text.lower())  # DSH 输出格式未公开固定：文本与 JSON 行都按原文匹配
+    else:
+        for line in text.splitlines():
+            try:
+                row = json.loads(line)
+            except ValueError:
+                continue
+            if not isinstance(row, dict):
+                continue
+            if row.get("type") == "error":
+                errors.append(str(row.get("message", "")).lower())
+            if row.get("type") == "turn.failed" and isinstance(row.get("error"), dict):
+                errors.append(str(row["error"].get("message", "")).lower())
+            if row.get("event") == "result" and isinstance(row.get("result"), dict):
+                errors.append(str(row["result"].get("error", "")).lower())
+    return any(needle in error for error in errors for needle in needles)
+
+
+def refresh_auth_hint(job):
+    """认证失败时给发起方的提示：显式重新复制目标机认证文件的续跑命令。不自动执行。"""
+    return ("疑似认证失败：先在目标机更新登录凭据，再用 rdispatch resume " + str(job)
+            + " --refresh-auth --prompt-file <提示文件> 重新复制凭据并续跑；rdispatch 不会自动重复制或续跑")
+
+
 def result_summary(receipt):
     result = {k: receipt[k] for k in ("job", "round", "receipt_id", "head", "execution_state",
                                     "executor_exit", "receiver_session", "needs_initiator_review", "delivery_state",
@@ -142,6 +181,8 @@ def result_summary(receipt):
                                     "reviewed_by", "reviewed_at", "review_note") if k in receipt}
     report = receipt.get("report") or {}
     result.update({k: report[k] for k in ("outcome", "checks", "phase") if k in report})
+    if receipt.get("credential_suspect"):
+        result.update({k: receipt[k] for k in ("credential_suspect", "credential_hint") if k in receipt})
     if isinstance(report.get("runtime_failure"), dict):
         result["runtime_failure"] = {k: report["runtime_failure"].get(k) for k in ("kind", "work_observed", "scan_complete")}
     if isinstance(report.get("denied_actions"), list):

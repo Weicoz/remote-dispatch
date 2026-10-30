@@ -1368,7 +1368,8 @@ def build_run_script(host, rec, round_no, timeout):
     command = 'sh "$RD_JOB_DIR/cmd.r$RD_ROUND.sh"'
     if rec.get("profile") or rec.get("isolated"):
         command = ('python3 "$RD_JOB_DIR/rd_profiles.py" "$RD_JOB_DIR" "$RD_JOB_DIR/cmd.r$RD_ROUND.sh" '
-                   + shlex.quote(rec.get("auth_file") or host["codex_auth_file"]) + " " + shlex.quote(rec.get("agent_kind") or "codex"))
+                   + shlex.quote(rec.get("auth_file") or host["codex_auth_file"]) + " " + shlex.quote(rec.get("agent_kind") or "codex")
+                   + (" refresh" if rec.get("refresh_auth_round") == round_no else ""))
     report_env, report_finish = "", ":"
     if rec.get("handoff_version"):
         report_env = 'export RD_REPORTER="$RD_JOB_DIR/rd_messages.py" RD_AGENT=' + shlex.quote(rec.get("agent") or "")
@@ -2873,6 +2874,8 @@ def resume_job(a, cfg, rec, *, prompt=None, before_launch=None, rollback_stack=N
     rec["permission_mode"] = permission
     rec["receiver_session"] = session
     rec["rounds"] += 1
+    if getattr(a, "refresh_auth", False):
+        rec["refresh_auth_round"] = rec["rounds"]  # 只对本轮生效：重新复制认证文件，不动配置副本、会话与 worktree
     if line_item:
         workline.start_item(rec, line_item["item"], rec["rounds"], line_item["base"], line_item.get("sync"))
         record_line_residue(host, rec, line_item["item"])
@@ -4138,6 +4141,8 @@ def main(argv=None, *, forwarded=None):
     p.add_argument("--initiator-session")
     p.add_argument("--new-context", action="store_true", help="仅上下文故障时显式接替原会话，保留任务与配置")
     p.add_argument("--retry-after-repair", help="同类故障修复后续跑的证据说明；不绕过资源或身份检查")
+    p.add_argument("--refresh-auth", action="store_true",
+                   help="本轮重新复制目标机认证文件覆盖任务内副本；默认续跑沿用首轮凭据")
     p.set_defaults(fn=cmd_resume)
 
     p = sub.add_parser("takeover", help="同一用户 ID 的其他发起会话接手工作线，写入交接记录")
