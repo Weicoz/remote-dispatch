@@ -10,6 +10,7 @@ from pathlib import Path
 import sys
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor, wait as wait_futures
 
 from . import rd_digest as digest
 from . import rd_events as events
@@ -42,6 +43,9 @@ class Reports:
         self.thread = None
         self.reader = events.EventCursor(service.state)
         self.batch = None
+        self.lock = threading.RLock()
+        self.pool = None
+        self.futures = []
         self.started_at = messages.utc_now()
         try:
             self.window = service.config.cp.getfloat("monitor", "report_merge_window_seconds", fallback=5)
@@ -58,17 +62,27 @@ class Reports:
         if self.thread is not None:
             self.thread.join()
             self.thread = None
+        if self.pool is not None:
+            # 有界等待：慢通道不得拖住 serve 关闭。
+            wait_futures(self.futures, timeout=10)
+            self.pool.shutdown(wait=False, cancel_futures=True)
+            self.pool = None
+            self.futures = []
 
     def run(self):
         while not self.service.stop.is_set():
             if self.ready.is_set():
                 try:
-                    self.tick()
+                    self.tick(background=True)
                 except (OSError, ValueError, KeyError, TypeError):
                     print("rdispatch: 无法生成汇报；请检查控制端状态目录。", file=sys.stderr)
             self.service.stop.wait(0.25)
 
-    def tick(self, *, now=None):
+    def tick(self, *, now=None, background=False):
+        with self.lock:
+            self.step(now, background)
+
+    def step(self, now, background):
         now = time.time() if now is None else now
         saved = messages.read_json(events.physical(self.path), limit=None)
         records = {rec["job"]: rec for rec in self.service.records()}
@@ -126,24 +140,53 @@ class Reports:
             created.append(dict(report_id=report_id, user_id=self.service.user_id,
                                 initiator_session=owner, job_count=len(row["entries"])))
             del saved["pending"][owner]
-        delivered = []
+        fresh = []
         for row in saved["reports"][known:]:
-            row["delivery"] = self.notify(saved, row)
-            if row["delivery"]["status"] == "notified":
-                delivered.append(dict(user_id=self.service.user_id, report_id=row["id"],
-                                      initiator_session=row["initiator_session"],
-                                      channels=[c["channel"] for c in row["delivery"]["channels"] if c["ok"]],
-                                      delivered_at=messages.utc_now()))
+            # 先持久化「排队中」的 delivery，再通知；事件写入失败后的重试不会对同一汇报重复通知。
+            row.setdefault("delivery", dict(status="queued", channels=[]))
+            fresh.append(copy.deepcopy(row))
         if saved != before:
             with events.write_transaction([self.path]):
                 messages.atomic_json(self.path, saved, limit=None)
                 for data in created:
                     events.emit(self.service.state, "report.created", data)
-                for data in delivered:
-                    events.emit(self.service.state, "report.delivered", data)
         # Retain the batch on failure, so an in-process retry cannot lose events
         # already consumed by the incremental cursor.
         self.batch = None
+        for row in fresh:
+            if background:
+                if self.pool is None:
+                    self.pool = ThreadPoolExecutor(max_workers=4, thread_name_prefix="rd-notify")
+                self.futures = [f for f in self.futures if not f.done()]
+                self.futures.append(self.pool.submit(self.deliver, row))
+            else:
+                self.deliver(row)
+
+    def deliver(self, row):
+        """调用提醒通道（可能较慢，不持锁），再把结果回写 delivery 并发布 report.delivered。"""
+        try:
+            result = self.notify(None, row)
+        except Exception:
+            result = dict(status="inbox_only", channels=[])
+        with self.lock:
+            saved = messages.read_json(events.physical(self.path), limit=None)
+            if not saved:
+                return
+            target = next((r for r in saved["reports"] if r["id"] == row["id"]), None)
+            if target is None:
+                return
+            target["delivery"] = result
+            try:
+                with events.write_transaction([self.path]):
+                    messages.atomic_json(self.path, saved, limit=None)
+                    if result["status"] == "notified":
+                        events.emit(self.service.state, "report.delivered", dict(
+                            user_id=self.service.user_id, report_id=row["id"],
+                            initiator_session=row["initiator_session"],
+                            channels=[c["channel"] for c in result["channels"] if c["ok"]],
+                            delivered_at=messages.utc_now()))
+            except (OSError, ValueError):
+                print("rdispatch: 无法记录汇报送达结果。", file=sys.stderr)
 
     def initialize(self, records, now):
         """首次启用只记录当前状态；历史事件和终态不变成新汇报。"""

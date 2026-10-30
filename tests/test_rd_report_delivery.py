@@ -1,8 +1,12 @@
 """汇报提醒接缝：真实 serve、inbox 与事件；隔离的 Herdr 替身断言会话输入零写入。"""
 import json
+import threading
+import time
 import unittest
+from unittest.mock import patch
 
 from remote_dispatch import rd_events as events
+from remote_dispatch import rd_notify
 from tests import test_rd_reports as reports_test
 from tests import test_rd_serve as serve_test
 
@@ -95,6 +99,49 @@ class ReportDeliveryTests(unittest.TestCase):
         for row in rows:
             self.assertEqual(row['delivery'], dict(status='inbox_only', channels=[]))
         self.assertEqual(self.writes_sent(), [])
+
+    def test_slow_channel_does_not_delay_report_creation_in_background_mode(self):
+        self.config.write_text('[monitor]\nnotify=herdr\n')
+        self.receipt(self.job())
+        service = self.service()
+        release = threading.Event()
+        slow = lambda svc, row: (release.wait(10), dict(channel='herdr', ok=True, reason=None))[1]
+        with patch.dict(rd_notify.SENDERS, {'herdr': slow}):
+            service.reports.tick(now=0, background=True)
+            started = time.monotonic()
+            service.reports.tick(now=5, background=True)
+            self.assertLess(time.monotonic() - started, 2)
+            created = [e for e in events.read_after(str(self.state), 0) if e['type'] == 'report.created']
+            self.assertEqual(len(created), 1)
+            self.assertEqual(self.stored()['reports'][0]['delivery']['status'], 'queued')
+            release.set()
+            self.eventually(lambda: self.stored()['reports'][0]['delivery']['status'],
+                            lambda status: status == 'notified')
+        delivered = [e for e in events.read_after(str(self.state), 0) if e['type'] == 'report.delivered']
+        self.assertEqual(len(delivered), 1)
+        service.close()
+
+    def test_event_write_retry_does_not_notify_same_report_twice(self):
+        self.config.write_text('[monitor]\nnotify=herdr\n')
+        self.receipt(self.job())
+        service = self.service()
+        calls = []
+        sender = lambda svc, row: (calls.append(row['id']), dict(channel='herdr', ok=True, reason=None))[1]
+        real_emit = events.emit
+        failures = [1]
+
+        def flaky(state, kind, data):
+            if kind == 'report.created' and failures:
+                failures.pop()
+                raise OSError('模拟事件写入失败')
+            return real_emit(state, kind, data)
+        with patch.dict(rd_notify.SENDERS, {'herdr': sender}), patch.object(events, 'emit', flaky):
+            service.reports.tick(now=0)
+            with self.assertRaises(OSError):
+                service.reports.tick(now=5)
+            service.reports.tick(now=6)
+        self.assertEqual(len(calls), 1)
+        service.close()
 
     def test_legacy_records_keep_old_status_and_reason_keys_untouched(self):
         self.receipt(self.job())

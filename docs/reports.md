@@ -82,7 +82,7 @@ digest_interval_seconds = 900 # 可选，单独指定摘要间隔
 
 | 字段 | 含义 |
 | --- | --- |
-| `status` | `notified` 至少一个通道成功；`inbox_only` 没有启用任何通道或全部失败 |
+| `status` | `queued` 通道尚未返回；`notified` 至少一个通道成功；`inbox_only` 没有启用任何通道或全部失败 |
 | `channels` | 通道结果列表，每项 `{channel, ok, reason}`；没有通道时为空列表 |
 
 ### 提醒通道配置
@@ -109,6 +109,7 @@ notify_digest = false      # 默认 false；true 时进度摘要（kind: digest�
   不含执行方摘要或任何来自目标机的文字。只调用界面通知，不触碰任何 pane 输入。
 - Herdr 不可用或调用超时（5 秒）记 `{channel: "herdr", ok: false, reason: "herdr_unavailable"}`，
   不重试；汇报照常存入 inbox。
+- 提醒在独立线程池里调用，不阻塞汇报线程：新汇报先以 `status=queued`、`channels=[]` 存入 inbox 并发布 `report.created`，通道返回后回写结果；事件写入失败的重试不会重复通知；serve 关闭时最多等待 10 秒。
 - 至少一个通道成功时 `status` 为 `notified`，并发布 `report.delivered`（含成功通道，不含正文）；
   否则为 `inbox_only`。没有启用通道（`none`）时 `channels` 为空。
 - 进度摘要默认不提醒（`inbox_only`、`channels` 为空）；`notify_digest = true` 时与状态汇报同样分派。
