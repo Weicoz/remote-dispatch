@@ -117,7 +117,8 @@ class Query:
                 text = self.output(rec, number)
             except Exception:
                 text = None
-        return usage.describe(rec.get("agent"), text, rec.get("model"))
+        return usage.describe(rec.get("agent"), text, rec.get("model"),
+                              (rec.get("profile") or {}).get("model"))
 
     @staticmethod
     def usage_fields(receipt, rec):

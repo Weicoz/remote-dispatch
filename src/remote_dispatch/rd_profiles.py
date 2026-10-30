@@ -165,7 +165,7 @@ def bundle(source, uid, state):
         latest = max(latest, path.stat().st_mtime)
     if not files.get("AGENTS.md", b"").strip() or "config.toml" not in files:
         raise ValueError("配置包必须包含 config.toml 和非空 AGENTS.md（公司规则＋员工规则）。")
-    validate_config(files["config.toml"].decode(), files)
+    config = validate_config(files["config.toml"].decode(), files)
     if latest > time.time() + 300:
         raise ValueError("本地配置文件时间领先当前时钟；先核对时钟。")
     if "git.json" in files:
@@ -179,6 +179,9 @@ def bundle(source, uid, state):
     # shortcut: 首次用文件最新 mtime，后续用内容变化发现时间；需要跨机精确编辑时间时引入版本发布记录。
     updated = previous["source_updated_at"] if previous and previous["fingerprint"] == fingerprint else (time.time() if previous else latest)
     manifest = {"user_id": uid, "fingerprint": fingerprint, "source_updated_at": updated, "files": entries}
+    # 回执模型兜底读此快照，不在读取回执时访问目标机；配置未写 model 则不记。
+    if isinstance(config.get("model"), str) and config["model"].strip():
+        manifest["model"] = config["model"].strip()
     previous_path.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=previous_path.parent, delete=False) as stream:
         stream.write(json.dumps(manifest, ensure_ascii=False))
