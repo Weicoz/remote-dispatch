@@ -395,6 +395,7 @@ App 确认后再次 POST `/v1/runs`，请求体与第一步相同，另加 `sugg
 - 404：`not_found`，包括其他用户的派单。
 - 409：`already_reviewed / round_in_progress / review_not_allowed`。
   `already_reviewed` 另含 `reviewed_by, reviewed_at, review_state`。
+- 503：`receipt_host_unavailable`（签收或验收时回执未落盘且目标机暂时连不上，可重试）。
 - 422：`resume_*`、`harness_change_not_allowed`、资源准入等命令失败；
   保留 CLI 稳定原因，未带稳定标识的错误为 `command_failed`。
   命令错误含脱敏 `message` 和原 `exit_code`；显示正文沿用摘要的 600 字符上限，

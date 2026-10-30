@@ -17,6 +17,7 @@ from .rd_idempotency import fingerprint
 
 ROUTE = re.compile(r"/v1/jobs/([A-Za-z0-9._-]+)/(?:rounds/([1-9][0-9]*)/(ack|review)|(stop|resume))")
 CONFLICTS = {"already_reviewed", "round_in_progress", "review_not_allowed"}
+UNAVAILABLE = {"receipt_host_unavailable"}  # 目标机暂时连不上，可重试
 
 
 def error(status, reason, **fields):
@@ -261,7 +262,7 @@ class Writes:
             message = message[:600]
             match = re.match(r"([a-z][a-z_]+):", message)
             reason = match[1] if match else "command_failed"
-            status = 409 if reason in CONFLICTS else 422
+            status = 409 if reason in CONFLICTS else 503 if reason in UNAVAILABLE else 422
             fields = dict(message=message, exit_code=result["exit_code"])
             if truncated:
                 fields["message_truncated"] = True

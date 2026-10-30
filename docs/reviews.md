@@ -48,6 +48,7 @@ completed、partial 可通过、打回或作废；blocked、failed、dead、miss
 | `review_not_allowed` | 不允许通过，或打回附言为空 |
 | `already_reviewed` | 已验收，附原执行者、时间、结果 |
 | `round_in_progress` | job 锁被占用、轮次尚未结束或打回历史轮次 |
+| `receipt_host_unavailable` | 当前轮回执未落盘且目标机暂时连不上，可重试（退出码 4，serve 503） |
 | `review_write_failed` | 无法保存签收或验收，本次操作已撤销 |
 | `harness_change_not_allowed` | 续跑试图更换 harness |
 | `resume_not_allowed` | 非代理派单或缺原隔离配置 |

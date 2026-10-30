@@ -277,6 +277,27 @@ class ReviewTests(unittest.TestCase):
         self.assertNotEqual(code, 0)
         self.assertIn("round_in_progress", err)
 
+    def test_unreachable_host_is_reported_as_unavailable_for_review_and_ack(self):
+        receipt_id = self.result()["receipt_id"]
+        self.fail_operation = "state"
+        code, out, err = self.review("--accept")
+        self.assertEqual(code, 4)
+        self.assertIn("receipt_host_unavailable", err)
+        self.assertNotIn("round_in_progress", err)
+        code, out, err = self.command("ack", "fixture-job", "--round", "1", "--receipt-id", receipt_id)
+        self.assertEqual(code, 4)
+        self.assertIn("receipt_host_unavailable", err)
+        self.fail_operation = None
+        code, out, err = self.review("--accept")
+        self.assertEqual(code, 0, err)
+
+    def test_unreachable_host_keeps_history_round_error(self):
+        rd.save_job(dict(self.rec, rounds=2))
+        self.fail_operation = "state"
+        code, out, err = self.review("--accept")
+        self.assertNotIn("receipt_host_unavailable", err)
+        self.assertIn("历史轮次", err)
+
     def test_resume_cannot_change_harness(self):
         prompt = self.root / "prompt.md"
         prompt.write_text("继续")

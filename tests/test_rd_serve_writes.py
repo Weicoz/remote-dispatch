@@ -340,6 +340,17 @@ class ServeWriteTests(unittest.TestCase):
             result = self.post(f"/v1/jobs/fixture-job/rounds/{number}/review", body, str(number))
             self.assertEqual((result[0], result[1]["error"]["reason"]), (409, "round_in_progress"), result)
 
+    def test_unreachable_target_without_local_receipt_returns_retryable_503(self):
+        self.agent_seed()
+        receipt = self.ready()
+        cli.result_path(self.rec, 1).unlink(missing_ok=True)
+        cli.messages.atomic_json(self.target_path, dict(self.target_data, fail="state"))
+        for path, body in [("/v1/jobs/fixture-job/rounds/1/ack", dict(receipt_id=receipt["receipt_id"], acked_by="App")),
+                           ("/v1/jobs/fixture-job/rounds/1/review", dict(review_state="accepted", reviewed_by="App"))]:
+            result = self.post(path, body, path)
+            self.assertEqual((result[0], result[1]["error"]["reason"]), (503, "receipt_host_unavailable"), result)
+            self.assertEqual(result[1]["error"]["exit_code"], 4)
+
     def test_resume_cannot_change_harness_and_replays_failure_after_target_changes(self):
         self.agent_seed()
         body = dict(prompt="继续", harness="dsh")
