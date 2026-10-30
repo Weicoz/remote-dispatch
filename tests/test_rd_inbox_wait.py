@@ -171,15 +171,42 @@ class InboxWaitTests(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertIn("第1轮", text)
 
-    def test_older_round_unacked_with_probe_wakes_and_without_probe_does_not(self):
+    def test_older_round_without_local_receipt_is_not_probed(self):
         self.add_job("fixture-job", 2)
         self.add_report(number=1)
+        self.probeable(number=1)
         code, _ = self.wait("--timeout", "0.05")
         self.assertEqual(code, 2)
-        self.probeable(number=1)
-        code, text = self.wait("--timeout", "5")
+        self.assertEqual(self.probe_calls, [])
+
+    def test_probe_raising_system_exit_is_treated_as_unavailable(self):
+        self.add_report(number=1)
+        calls = []
+
+        def die(query_self, rec, number=None, snapshot=None):
+            calls.append(number)
+            raise SystemExit(4)
+        with patch.object(rd.query.Query, "result", die):
+            code, _ = self.wait("--timeout", "0.05")
+            self.assertEqual(code, 2)
+            # 新出现的汇报按基线规则仍然唤醒，不因探测 die() 退出整条命令。
+            code, text = self.wait("--timeout", "5", during=lambda n: self.add_report(number=1) if n == 1 else None)
         self.assertEqual(code, 0)
-        self.assertIn("第1轮", text)
+        self.assertEqual(text.count("第1轮"), 1)
+        self.assertTrue(calls)
+
+    def test_failed_probe_is_retried_and_later_receipt_wakes_existing_report(self):
+        self.add_report(number=1)  # 汇报已在基线中，回执当时取不到
+        with patch.object(rd, "PROBE_RETRY_SECONDS", 0):
+            code, _ = self.wait("--timeout", "5", during=lambda n: self.probeable(number=1) if n == 2 else None)
+        self.assertEqual(code, 0)
+        self.assertGreaterEqual(len(self.probe_calls), 2)
+
+    def test_failed_probe_waits_for_retry_interval(self):
+        self.add_report(number=1)
+        code, _ = self.wait("--timeout", "0.1")
+        self.assertEqual(code, 2)
+        self.assertEqual(len(self.probe_calls), 1)
 
     def test_receipt_without_receipt_id_is_treated_as_missing_without_crash(self):
         rec, path, _ = self.receipt(number=1)

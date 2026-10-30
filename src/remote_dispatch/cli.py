@@ -1269,6 +1269,9 @@ def wait_state_name(snapshot):
     return "completed" if snapshot.get("exit") == "0" else "failed"
 
 
+PROBE_RETRY_SECONDS = 60  # inbox --wait 回执探测失败后的最短重试间隔
+
+
 def cmd_inbox_wait(a, cfg):
     """只读等待本会话新汇报：不签收、不写回执、不留常驻进程。执行方文字不输出。"""
     owner = initiator_session(a)
@@ -1278,7 +1281,8 @@ def cmd_inbox_wait(a, cfg):
     deadline = time.monotonic() + a.timeout if a.timeout else None
 
     signed = set()  # 签收不可撤销：已签收的 (派单, 轮次) 不再重读
-    probes = {}  # (派单, 轮次) -> 只读探测到的回执或 None，避免每轮重复远程读取
+    probes = {}  # (派单, 轮次) -> 只读探测到的回执；失败不缓存
+    failed_at = {}  # (派单, 轮次) -> 最近一次探测失败的时刻，间隔 PROBE_RETRY_SECONDS 后才重试
 
     def valid(receipt):
         return isinstance(receipt, dict) and bool(receipt.get("receipt_id")) and receipt.get("round") is not None
@@ -1286,13 +1290,21 @@ def cmd_inbox_wait(a, cfg):
     def probe(rec, number):
         """本地无回执时只读探测（不落盘、不签收）；探测不到（含派单已删、目标机不可达）返回 None。"""
         key = (rec["job"], number)
-        if key not in probes:
-            try:
-                receipt = queries(cfg).result(rec, number, job_states(cfg, [rec]).get(rec["job"], {}))
-            except Exception:
-                receipt = None
-            probes[key] = receipt if valid(receipt) else None
-        return probes[key]
+        if key in probes:
+            return probes[key]
+        if number < rec["rounds"]:
+            return None  # 历史轮次无本地回执无法重建，不发 ssh
+        if time.monotonic() - failed_at.get(key, -PROBE_RETRY_SECONDS) < PROBE_RETRY_SECONDS:
+            return None
+        try:
+            receipt = queries(cfg).result(rec, number, job_states(cfg, [rec]).get(rec["job"], {}))
+        except (Exception, SystemExit):  # host 已删、用户不匹配等会 die()，同样按探测不到处理
+            receipt = None
+        if valid(receipt):
+            probes[key] = receipt
+            return receipt
+        failed_at[key] = time.monotonic()
+        return None
 
     def status(rec, number):
         """acked / unacked / unknown：签收判定复用 inbox 的 acknowledgement；回执缺失或缺 receipt_id、round 按无回执处理。"""
