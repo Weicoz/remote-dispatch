@@ -412,7 +412,7 @@ DSH_AGENTS_PLACEHOLDER = """# 本任务员工规范
 
 
 def prepare_dsh_runtime(job_dir, auth_file="", refresh=False):
-    """首轮复制凭据；续跑沿用任务内副本，只有 refresh=True 才重新复制；副本缺失时报错，不自动补复制。"""
+    """首轮复制凭据；续跑沿用任务内副本，只有 refresh=True 才重新复制。"""
     job_dir = Path(job_dir).resolve()
     home = job_dir / "dsh-home"
     marker = home / "rd-isolation.json"

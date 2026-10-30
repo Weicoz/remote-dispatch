@@ -66,15 +66,15 @@ class Reports:
         if self.thread is not None:
             self.thread.join()
             self.thread = None
-        with self.lock:
-            # 关闭后迟到的通知线程不得再写报告存储；汇报留在 queued，重启后补投。
-            self.closed = True
         if self.pool is not None:
-            # 有界等待：慢通道不得拖住 serve 关闭。
+            # 有界等待：慢通道不得拖住 serve 关闭；宽限期内正常完成的送达照常记录。
             wait_futures(self.futures, timeout=10)
             self.pool.shutdown(wait=False, cancel_futures=True)
             self.pool = None
             self.futures = []
+        with self.lock:
+            # 宽限期之后迟到的通知线程不得再写报告存储；汇报留在 queued，重启后补投。
+            self.closed = True
 
     def run(self):
         while not self.service.stop.is_set():

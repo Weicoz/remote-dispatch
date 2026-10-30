@@ -1277,39 +1277,66 @@ def cmd_inbox_wait(a, cfg):
     uid = require_user()
     deadline = time.monotonic() + a.timeout if a.timeout else None
 
-    def acked(rec, number):
-        # 签收判定沿用 inbox 的回执与签收文件；回执尚未收取到本地时视为未签收。
-        if rec is None:
-            return False
+    signed = set()  # 签收不可撤销：已签收的 (派单, 轮次) 不再重读
+
+    def status(rec, number):
+        """acked / unacked / unknown：判定复用 inbox 的 acknowledgement；回执尚未收取到本地为 unknown。"""
+        if (rec["job"], number) in signed:
+            return "acked"
         receipt = messages.read_json(result_path(rec, number))
-        return bool(receipt and receipt.get("receipt_id") and queries(cfg).acknowledgement(rec, receipt))
+        if not receipt:
+            return "unknown"
+        if queries(cfg).acknowledgement(rec, receipt):
+            signed.add((rec["job"], number))
+            return "acked"
+        return "unacked"
 
     def own_jobs():
         return {r["job"]: r for r in all_jobs() if r.get("user_id") == uid and r.get("initiator_session") == owner}
 
-    def stored():
-        # 摘要汇报（kind=digest）是运行中进度，不唤醒；已签收轮次的汇报不算新汇报。
-        jobs = own_jobs()
-        return {(row["id"], e["job"], e["round"]): e["state"]
-                for row in read_reports(STATE, uid, owner) if row.get("kind") != "digest"
-                for e in row["entries"] if not acked(jobs.get(e["job"]), e["round"])}
+    def report_rows():
+        # 摘要汇报（kind=digest）是运行中进度，不唤醒。
+        return [row for row in read_reports(STATE, uid, owner) if row.get("kind") != "digest"]
 
-    def terminal():
+    def stored(baseline):
+        # 只有 inbox 会列出的未签收项才唤醒：派单仍在、属于本会话、是当前最新轮次。
+        # 回执未收取（unknown）时，命令开始前已存在的汇报按已存在处理，只有新汇报才唤醒，避免空转。
         jobs = own_jobs()
-        recs = list(jobs.values())
+        found = {}
+        for row in report_rows():
+            for e in row["entries"]:
+                rec = jobs.get(e["job"])
+                if rec is None or e["round"] < rec["rounds"]:
+                    continue
+                state = status(rec, e["round"])
+                if state == "unacked" or (state == "unknown" and row["id"] not in baseline):
+                    found[(row["id"], e["job"], e["round"])] = e["state"]
+        return found
+
+    def terminal_all():
+        recs = list(own_jobs().values())
         if not recs:
             return {}
         states = job_states(cfg, recs)
-        return {(rec["job"], int(states[rec["job"]].get("round") or rec["rounds"])): states[rec["job"]]
-                for rec in recs if states.get(rec["job"], {}).get("state") in ("done", "dead", "missing")
-                and not acked(rec, int(states[rec["job"]].get("round") or rec["rounds"]))}
+        return {(rec["job"], int(states[rec["job"]].get("round") or rec["rounds"])): (rec, states[rec["job"]])
+                for rec in recs if states.get(rec["job"], {}).get("state") in ("done", "dead", "missing")}
 
-    # 基线是「已签收」：本会话未签收的汇报或终态轮次一律算新，命令开始前已存在的也立即唤醒。
+    def terminal(baseline):
+        # 终态轮次（含 dead/missing 无回执）：已有回执按签收判定；无回执时命令开始前已是终态的算已存在，新进入终态才唤醒。
+        found = {}
+        for key, (rec, snapshot) in terminal_all().items():
+            state = status(rec, key[1])
+            if state == "unacked" or (state == "unknown" and key not in baseline):
+                found[key] = snapshot
+        return found
+
+    seen_ids = {row["id"] for row in report_rows()}
+    seen_terminal = set(terminal_all())
     while True:
         if serve_online():
-            found = list(stored().items())
+            found = list(stored(seen_ids).items())
         else:
-            found = [(key, wait_state_name(snap)) for key, snap in terminal().items()]
+            found = [(key, wait_state_name(snap)) for key, snap in terminal(seen_terminal).items()]
         if found:
             rows = [dict(job=key[-2], round=key[-1], state=state,
                          state_text={"completed": "已完成", "blocked": "卡住", "offline": "离线",

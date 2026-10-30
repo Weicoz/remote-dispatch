@@ -54,17 +54,23 @@ class InboxWaitTests(unittest.TestCase):
         path = reports.store_path(rd.STATE, "fixture")
         messages.atomic_json(path, dict(cursor=0, reports=self.rows), limit=None)
 
-    def ack(self, job="fixture-job", number=1):
-        """模拟 rdispatch ack：本地回执与签收文件，签收后同轮汇报不再算新。"""
-        rec = rd.load_job(job) if os.path.exists(rd.job_path(job)) else None
-        if rec is None:
-            rd.save_job(dict(job=job, user_id="fixture", host="fixture", rounds=number,
-                             initiator_session="sender", handoff_version=1, agent=None, base="base"))
-            rec = rd.load_job(job)
+    def add_job(self, job, rounds=1):
+        rd.save_job(dict(job=job, user_id="fixture", host="fixture", rounds=rounds,
+                         initiator_session="sender", handoff_version=1, agent=None, base="base"))
+        return rd.load_job(job)
+
+    def receipt(self, job="fixture-job", number=1):
+        """本地已收取的回执（未签收）。"""
+        rec = rd.load_job(job) if os.path.exists(rd.job_path(job)) else self.add_job(job, number)
         path = rd.result_path(rec, number)
         path.parent.mkdir(parents=True, exist_ok=True)
         receipt_id = "rc-%s-%d" % (job, number)
         messages.atomic_json(path, dict(round=number, receipt_id=receipt_id))
+        return rec, path, receipt_id
+
+    def ack(self, job="fixture-job", number=1):
+        """模拟 rdispatch ack：本地回执与签收文件，签收后同轮汇报不再算新。"""
+        rec, path, receipt_id = self.receipt(job, number)
         messages.atomic_json(path.with_suffix(".ack.json"), dict(receipt_id=receipt_id, acked_by="sender", via="cli"))
 
     def wait(self, *args, during=None):
@@ -93,7 +99,12 @@ class InboxWaitTests(unittest.TestCase):
     def test_new_report_exits_zero_and_prints_line_with_view_command(self):
         self.add_report(number=1)
         self.ack(number=1)
-        code, text = self.wait("--timeout", "5", during=lambda n: self.add_report(number=2) if n == 1 else None)
+
+        def second(n):
+            if n == 1:
+                self.add_job("fixture-job", 2)
+                self.add_report(number=2)
+        code, text = self.wait("--timeout", "5", during=second)
         self.assertEqual(code, 0)
         self.assertIn("fixture-job 第2轮 已完成", text)
         self.assertIn("rdispatch result fixture-job", text)
@@ -108,6 +119,7 @@ class InboxWaitTests(unittest.TestCase):
 
     def test_existing_unacked_report_wakes_immediately(self):
         self.add_report(number=1)
+        self.receipt(number=1)
         code, text = self.wait("--timeout", "5")
         self.assertEqual(code, 0)
         self.assertIn("fixture-job 第1轮 已完成", text)
@@ -115,13 +127,18 @@ class InboxWaitTests(unittest.TestCase):
     def test_report_generated_after_ack_before_rehang_wakes(self):
         self.add_report(number=1)
         self.ack(number=1)
+        self.add_job("fixture-job", 2)
         self.add_report(number=2)
+        self.receipt(number=2)
         code, text = self.wait("--timeout", "5")
         self.assertEqual(code, 0)
         self.assertIn("第2轮", text)
         self.assertNotIn("第1轮", text)
 
     def test_multiple_new_reports_all_printed_once_and_other_session_ignored(self):
+        self.add_job("a", 1)
+        self.add_job("b", 3)
+
         def add(n):
             if n == 1:
                 self.add_report(job="a", number=1)
@@ -160,6 +177,7 @@ class InboxWaitTests(unittest.TestCase):
     def test_offline_job_finished_and_unacked_wakes_immediately(self):
         self.online = False
         self.state.update(state="done", exit="0")
+        self.receipt(number=1)
         code, text = self.wait("--timeout", "0.05")
         self.assertEqual(code, 0)
         self.assertIn("fixture-job 第1轮 已完成", text)
@@ -211,6 +229,42 @@ class InboxWaitTests(unittest.TestCase):
         self.online = False
         code, _ = self.wait("--timeout", "0.05")
         self.assertEqual(code, 2)
+
+    def test_report_of_deleted_job_does_not_wake(self):
+        self.add_report(job="gone", number=1)
+        code, _ = self.wait("--timeout", "0.05")
+        self.assertEqual(code, 2)
+
+    def test_superseded_older_round_does_not_wake(self):
+        self.add_job("fixture-job", 2)
+        self.receipt(number=1)
+        self.add_report(number=1)
+        code, _ = self.wait("--timeout", "0.05")
+        self.assertEqual(code, 2)
+
+    def test_existing_report_without_local_receipt_does_not_spin_across_waits(self):
+        self.add_report(number=1)
+        for _ in range(2):
+            code, _ = self.wait("--timeout", "0.05")
+            self.assertEqual(code, 2)
+
+    def test_legacy_ack_record_with_old_style_receipt_id_counts_as_acked(self):
+        rec, path, _ = self.receipt(number=1)
+        messages.atomic_json(path, dict(round=1, receipt_id="legacy-id"))
+        messages.atomic_json(path.with_suffix(".ack.json"), dict(receipt_id="legacy-id", acked_by="sender"))
+        self.add_report(number=1)
+        code, _ = self.wait("--timeout", "0.05")
+        self.assertEqual(code, 2)
+
+    def test_offline_dead_job_without_receipt_is_baseline_then_new_death_wakes(self):
+        self.online = False
+        self.state.update(state="dead", exit="")
+        code, _ = self.wait("--timeout", "0.05")
+        self.assertEqual(code, 2)
+        self.state.update(state="running")
+        code, text = self.wait("--timeout", "5", during=lambda n: self.state.update(state="dead"))
+        self.assertEqual(code, 0)
+        self.assertIn("fixture-job 第1轮 失败", text)
 
     def test_missing_initiator_session_exits_four(self):
         with patch.dict(os.environ, {"RD_INITIATOR_SESSION": ""}), \
