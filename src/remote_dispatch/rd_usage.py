@@ -90,7 +90,23 @@ def _generic(text):
     return model, usage
 
 
-PARSERS = {"codex": _codex, "claude": _claude, "kimi": _generic, "agy": _generic, "dsh": _generic}
+def _agy(text):
+    """AGY stream-json：末尾 {"event": "result", "result": {"usage": ...}} 给本轮累计用量（实测格式）。
+
+    input_tokens 按含缓存命中处理，扣除 cache_read_tokens；没有缓存写字段。其他形态回落到通用解析。
+    """
+    usage = None
+    for event in _events(text):
+        found = (event.get("result") or {}).get("usage") if event.get("event") == "result" else None
+        if not isinstance(found, dict):
+            continue
+        prompt, hit = _count(found.get("input_tokens")), _count(found.get("cache_read_tokens"))
+        usage = _finish(dict(input=None if prompt is None else max(prompt - (hit or 0), 0), cache_read=hit,
+                             cache_write=None, output=_count(found.get("output_tokens")))) or usage
+    return (None, usage) if usage else _generic(text)
+
+
+PARSERS = {"codex": _codex, "claude": _claude, "kimi": _generic, "agy": _agy, "dsh": _generic}
 
 
 def parse(harness, text):

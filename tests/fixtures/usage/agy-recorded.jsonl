@@ -1,0 +1,2 @@
+{"event": "step_update", "step_update": {"conversation_id": "c-agy", "step_index": 1, "state": "DONE", "step_type": "agent_response", "duration_seconds": 7.98992, "usage": {"input_tokens": 7310, "output_tokens": 708, "thinking_tokens": 653, "cache_read_tokens": 0, "total_tokens": 8018}}}
+{"event": "result", "result": {"conversation_id": "c-agy", "status": "SUCCESS", "response": "（回复正文已删）", "duration_seconds": 26.445933, "num_turns": 1, "usage": {"input_tokens": 50955, "output_tokens": 1501, "thinking_tokens": 1034, "cache_read_tokens": 0, "total_tokens": 52456}}}

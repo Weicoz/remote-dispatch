@@ -869,6 +869,8 @@ class DispatchTests(unittest.TestCase):
             ("claude", "claude.jsonl", None, "claude-sonnet-5-5", dict(input=12, cache_read=51000, cache_write=3400, output=820)),
             ("kimi", "kimi.jsonl", None, "kimi-k2", dict(input=900, cache_read=700, cache_write=50, output=120)),
             ("agy", "agy.jsonl", None, "gemini-3-pro", dict(input=1500, cache_read=1000, cache_write=0, output=300)),
+            # 真实录制：用量嵌在 result 事件的 result 对象里，init 不带模型
+            ("agy", "agy-recorded.jsonl", None, unrecorded, dict(input=50955, cache_read=0, cache_write=unrecorded, output=1501)),
             ("dsh", "dsh.jsonl", None, "deepseek-v4", dict(input=500, cache_read=1500, cache_write=unrecorded, output=250)),
         )
         for kind, fixture, requested, model, usage in cases:
