@@ -280,6 +280,8 @@ class TerminalWSTests(unittest.TestCase):
         pidfile = self.root / "control.pid"
         service = self.control_fixture(control_pid=str(pidfile))
         client = self.connect()
+        # 心跳用例用短 socket 超时：服务端未按时断开时快速失败，而不是等满 60 秒。
+        client.connection.settimeout(5)
         client.message()
         # Read the ping without answering it.
         self.assertEqual(client.receive()[0], 9)

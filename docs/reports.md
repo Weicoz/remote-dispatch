@@ -108,7 +108,7 @@ notify_digest = false      # 默认 false；true 时进度摘要（kind: digest�
 - `macos` 通道：控制端为 macOS 时调用 `osascript` 发系统通知（serve 以 launchd 用户代理运行时同样可发），
   内容规则同 `herdr`。标题、正文、提示音作为独立参数传给脚本，不拼进脚本文本，无法注入命令或脚本；
   含失败的汇报用 Basso，其他用 Glass。非 macOS 跳过并记 `unsupported_platform`；调用失败或超时（15 秒；高负载下 osascript 启动可能较慢）
-  记 `notify_failed`，不重试，不影响其他通道。
+  记 `notify_failed`，不重试，不影响其他通道；失败原因（超时、退出码）写入 serve 错误日志，不含标题和正文。
 - `herdr` 通道每条汇报调用一次 `herdr notification show <标题> --body <正文> --sound done|request`，
   含失败的汇报用 `request`，其他用 `done`。标题与正文只含派单标题、目标机、轮次、状态文字，
   不含执行方摘要或任何来自目标机的文字。只调用界面通知，不触碰任何 pane 输入。

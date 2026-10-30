@@ -132,6 +132,7 @@ class ListCacheTests(unittest.TestCase):
             stream = self.open_events("/v1/events?after=15000")
             self.addCleanup(stream.close)
             self.assertEqual(stream.readline(), b": connected\n")
+            perf_skipped = []
             for path, key, count in (("/v1/projects", "projects", 30), ("/v1/jobs", "jobs", 200)):
                 status, body = self.request(path)
                 self.assertEqual((status, len(body[key])), (200, count))
@@ -151,7 +152,9 @@ class ListCacheTests(unittest.TestCase):
                         self.assertEqual(list(clients.map(read, range(10))), [(200, count)] * 10)
                 concurrent = min(self.timed(ten_clients) for _ in range(3))
                 print(f"{path}: warm={warm:.4f}s ten_clients={concurrent:.4f}s busy={machine_busy()}", flush=True)
-                if not machine_busy():
+                if machine_busy():
+                    perf_skipped.append(path)
+                else:
                     self.assertLess(warm, 0.3, f"{path} warm={warm:.3f}s")
                     self.assertLess(concurrent, 1.0, f"{path} ten_clients={concurrent:.3f}s")
             event = events.emit(self.state, "progress.updated", dict(job="job-000", user_id="fixture", summary="new"))
@@ -166,6 +169,9 @@ class ListCacheTests(unittest.TestCase):
             cli.messages.atomic_json(receipt_path, receipt)
             jobs = self.request("/v1/jobs")[1]["jobs"]
             self.assertEqual(next(row for row in jobs if row["job"] == "job-000")["outcome"], "blocked")
+        if perf_skipped:
+            # 功能断言已全部通过；耗时断言因机器繁忙未检查，标记为跳过而不是静默通过。
+            self.skipTest(f"机器繁忙，未检查耗时阈值：{'、'.join(perf_skipped)}（RD_TEST_FORCE_PERF=1 强制检查）")
 
     def test_warm_lists_show_next_round_receipt_ack_review_event_and_deletion_immediately(self):
         rec = dict(job="changing", user_id="fixture", host="removed", rounds=1,
