@@ -39,6 +39,12 @@ report_merge_window_seconds = 5
 `result_summary`（回执摘要），读取失败时标记 `summary_unavailable=true`，保留原唤醒语义。
 没有交接协议的命令派单没有进度汇报。
 
+`rdispatch inbox --wait [--timeout 秒] [--json]` 只读等待本会话新汇报：以命令开始时已有汇报为基线，
+出现新汇报退出 0，超时退出 2，缺发起会话退出 4。输出每条 `<派单ID> 第N轮 <状态>` 加查看命令
+`rdispatch result <派单ID>`，不含执行方撰写的摘要或进度正文（`--json` 同）。serve 在线时读汇报存储；
+离线时轮询本会话派单状态，进入终态视为新汇报，输出格式一致。不签收、不写回执，不新增常驻进程，
+不转发给 serve。
+
 只读接口 `GET /v1/reports` 返回当前用户的汇报；可用
 `?initiator_session=<会话>` 过滤。字段样例见 `contracts/v1/reports.json`。
 每条合并汇报发布一次 `report.created`，事件只包含用户、汇报 ID、发起会话与条目数，
