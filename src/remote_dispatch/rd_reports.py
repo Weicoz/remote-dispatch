@@ -48,6 +48,7 @@ class Reports:
         self.futures = []
         self.inflight = set()
         self.retry_at = {}
+        self.closed = False
         self.clock = 0.0
         self.started_at = messages.utc_now()
         try:
@@ -65,6 +66,9 @@ class Reports:
         if self.thread is not None:
             self.thread.join()
             self.thread = None
+        with self.lock:
+            # 关闭后迟到的通知线程不得再写报告存储；汇报留在 queued，重启后补投。
+            self.closed = True
         if self.pool is not None:
             # 有界等待：慢通道不得拖住 serve 关闭。
             wait_futures(self.futures, timeout=10)
@@ -186,6 +190,8 @@ class Reports:
 
     def record(self, row, result):
         with self.lock:
+            if self.closed:
+                return
             saved = messages.read_json(events.physical(self.path), limit=None)
             if not saved:
                 return
@@ -205,10 +211,10 @@ class Reports:
                             else ["%s:%s" % (e["job"], e["round"]) for e in row["entries"]],
                             channels=[c["channel"] for c in result["channels"] if c["ok"]],
                             delivered_at=messages.utc_now()))
-            except (OSError, ValueError):
-                # 保持 queued，稍后重试（至少一次）；退避避免磁盘持续失败时反复提醒。
+            except Exception as error:
+                # 保持 queued，稍后重试（至少一次）；任何异常都退避，避免持续失败时高频重投。只记异常类型。
                 self.retry_at[row["id"]] = self.clock + 30
-                print("rdispatch: 无法记录汇报送达结果；稍后重试。", file=sys.stderr)
+                print("rdispatch: 无法记录汇报送达结果（%s）；稍后重试。" % type(error).__name__, file=sys.stderr)
 
     def initialize(self, records, now):
         """首次启用只记录当前状态；历史事件和终态不变成新汇报。"""
