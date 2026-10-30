@@ -674,6 +674,7 @@ class Service:
             hosts = config.hosts()
             execute_timeout = network.positive_setting(config.cp, "execute_timeout", 120)
             config.cp.getboolean("serve", "session_access", fallback=True)
+            config.notify_channels()
             report_window = config.cp.getfloat("monitor", "report_merge_window_seconds", fallback=5)
             if not math.isfinite(report_window) or report_window < 0:
                 raise ValueError("汇报合并窗口必须为非负秒数。")

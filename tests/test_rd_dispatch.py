@@ -852,13 +852,18 @@ class DispatchTests(unittest.TestCase):
         rd.save_job(record)
         return record
 
-    def replayed_receipt(self, kind, fixture, model=None):
+    def replayed_receipt(self, kind, fixture, model=None, profile=None, exit_code=None, directory="usage"):
         """假 launch 之后回放录制输出到 stdout 日志，再经 CLI 的 result 取回执。"""
         record = self.dispatch(model=model)
         record["agent"] = kind
+        if profile is not None:
+            record["profile"] = profile
         rd.save_job(record)
-        log = self.worker / "jobs" / record["job"] / f"stdout.r{record['rounds']}.log"
-        log.write_text((Path(__file__).parent / "fixtures" / "usage" / fixture).read_text(encoding="utf-8"), encoding="utf-8")
+        job = self.worker / "jobs" / record["job"]
+        log = job / f"stdout.r{record['rounds']}.log"
+        log.write_text((Path(__file__).parent / "fixtures" / directory / fixture).read_text(encoding="utf-8"), encoding="utf-8")
+        if exit_code is not None:
+            (job / "exit_code").write_text(str(exit_code))
         return json.loads(self.capture(rd.cmd_result, argparse.Namespace(
             job=record["job"], round=None, summary=False, initiator_session=None))), record
 
@@ -870,13 +875,50 @@ class DispatchTests(unittest.TestCase):
             ("kimi", "kimi.jsonl", None, "kimi-k2", dict(input=900, cache_read=700, cache_write=50, output=120)),
             ("agy", "agy.jsonl", None, "gemini-3-pro", dict(input=1500, cache_read=1000, cache_write=0, output=300)),
             # 真实录制：用量嵌在 result 事件的 result 对象里，init 不带模型
-            ("agy", "agy-recorded.jsonl", None, unrecorded, dict(input=50955, cache_read=0, cache_write=unrecorded, output=1501)),
+            ("agy", "agy-recorded.jsonl", None, "默认", dict(input=50955, cache_read=0, cache_write=unrecorded, output=1501)),
             ("dsh", "dsh.jsonl", None, "deepseek-v4", dict(input=500, cache_read=1500, cache_write=unrecorded, output=250)),
         )
         for kind, fixture, requested, model, usage in cases:
             with self.subTest(kind):
                 receipt, _ = self.replayed_receipt(kind, fixture, requested)
                 self.assertEqual((receipt["model"], receipt["usage"]), (model, usage))
+
+    def test_recorded_auth_failure_marks_receipt_and_result_shows_refresh_command(self):
+        for kind, fixture in (("codex", "codex-401.jsonl"), ("agy", "agy-auth-error.jsonl"),
+                              ("dsh", "dsh-missing-credential.txt")):
+            with self.subTest(kind):
+                receipt, record = self.replayed_receipt(kind, fixture, exit_code=1, directory="auth")
+                self.assertIs(receipt["credential_suspect"], True)
+                command = f"rdispatch resume {record['job']} --refresh-auth --prompt-file"
+                self.assertIn(command, receipt["credential_hint"])
+                summary = json.loads(self.capture(rd.cmd_result, argparse.Namespace(
+                    job=record["job"], round=None, summary=True, initiator_session=None)))
+                self.assertIs(summary["credential_suspect"], True)
+                self.assertIn(command, summary["credential_hint"])
+
+    def test_normal_or_unrelated_failure_output_is_not_marked(self):
+        for kind, fixture, directory, exit_code in (("codex", "codex.jsonl", "usage", 0), ("agy", "agy-recorded.jsonl", "usage", 0),
+                                                    ("codex", "codex-503.jsonl", "auth", 1),
+                                                    ("codex", "codex-401.jsonl", "auth", 0)):
+            with self.subTest(fixture=fixture, exit=exit_code):
+                receipt, _ = self.replayed_receipt(kind, fixture, exit_code=exit_code, directory=directory)
+                self.assertNotIn("credential_suspect", receipt)
+                self.assertNotIn("credential_hint", receipt)
+
+    def test_inbox_and_board_show_refresh_hint_for_suspect_receipt(self):
+        record = self.dispatch(name="auth-board", initiator_session="sender")
+        record["agent"] = "codex"
+        rd.save_job(record)
+        job = self.worker / "jobs" / record["job"]
+        (job / "stdout.r1.log").write_text((Path(__file__).parent / "fixtures" / "auth" / "codex-401.jsonl").read_text(encoding="utf-8"))
+        (job / "exit_code").write_text("1")
+        inbox = json.loads(self.capture(rd.cmd_inbox, argparse.Namespace(initiator_session="sender", orphans=False)))
+        self.assertIs(inbox["results"][0]["credential_suspect"], True)
+        self.assertIn("--refresh-auth", inbox["results"][0]["credential_hint"])
+        board = json.loads(self.capture(rd.cmd_board, argparse.Namespace(initiator_session="sender", all=False, json=True)))
+        self.assertIs(board["rows"][0]["credential_suspect"], True)
+        text = self.capture(rd.cmd_board, argparse.Namespace(initiator_session="sender", all=False, json=False))
+        self.assertIn("--refresh-auth", text)
 
     def test_harness_output_model_wins_over_dispatch_parameter(self):
         receipt, _ = self.replayed_receipt("claude", "claude.jsonl", "requested-model")
@@ -885,17 +927,38 @@ class DispatchTests(unittest.TestCase):
     def test_missing_or_broken_usage_is_unrecorded_and_dispatch_completes(self):
         for kind, fixture, requested, model in (("claude", "claude-truncated.jsonl", None, "claude-sonnet-5-5"),
                                                 ("codex", "codex-nousage.jsonl", "gpt-x", "gpt-x"),
-                                                ("codex", "codex-nousage.jsonl", None, "未记录")):
+                                                ("codex", "codex-nousage.jsonl", None, "默认")):
             with self.subTest(fixture=fixture, requested=requested):
                 receipt, _ = self.replayed_receipt(kind, fixture, requested)
                 self.assertEqual((receipt["execution_state"], receipt["model"], receipt["usage"]),
                                  ("done", model, "未记录"))
 
-    def test_command_job_without_harness_is_unrecorded(self):
+    def test_command_job_without_harness_records_default_model_and_unrecorded_usage(self):
         record = self.dispatch()
         self.remote_head(record)
         receipt = rd.collect_result(self.cfg, record, dict(state="done", round="1", exit="0"))
-        self.assertEqual((receipt["model"], receipt["usage"]), ("未记录", "未记录"))
+        self.assertEqual((receipt["model"], receipt["usage"]), ("默认", "未记录"))
+
+    def test_receipt_model_falls_back_through_four_levels(self):
+        profile = dict(model="gpt-profile")
+        cases = (
+            ("claude", "claude.jsonl", "gpt-flag", profile, "claude-sonnet-5-5"),  # harness 输出
+            ("codex", "codex-nousage.jsonl", "gpt-flag", profile, "gpt-flag"),      # --model
+            ("codex", "codex-nousage.jsonl", None, profile, "gpt-profile"),        # 员工配置包
+            ("codex", "codex-nousage.jsonl", None, dict(), "默认"),                # 默认
+        )
+        for kind, fixture, requested, snapshot, model in cases:
+            with self.subTest(model=model):
+                receipt, _ = self.replayed_receipt(kind, fixture, requested, snapshot)
+                self.assertEqual(receipt["model"], model)
+
+    def test_profile_manifest_carries_config_model(self):
+        source = self.root / "model-profile"
+        source.mkdir()
+        (source / "config.toml").write_text('approval_policy="never"\nmodel="gpt-profile"\n')
+        (source / "AGENTS.md").write_text("仅执行测试")
+        manifest, _ = rd.profiles.bundle(source, "employee_a", self.root / "model-state")
+        self.assertEqual(manifest["model"], "gpt-profile")
 
     def test_status_json_shows_model_and_usage_and_legacy_records_unrecorded(self):
         _, record = self.replayed_receipt("claude", "claude.jsonl")
@@ -1094,6 +1157,55 @@ class DispatchTests(unittest.TestCase):
             time.sleep(0.02)
         self.assertEqual(row["round"], "2")
         self.assertEqual(row["exit"], "0")
+
+    def wait_round_done(self, job, number):
+        deadline = time.monotonic() + 8
+        while True:
+            row = self.queried_job(job)
+            if row["state"] == "done" and row["round"] == str(number):
+                return row
+            if time.monotonic() > deadline:
+                self.fail("fixture agent did not finish round " + str(number))
+            time.sleep(0.02)
+
+    def resume_dsh(self, record, prompt, **extra):
+        args = argparse.Namespace(job=record["job"], initiator_session="sender", session=None,
+                                  prompt_file=str(prompt), model=None, effort=None, timeout=10,
+                                  force_host=True, **extra)
+        with patch.object(rd, "launch", side_effect=self.real_launch):
+            self.capture(rd.cmd_resume, args)
+        return self.wait_round_done(record["job"], rd.load_job(record["job"])["rounds"])
+
+    def test_resume_keeps_credentials_until_refresh_auth_is_requested(self):
+        self.cfg.cp.set("host:fixture", "ssh", "local")
+        self.cfg.cp.set("host:fixture", "path", str(self.root) + ":" + os.environ["PATH"])
+        executable = self.root / "dsh"
+        executable.write_text("#!/bin/sh\nexit 0\n")
+        executable.chmod(0o755)
+        auth = self.root / "dsh-credentials.yaml"
+        auth.write_text("key: first\n")
+        record = self.agent_job(self.dispatch(name="dsh-auth", initiator_session="sender"))
+        record.update(agent="dsh", agent_kind="dsh", isolated=True, receiver_session="receiver", auth_file="")
+        rd.save_job(record)
+        self.remote_head(record)
+        prompt = self.root / "continue.md"
+        prompt.write_text("继续")
+        credentials = self.worker / "jobs" / record["job"] / "dsh-home" / ".credentials.yaml"
+        self.resume_dsh(record, prompt)  # 第 2 轮：首轮没有凭据配置
+        self.assertFalse(credentials.exists())
+        for patch_auth, extra, expected in (
+                ("key: first\n", {}, None),                             # 之后补配，不带 --refresh-auth 不复制
+                ("key: first\n", {"refresh_auth": True}, "key: first\n"),   # 显式覆盖
+                ("key: second\n", {}, "key: first\n")):                  # 后续轮次沿用
+            auth.write_text(patch_auth)
+            saved = rd.load_job(record["job"])
+            saved["auth_file"] = str(auth)
+            rd.save_job(saved)
+            self.resume_dsh(record, prompt, **extra)
+            if expected is None:
+                self.assertFalse(credentials.exists())
+            else:
+                self.assertEqual(credentials.read_text(), expected)
 
     def test_delegated_and_original_acknowledgements_start_the_same_retention_period(self):
         for name, signer in (("ordinary", "sender"), ("delegated", "App MacBook")):

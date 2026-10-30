@@ -68,8 +68,13 @@ class Network:
         self.last_seen = {}
         self.seen_thread = None
         self.listen_addresses = self.configured_listeners()
-        self.push = PushDispatcher(service.state, service.user_id, push_sender,
-                                   stop=service.stop, is_active=self.push_active) if push_sender is not None else None
+        try:
+            window = service.config.cp.getfloat("monitor", "report_merge_window_seconds", fallback=5)
+            hold = (max(0.0, window) if window == window and window != float("inf") else 5.0) + 30
+        except ValueError:
+            hold = 35
+        self.push = PushDispatcher(service.state, service.user_id, push_sender, stop=service.stop,
+                                   is_active=self.push_active, hold=hold) if push_sender is not None else None
         self.push_thread = None
 
     def configured_listeners(self):
@@ -275,6 +280,11 @@ class Network:
                     print("rdispatch: push_unavailable: cannot deliver notifications", file=sys.stderr)
                 delay = min(delay * 2, 30.0)
             self.service.stop.wait(delay)
+
+    def has_push_device(self):
+        """是否存在已登记推送令牌且未撤销的设备。"""
+        with self.lock:
+            return any(row.get("push_token") and not row.get("revoked") for row in self.read()["devices"].values())
 
     def push_active(self, device):
         # Recheck immediately before a send without holding the lock during I/O.

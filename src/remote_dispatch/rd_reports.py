@@ -1,4 +1,7 @@
-"""控制端汇报：消费状态事件、持久去重与按发起会话合并并经 Herdr 送达。"""
+"""控制端汇报：消费状态事件、持久去重与按发起会话合并，存入 inbox 并发布 report.created。
+
+汇报不写入任何会话输入框；提醒由 notify 单一入口记录结果。
+"""
 import copy
 import hashlib
 import json
@@ -7,25 +10,17 @@ from pathlib import Path
 import sys
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor, wait as wait_futures
 
 from . import rd_digest as digest
 from . import rd_events as events
 from . import rd_messages as messages
+from . import rd_notify as notifier
 from .rd_query import result_path
-from .rd_lock import JobBusy, JobLock
-from .rd_herdr import InputNotSubmitted
 from .rd_serve_history import instant
 
 
 STATE_TEXT = {"completed": "已完成", "blocked": "卡住", "offline": "离线", "failed": "失败"}
-REPORT_TEXT_LIMIT = 8000
-
-
-def input_text(text, redact):
-    """外部汇报只能作为有界单行文本进入终端，不能携带终端控制字节。"""
-    single_line = " | ".join(text.splitlines())
-    clean = "".join(c for c in single_line if ord(c) >= 32 and not 127 <= ord(c) <= 159)
-    return redact(clean)[:REPORT_TEXT_LIMIT]
 
 
 def store_path(state, user_id):
@@ -48,6 +43,12 @@ class Reports:
         self.thread = None
         self.reader = events.EventCursor(service.state)
         self.batch = None
+        self.lock = threading.RLock()
+        self.pool = None
+        self.futures = []
+        self.inflight = set()
+        self.retry_at = {}
+        self.clock = 0.0
         self.started_at = messages.utc_now()
         try:
             self.window = service.config.cp.getfloat("monitor", "report_merge_window_seconds", fallback=5)
@@ -64,18 +65,29 @@ class Reports:
         if self.thread is not None:
             self.thread.join()
             self.thread = None
+        if self.pool is not None:
+            # 有界等待：慢通道不得拖住 serve 关闭。
+            wait_futures(self.futures, timeout=10)
+            self.pool.shutdown(wait=False, cancel_futures=True)
+            self.pool = None
+            self.futures = []
 
     def run(self):
         while not self.service.stop.is_set():
             if self.ready.is_set():
                 try:
-                    self.tick()
+                    self.tick(background=True)
                 except (OSError, ValueError, KeyError, TypeError):
                     print("rdispatch: 无法生成汇报；请检查控制端状态目录。", file=sys.stderr)
             self.service.stop.wait(0.25)
 
-    def tick(self, *, now=None):
+    def tick(self, *, now=None, background=False):
+        with self.lock:
+            self.step(now, background)
+
+    def step(self, now, background):
         now = time.time() if now is None else now
+        self.clock = now
         saved = messages.read_json(events.physical(self.path), limit=None)
         records = {rec["job"]: rec for rec in self.service.records()}
         if saved is None:
@@ -119,6 +131,7 @@ class Reports:
                     saved["progress"][key] = self.service.redact(progress.get("summary", ""))
                 self.observe(saved, rec, number, snapshot, receipt, now, observed_at=stamp)
             saved["scan_due"] = now + 60
+        known = len(saved["reports"])
         created = digest.step(self.service, saved, now)
         for owner, group in list(saved["pending"].items()):
             if now < group["due"]:
@@ -126,12 +139,14 @@ class Reports:
             content = [owner, sorted("{job}:{round}:{state}".format(**entry) for entry in group["entries"]),
                        group["due"]]
             report_id = hashlib.sha256(json.dumps(content, ensure_ascii=False, separators=(",", ":")).encode()).hexdigest()
-            row = dict(id=report_id, initiator_session=owner, created_at=messages.utc_now(), entries=group["entries"],
-                       delivery=dict(status="queued", reason=None, pane_id=None, delivered_at=None))
+            row = dict(id=report_id, initiator_session=owner, created_at=messages.utc_now(), entries=group["entries"])
             saved["reports"].append(row)
             created.append(dict(report_id=report_id, user_id=self.service.user_id,
                                 initiator_session=owner, job_count=len(row["entries"])))
             del saved["pending"][owner]
+        for row in saved["reports"][known:]:
+            # 先持久化「排队中」的 delivery，再通知；事件写入失败后的重试不会对同一汇报重复通知。
+            row.setdefault("delivery", dict(status="queued", channels=[]))
         if saved != before:
             with events.write_transaction([self.path]):
                 messages.atomic_json(self.path, saved, limit=None)
@@ -140,7 +155,60 @@ class Reports:
         # Retain the batch on failure, so an in-process retry cannot lose events
         # already consumed by the incremental cursor.
         self.batch = None
-        self.deliver(saved)
+        # 至少一次：凡落盘为 queued 的汇报（含重启前未通知、关闭时被取消、回写失败的）都重新投递。
+        # 旧版（带 pane_id、无 channels）遗留的 queued 记录原样保留，不重投。
+        fresh = [copy.deepcopy(row) for row in saved["reports"]
+                 if (row.get("delivery") or {}).get("status") == "queued" and "channels" in row["delivery"]
+                 and row["id"] not in self.inflight and self.retry_at.get(row["id"], 0) <= now]
+        for row in fresh:
+            self.inflight.add(row["id"])
+            if background:
+                if self.pool is None:
+                    self.pool = ThreadPoolExecutor(max_workers=4, thread_name_prefix="rd-notify")
+                self.futures = [f for f in self.futures if not f.done()]
+                self.futures.append(self.pool.submit(self.deliver, row))
+            else:
+                self.deliver(row)
+
+    def deliver(self, row):
+        """调用提醒通道（可能较慢，不持锁），再把结果回写 delivery 并发布 report.delivered。"""
+        try:
+            result = self.notify(None, row)
+        except Exception as error:
+            # 只记异常类型，不含汇报正文。
+            print("rdispatch: 汇报提醒失败（%s）。" % type(error).__name__, file=sys.stderr)
+            result = dict(status="inbox_only", channels=[dict(channel="*", ok=False,
+                                                              reason="error:" + type(error).__name__)])
+        try:
+            self.record(row, result)
+        finally:
+            self.inflight.discard(row["id"])
+
+    def record(self, row, result):
+        with self.lock:
+            saved = messages.read_json(events.physical(self.path), limit=None)
+            if not saved:
+                return
+            target = next((r for r in saved["reports"] if r["id"] == row["id"]), None)
+            if target is None:
+                return
+            target["delivery"] = result
+            try:
+                with events.write_transaction([self.path]):
+                    messages.atomic_json(self.path, saved, limit=None)
+                    if result["status"] == "notified":
+                        events.emit(self.service.state, "report.delivered", dict(
+                            user_id=self.service.user_id, report_id=row["id"],
+                            initiator_session=row["initiator_session"],
+                            # 摘要汇报是运行中进度，不带 rounds：不得抵消同轮之后的终态回执推送。
+                            rounds=[] if row.get("kind") == "digest"
+                            else ["%s:%s" % (e["job"], e["round"]) for e in row["entries"]],
+                            channels=[c["channel"] for c in result["channels"] if c["ok"]],
+                            delivered_at=messages.utc_now()))
+            except (OSError, ValueError):
+                # 保持 queued，稍后重试（至少一次）；退避避免磁盘持续失败时反复提醒。
+                self.retry_at[row["id"]] = self.clock + 30
+                print("rdispatch: 无法记录汇报送达结果；稍后重试。", file=sys.stderr)
 
     def initialize(self, records, now):
         """首次启用只记录当前状态；历史事件和终态不变成新汇报。"""
@@ -170,98 +238,13 @@ class Reports:
         saved["pending"] = {}
         messages.atomic_json(self.path, saved, limit=None)
 
-    def deliver(self, saved):
-        self.publish_deliveries(saved)
-        waiting = set()
-        for row in saved["reports"]:
-            if row.get("delivery", {}).get("status") == "sending":
-                row["delivery"]["status"] = "inbox_only"
-                messages.atomic_json(self.path, saved, limit=None)
-            if row.get("delivery", {}).get("status") not in (None, "queued"):
-                continue
-            owner = row["initiator_session"]
-            if owner in waiting:
-                continue
-            lock = JobLock(self.service.state, "sessions")
-            lock.path = self.service.state / "locks" / "sessions" / "input.lock"
-            try:
-                # Same ordering and lock as Sessions.write_input: text and enter
-                # must form one input operation, including across processes.
-                with self.service.writer, lock:
-                    if self.service.stop.is_set():
-                        return
-                    self.deliver_one(saved, row)
-            except JobBusy:
-                waiting.add(owner)
-                continue
-            if row.get("delivery", {}).get("status") in (None, "queued"):
-                waiting.add(owner)
-        self.publish_deliveries(saved)
+    def notify(self, saved, row):
+        """生成汇报后的提醒步骤，返回要写入 row["delivery"] 的结果。
 
-    def set_delivery(self, saved, row, status, reason, pane=None):
-        delivery = dict(status=status, reason=reason, pane_id=self.service.redact(pane), delivered_at=None)
-        if row.get("delivery") != delivery:
-            row["delivery"] = delivery
-            messages.atomic_json(self.path, saved, limit=None)
-
-    def deliver_one(self, saved, row):
-        if not self.service.sessions.allowed():
-            self.set_delivery(saved, row, "inbox_only", "session_access_disabled")
-            return
-        try:
-            items = self.service.sessions.discover()
-        except (OSError, ValueError, KeyError, TypeError):
-            self.set_delivery(saved, row, "inbox_only", "herdr_unavailable")
-            return
-        target = next((item["row"] for item in sorted(items, key=lambda item: item["row"]["probable"])
-                       if item["row"]["session_id"] == row["initiator_session"]), None)
-        if target is None:
-            self.set_delivery(saved, row, "inbox_only", "session_closed")
-            return
-        pane = target["pane_id"]
-        if target["probable"]:
-            self.set_delivery(saved, row, "inbox_only", "session_identity_unconfirmed", pane)
-            return
-        if target["harness"] not in {"codex", "claude"}:
-            self.set_delivery(saved, row, "inbox_only", "harness_not_verified", pane)
-            return
-        if target["status"] != "idle":
-            self.set_delivery(saved, row, "queued", "session_not_idle", pane)
-            return
-        self.set_delivery(saved, row, "sending", "delivery_result_unknown", pane)
-        text = "派单汇报\n" + "\n".join(
-            "{title} · {host} · 第{round}轮 · {state_text}\n{summary}".format(**entry)
-            for entry in row["entries"])
-        try:
-            self.service.sessions.herdr.input(pane, {"text": input_text(text, self.service.redact)})
-        except InputNotSubmitted:
-            row["delivery"].update(status="text_delivered", reason="session_submit_failed",
-                                   delivered_at=messages.utc_now())
-            messages.atomic_json(self.path, saved, limit=None)
-            return
-        except (OSError, ValueError):
-            self.set_delivery(saved, row, "inbox_only", "session_input_failed", pane)
-            return
-        row["delivery"].update(status="delivered", reason=None, delivered_at=messages.utc_now())
-        saved.setdefault("delivery_events", []).append(row["id"])
-        messages.atomic_json(self.path, saved, limit=None)
-        self.service.wake.set()
-
-    def publish_deliveries(self, saved):
-        pending = saved.get("delivery_events", [])
-        if not pending:
-            return
-        # Persist success before publishing. Failed event writes can then be
-        # retried without ever crossing the external input boundary again.
-        with events.write_transaction([self.path]):
-            saved["delivery_events"] = []
-            messages.atomic_json(self.path, saved, limit=None)
-            for row in saved["reports"]:
-                if row["id"] in pending:
-                    events.emit(self.service.state, "report.delivered", dict(
-                        user_id=self.service.user_id, report_id=row["id"],
-                        initiator_session=row["initiator_session"], pane_id=row["delivery"]["pane_id"],
-                        delivered_at=row["delivery"]["delivered_at"]))
+        这是唯一入口：按 [monitor] notify 分派通道，各通道结果追加到 channels。
+        没有成功通道时为 inbox_only；绝不写入会话输入框。
+        """
+        return notifier.dispatch(self.service, row)
 
     def observe(self, saved, rec, number, snapshot, receipt, now, *, observed_at=None):
         report = receipt.get("report") or {}
@@ -275,6 +258,9 @@ class Reports:
                       receipt.get("executor_exit") not in (None, 0, "0"))
                  else "completed" if execution == "done" else "running")
         key = rec["job"] + ":" + str(number)
+        if state == "offline" and saved["states"].get(key) in ("completed", "failed", "blocked"):
+            # 已报终态的轮次不再因连接不可达改状态或生成「离线」汇报。
+            return
         if key in saved.get("baseline_pending", []):
             stamp = instant(observed_at)
             if stamp is None or stamp < instant(saved["baseline_started_at"]):

@@ -51,6 +51,7 @@ class SessionTests(unittest.TestCase):
         self.bin.mkdir()
         self.fixture = self.root / "herdr.json"
         self.writes = self.root / "writes.jsonl"
+        self.notifications = self.root / "notifications.jsonl"
         self.herdr_config = self.root / "herdr" / "config.toml"
         self.herdr_config.parent.mkdir()
         self.codex = self.root / "codex"
@@ -94,6 +95,13 @@ elif a[:3] == ["terminal", "session", "observe"]:
         import time
         while True:
             time.sleep(0.1)
+elif a[:2] == ["notification", "show"]:
+    if os.environ.get("FAKE_NOTIFY"):
+        with open(os.environ["FAKE_NOTIFY"], "a") as f:
+            f.write(json.dumps(a) + "\\n")
+    if v.get("fail_notify") or v.get("unavailable"):
+        sys.exit(1)
+    print("{}")
 elif a[:2] in (["pane", "send-text"], ["pane", "send-keys"]):
     with open(os.environ["FAKE_WRITES"], "a") as f:
         f.write(json.dumps(a) + "\\n")
@@ -105,7 +113,7 @@ else:
 ''', encoding="utf-8")
         script.chmod(0o700)
         env = patch.dict(os.environ, {"PATH": str(self.bin) + os.pathsep + os.environ["PATH"],
-                         "FAKE_HERDR": str(self.fixture), "FAKE_WRITES": str(self.writes),
+                         "FAKE_HERDR": str(self.fixture), "FAKE_WRITES": str(self.writes), "FAKE_NOTIFY": str(self.notifications),
                          "HERDR_CONFIG_PATH": str(self.herdr_config), "HERDR_SESSION": "",
                          "CODEX_HOME": str(self.codex), "CLAUDE_CONFIG_DIR": str(self.claude)})
         env.start()

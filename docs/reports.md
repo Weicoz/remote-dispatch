@@ -7,6 +7,7 @@
 最新进度，没有进度时明确说明目标机离线。不会读取或复制提示词及原始日志。
 
 每个派单的每轮按状态变化去重；恢复执行后再次离线属于新的变化。
+只有运行中的轮次报离线；已报完成、失败或卡住的轮次，之后的连接不可达观察一律忽略，已清理的派单不再观察。
 游标、已观察状态、待合并内容和汇报保存在控制端
 `RD_STATE/reports/<用户>.json`，重启会延续待合并窗口，不重放已报告变化。
 首次创建此文件时，游标直接定位到事件日志末尾（含轮转段），并把现有派单的
@@ -16,7 +17,7 @@
 汇报线程等待首轮目标机采集完成；采集失败或跳过的轮次继续等待基线之后的新鲜观察，
 旧缓存的分钟扫描不会提前消费标记。基线起始时间与标记一同持久保存。
 后续新派单或基线之后的状态变化仍照常生成汇报。
-无发起会话或 App 发起的派单仍不生成汇报；发起会话已关闭或不在 Herdr 时保留汇报供 `inbox` 读取。
+无发起会话或 App 发起的派单仍不生成汇报；汇报一律保留在 `inbox` 供读取。
 
 同一发起会话在固定窗口内的多条变化合并为一条汇报，`entries` 按发生顺序逐单列出。
 默认窗口 **5 秒**，可在控制端配置中设置（修改后由编排方重启 serve）：
@@ -39,6 +40,12 @@ report_merge_window_seconds = 5
 `result_summary`（回执摘要），读取失败时标记 `summary_unavailable=true`，保留原唤醒语义。
 没有交接协议的命令派单没有进度汇报。
 
+`rdispatch inbox --wait [--timeout 秒] [--json]` 只读等待本会话新汇报：以命令开始时已有汇报为基线，
+出现新汇报退出 0，超时退出 2，缺发起会话退出 4。输出每条 `<派单ID> 第N轮 <状态>` 加查看命令
+`rdispatch result <派单ID>`，不含执行方撰写的摘要或进度正文（`--json` 同）。serve 在线时读汇报存储；
+离线时轮询本会话派单状态，进入终态视为新汇报，输出格式一致。不签收、不写回执，不新增常驻进程，
+不转发给 serve。
+
 只读接口 `GET /v1/reports` 返回当前用户的汇报；可用
 `?initiator_session=<会话>` 过滤。字段样例见 `contracts/v1/reports.json`。
 每条合并汇报发布一次 `report.created`，事件只包含用户、汇报 ID、发起会话与条目数，
@@ -51,7 +58,7 @@ report_merge_window_seconds = 5
 serve 按间隔检查看板数据，按发起会话分组，只汇总运行中的派单。某会话的摘要指纹
 （派单、目标机、轮次、状态、最新进度与看板计数，不含已运行时长）与上一份不同才生成一条
 `kind: "digest"` 的汇报；无变化不推送，运行结束的会话清除指纹，状态变化汇报仍照常。
-摘要写入同一汇报存储，沿用 Herdr 送达与 `report.created` 事件（App 经事件取得）。
+摘要写入同一汇报存储，沿用 inbox 与 `report.created` 事件（App 经事件取得）。
 指纹和到期时间随 `RD_STATE/reports/<用户>.json` 持久保存，重启后不重复推送上一份；
 首次启用时从一个完整间隔之后开始。
 
@@ -64,68 +71,88 @@ report_interval_seconds = 900 # 摘要默认间隔；同时仍是 watch 的超�
 digest_interval_seconds = 900 # 可选，单独指定摘要间隔
 ```
 
-## 经 Herdr 送达（票 48）
+## 汇报提醒与 inbox（票 48 改写）
 
-serve 通过现有 `rd_herdr.Herdr.input` 写入文本并发送 `enter`，只允许已验证的
-Codex、Claude Code。每次送达前重新发现会话，按 `initiator_session` 匹配，
-不凭失效的会话列表向旧 pane 写入。按目录推测的身份只留 inbox，不自动发送。会话工作中、等待输入或状态未知时继续排队，
-空闲后按汇报生成顺序先进先出；不同会话互不阻塞。
-进入 Herdr 前，将整段文本换行替换成 ` | ` 单行分隔，删除 C0、DEL、C1
-控制字符（包括 ESC、空字符），再限制为最多 8000 个字符；限制针对整条合并汇报。
-inbox 保留完整显示摘要。单条输入的 `OSError` 或 `ValueError` 不会中止同批其他汇报。
+汇报生成后只存 inbox 并发布 `report.created`。任何路径都不再写入会话输入框
+（不调用 `rd_herdr.Herdr.input`，不取会话输入锁），`[serve] session_access`
+总开关也不再影响汇报。App 终端里用户主动输入（`Sessions.write_input`）不变。
+生成汇报后的提醒步骤是 `Reports.notify` 单一入口，按 `[monitor] notify` 分派通道（`rd_notify.py`）。
 
-`GET /v1/reports` 与 `inbox` 的每条汇报新增 `delivery`：
+`GET /v1/reports` 与 `inbox` 的每条汇报带 `delivery`，记录提醒结果：
 
 | 字段 | 含义 |
 | --- | --- |
-| `status` | `queued` 排队；`sending` 已保存发送意图；`delivered` 已写入并提交；`text_delivered` 文本已送达、未提交；`inbox_only` 只留 inbox |
-| `reason` | 原因键，正常送达时为 null，见下表 |
-| `pane_id` | 送达目标（显示值，已脱敏），未定位时为 null |
-| `delivered_at` | 文本成功写入时间（包括 `text_delivered`），未确认写入为 null |
+| `status` | `queued` 通道尚未返回；`notified` 至少一个通道成功；`inbox_only` 没有启用任何通道或全部失败 |
+| `channels` | 通道结果列表，每项 `{channel, ok, reason}`；没有通道时为空列表 |
 
-| 原因键 | 含义（界面占位文字由编排方定稿） |
-| --- | --- |
-| `session_not_idle` | 会话尚未空闲，等待发送 |
-| `session_closed` | 会话已关闭或不在 Herdr |
-| `session_identity_unconfirmed` | 无法可靠确认发起会话身份，只留 inbox |
-| `herdr_unavailable` | Herdr 无法查询，只留 inbox |
-| `harness_not_verified` | 此 harness 尚未验证汇报写入，只留 inbox |
-| `session_access_disabled` | 会话访问总开关已关闭，只留 inbox |
-| `session_input_failed` | 写入失败，只留 inbox |
-| `session_submit_failed` | 文本已写入，但回车未成功；保留 inbox，不重发、不自动补回车 |
-| `delivery_result_unknown` | 上次写入结果无法确认，只留 inbox |
+### 提醒通道配置
 
-成功写入后追加一次 `report.delivered`，只含用户、汇报 ID、发起会话、pane 和送达时间，
-不携带正文；样例见 `contracts/v1/report-delivered.json`。送达不会自动签收或验收。
-仅文本写入成功、回车失败时不发布 `report.delivered`；此状态的接口样例见
-`contracts/v1/reports-unsubmitted.json`，界面占位文字为“文本已送达、未提交”。
-Kimi、AGY 等未验证 harness 和其他不可送达情况均不尝试自动重发，汇报记录仍保留。
-总开关关闭期间生成的汇报只留 inbox，重新打开不会重放这些汇报。
+```ini
+[monitor]
+notify = herdr,macos,app   # 默认三者全开；none 全关
+notify_digest = false      # 默认 false；true 时进度摘要（kind: digest）也提醒
+```
 
-发送意图先落盘，再调用 Herdr；发送失败或进程在外部写入后中断均不自动重发，
-避免文本已写入但结果未知时重复输入。成功状态与待发布事件先一起落盘，
-事件写盘失败时仅补发事件，绝不再次写入会话。与已有状态写入相同，
-此机制不承诺多个文件断电原子性，也无法把 Herdr 的外部写入纳入本地事务。
+- 取值只能是 `herdr`、`macos`、`app`（逗号分隔，忽略大小写与空格）或单独的 `none`；
+  其他取值在启动 serve 与配置重载时按配置错误处理，退出码 4（重载时保留旧配置）。
+- 未实现的通道跳过并在 `channels` 记 `{channel, ok: false, reason: "not_implemented"}`。
+- `app` 通道：存在已登记推送令牌且未撤销的设备时记 `ok: true`，否则记
+  `{channel: "app", ok: false, reason: "no_device"}`。推送由 `rd_push` 处理 `report.delivered`
+  事件（`channels` 含 `app`）触发，沿用检查点与去重，serve 关闭期间的待推送重启后补发；
+  负载只有计数 `{"report_ready": 1}`，不含汇报正文或执行方文字。
+- 推送按「派单 + 轮次」去重：`report.delivered` 带 `rounds`（`job:round` 列表，不含正文）。
+  完成类 `receipt.ready` 先在检查点里延后（汇报合并窗口 + 30 秒），期间同轮汇报经 `app` 送达则只推
+  `report_ready`；超时仍无汇报（无发起会话、通道未启用 `app` 或汇报不可用）则推 `receipt_ready`，不丢失。
+  `blocked` 回执即时推送，同轮后到的汇报不再重复推送。延后与已推送轮次随 `network/push.json` 持久化，
+  serve 重启后不重复也不丢失。
+- `macos` 通道：控制端为 macOS 时调用 `osascript` 发系统通知（serve 以 launchd 用户代理运行时同样可发），
+  内容规则同 `herdr`。标题、正文、提示音作为独立参数传给脚本，不拼进脚本文本，无法注入命令或脚本；
+  含失败的汇报用 Basso，其他用 Glass。非 macOS 跳过并记 `unsupported_platform`；调用失败或超时（5 秒）
+  记 `notify_failed`，不重试，不影响其他通道。
+- `herdr` 通道每条汇报调用一次 `herdr notification show <标题> --body <正文> --sound done|request`，
+  含失败的汇报用 `request`，其他用 `done`。标题与正文只含派单标题、目标机、轮次、状态文字，
+  不含执行方摘要或任何来自目标机的文字。只调用界面通知，不触碰任何 pane 输入。
+- Herdr 不可用或调用超时（5 秒）记 `{channel: "herdr", ok: false, reason: "herdr_unavailable"}`，
+  不重试；汇报照常存入 inbox。
+- 提醒在独立线程池里调用，不阻塞汇报线程：新汇报先以 `status=queued`、`channels=[]` 存入 inbox 并发布 `report.created`，通道返回后回写结果；事件写入失败的重试不会重复通知；serve 关闭时最多等待 10 秒。
+- 投递语义为至少一次：`status=queued` 的汇报在 serve 重启或下一次轮询时重新投递（含关闭时被取消的任务、
+  回写失败的汇报，后者 30 秒后重试）；崩溃或重启窗口内同一汇报的提醒可能重复一次，不会丢失。
+  通道抛异常时记 `{channel, ok: false, reason: "error:<异常类型>"}` 并向 stderr 写通道名与异常类型（不含正文）；
+  `channels` 为空表示没有启用通道，与「通道失败」区分。摘要汇报（`kind=digest`）的 `report.delivered` 不带 `rounds`。
+- 推送同为至少一次：发送成功后才落盘已推送轮次，落盘前崩溃或多设备部分发送后被取消，重启后可能重复推送一次，不会丢。
+  每个到期项发送后立即落盘；延后时间下限为 30 秒（窗口为负或无效时按 0 计）。
+- 至少一个通道成功时 `status` 为 `notified`，并发布 `report.delivered`（含成功通道，不含正文）；
+  否则为 `inbox_only`。没有启用通道（`none`）时 `channels` 为空。
+- 进度摘要默认不提醒（`inbox_only`、`channels` 为空）；`notify_digest = true` 时与状态汇报同样分派。
+
+老记录兼容：此前写入的 `queued`、`sending`、`delivered`、`text_delivered` 状态和
+`reason`、`pane_id`、`delivered_at` 字段原样返回，不迁移、不重算；
+原因键（`session_not_idle`、`session_closed`、`session_identity_unconfirmed`、
+`herdr_unavailable`、`harness_not_verified`、`session_access_disabled`、
+`session_input_failed`、`session_submit_failed`、`delivery_result_unknown`）仅出现在老记录。
+无 `delivery` 字段的更老记录读取时补 `queued` 显示，不写回。
+
+`report.delivered` 事件不再因写入会话产生；它改为在提醒通道成功后发布，
+字段为用户、汇报 ID、发起会话、成功通道名 `channels` 和时间，不含正文。
+样例见 `contracts/v1/report-delivered.json`；`contracts/v1/reports-unsubmitted.json`
+是历史状态样例（老记录的 `text_delivered/session_submit_failed`）。
 汇报暂不自动清理，不改变回执签收、验收和保留期规则。
 
 ## 编排方部署与复测
 
 合入后按现有流程安装 Python 包，由编排方重启 serve；无 Swift/App 构建。
 在隔离状态目录中让一个可定位的发起会话产生已完成、卡住、离线和失败变化，
-检查 `inbox`、`GET /v1/reports`、`report.created` 与 `report.delivered`；窗口内同会话两单应合并。
+检查 `inbox`、`GET /v1/reports` 与 `report.created`；窗口内同会话两单应合并。
 重启后确认不重放，漏事件的已采集快照应在 60 秒兜底扫描后补报。
 真实目标机失联／恢复、真实 Herdr 会话关闭识别和测试栈部署由编排方执行。
 本票不执行服务部署或重启。编排方在测试栈复测：
 
-1. 使用 Codex、Claude Code 的隔离 Herdr 发起会话，空闲时触发汇报，核对一次文本和回车、一次送达事件。
-2. 会话工作中连续产生两条不同汇报；确认无即时写入，空闲后按先后顺序收到。
-3. 在合并窗口及排队期间关闭会话，确认 inbox 保留、没有向复用 pane 误发。
-4. 用 Kimi、AGY 窗格及关闭 `[serve] session_access` 的配置验证只留 inbox，原因键正确。
-5. 重启 serve 后确认成功、失败及结果未知的汇报均不重复输入；真实写入故障后检查 inbox。
-6. 使用已有历史派单但没有汇报存储的隔离状态目录首次启动，确认历史记录不生成或发送汇报；
+1. 使用隔离的 Herdr 发起会话（空闲、工作中、已关闭各一）触发汇报，确认会话输入框始终没有新文本，汇报只在 inbox。
+2. 关闭 `[serve] session_access` 后再触发，确认汇报生成与 `delivery` 不变。
+3. 重启 serve 后确认汇报不重放，`report.created` 只发一次，没有 `report.delivered`。
+4. 使用已有历史派单但没有汇报存储的隔离状态目录首次启动，确认历史记录不生成汇报；
    再完成一条新派单，确认能正常汇报。
-7. 通过隔离测试窗格验证多行、ESC、空字符与超长汇报；正文应为最多 8000 字符的单行。
-   注入仅回车失败，确认 `text_delivered/session_submit_failed`，重启不重发且无送达事件。
+5. 读取带老状态（`queued`、`delivered`、`text_delivered`）的老汇报存储，确认状态与原因键原样返回。
 
 本地自动化使用隔离的假 Herdr，不占 TCP 监听端口，不访问真实 harness 或外部服务。
 真实会话识别、状态切换时序、真实写入失败、测试栈部署与服务重启列为需编排方／端到端执行。

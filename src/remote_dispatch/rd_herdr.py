@@ -76,11 +76,18 @@ class Herdr:
         return ["herdr", *args]
 
     def run(self, *args, timeout=None):
-        process = subprocess.run(self.command(*args), capture_output=True,
-                                 env=dict(os.environ, HERDR_ENV="1"), timeout=timeout)
+        try:
+            process = subprocess.run(self.command(*args), capture_output=True,
+                                     env=dict(os.environ, HERDR_ENV="1"), timeout=timeout)
+        except subprocess.TimeoutExpired as error:
+            raise OSError("herdr_unavailable") from error
         if process.returncode:
             raise OSError("herdr_unavailable")
         return process.stdout.decode("utf-8")
+
+    def notify(self, title, body, sound):
+        """Herdr 界面通知；只展示文本，不触碰任何 pane 输入，失败不重试。"""
+        self.run("notification", "show", title, "--body", body, "--sound", sound, timeout=5)
 
     def agents(self):
         try:

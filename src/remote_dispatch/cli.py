@@ -34,6 +34,7 @@ from . import __version__
 from . import rd_profiles as profiles
 from . import rd_native as native
 from . import rd_messages as messages
+from . import rd_notify as notifier
 from . import rd_slim as slim
 from . import rd_timings as timings
 from . import rd_health as health
@@ -86,6 +87,7 @@ DEFAULTS = {
     # 交换区已用量只反映历史累积（macOS 不主动回收冷页），超过它只提示不拦；
     # 拦派单看换页速率：持续高速换页，或交换区快用尽且仍在换页。
     "max_swap_used_gb": "15",
+    # 已停用：下面三项仍可加载，但不再参与接单判定
     "max_swap_io_mb_s": "10",
     "min_swap_free_gb": "1",
     "swap_active_mb_s": "1",
@@ -256,6 +258,13 @@ class Config:
         if interval <= 0:
             self.fail("RD_REPORT_INTERVAL_SECONDS / [monitor] report_interval_seconds must be a positive integer (seconds)", 4)
         return interval
+
+    def notify_channels(self):
+        """[monitor] notify：启用的提醒通道；非法取值按配置错误退出 4。"""
+        try:
+            return notifier.parse(self.cp)
+        except ValueError as error:
+            self.fail(str(error), 4)
 
     def rollout_stats(self):
         """[features] rollout_stats：读取 Codex rollout 逐次调用用量，默认关闭；取值无效按关闭处理。"""
@@ -940,11 +949,6 @@ def assess(host, info):
     disk = num(info.get("disk"))
     if disk is not None and disk < float(host["min_free_disk_gb"]):
         why.append(f"only {disk:.0f} GB disk free")
-    io, free = swap_io_mb_s(info), mb(info.get("swapfree"))
-    if io is not None and io > float(host["max_swap_io_mb_s"]):
-        why.append(f"swapping {io:.1f} MB/s")
-    elif io is not None and io >= float(host["swap_active_mb_s"]) and free is not None and free / 1024 < float(host["min_swap_free_gb"]):
-        why.append(f"swap nearly full ({free / 1024:.1f} GB free) while swapping {io:.1f} MB/s")
     if info.get("os") == "Windows":
         cpu = num(info.get("cpu_pct"))
         if cpu is None:
@@ -1247,7 +1251,82 @@ def cmd_orphans(a, cfg):
         print(f"{row['job']} [{row['state'] or '未知'}] {row['host']}：{pending}")
 
 
+def serve_online():
+    """serve 是否在线；只探测版本接口，不发送任何命令。"""
+    from .rd_serve import ServeFailed, ServeUnavailable, VERSION_ROUTE, serve_call
+    try:
+        serve_call("GET", VERSION_ROUTE, timeout=3)
+    except (ServeUnavailable, ServeFailed):
+        return False
+    return True
+
+
+def wait_state_text(snapshot):
+    return "已完成" if snapshot.get("exit") == "0" else "失败"
+
+
+def wait_state_name(snapshot):
+    return "completed" if snapshot.get("exit") == "0" else "failed"
+
+
+def cmd_inbox_wait(a, cfg):
+    """只读等待本会话新汇报：不签收、不写回执、不留常驻进程。执行方文字不输出。"""
+    owner = initiator_session(a)
+    if not owner:
+        die("inbox 需要 --initiator-session 或 RD_INITIATOR_SESSION。", 4)
+    uid = require_user()
+    deadline = time.monotonic() + a.timeout if a.timeout else None
+
+    def stored():
+        # 摘要汇报（kind=digest）是运行中进度，不唤醒；去重键含汇报 id，同一轮后续的终态汇报仍算新汇报。
+        return {(row["id"], e["job"], e["round"]): e["state"]
+                for row in read_reports(STATE, uid, owner) if row.get("kind") != "digest"
+                for e in row["entries"]}
+
+    def terminal():
+        recs = [r for r in all_jobs() if r.get("user_id") == uid and r.get("initiator_session") == owner]
+        if not recs:
+            return {}
+        states = job_states(cfg, recs)
+        return {(rec["job"], int(states[rec["job"]].get("round") or rec["rounds"])): states[rec["job"]]
+                for rec in recs if states.get(rec["job"], {}).get("state") in ("done", "dead", "missing")}
+
+    # 两路基线都在命令开始时取：在线期间结束、汇报仍在合并窗口内的派单，serve 离线后仍会唤醒。
+    seen_reports = set(stored())
+    seen_states = set(terminal())
+    while True:
+        found = []
+        if serve_online():
+            found = [(key, state) for key, state in stored().items() if key not in seen_reports]
+            seen_reports.update(key for key, _ in found)
+        else:
+            current = terminal()
+            found = [(key, wait_state_name(snap)) for key, snap in current.items() if key not in seen_states]
+            seen_states = set(current) | seen_states
+        if found:
+            rows = [dict(job=key[-2], round=key[-1], state=state,
+                         state_text={"completed": "已完成", "blocked": "卡住", "offline": "离线",
+                                     "failed": "失败"}.get(state, state),
+                         view=f"rdispatch result {key[-2]}") for key, state in sorted(found)]
+            if a.json:
+                print(json.dumps(dict(initiator_session=owner, reports=rows), ensure_ascii=False, indent=2))
+            else:
+                for row in rows:
+                    print(f"{row['job']} 第{row['round']}轮 {row['state_text']}")
+                    print(f"  查看：{row['view']}")
+            sys.exit(0)
+        if deadline and time.monotonic() > deadline:
+            if a.json:
+                print(json.dumps(dict(initiator_session=owner, reports=[], timed_out=True), ensure_ascii=False))
+            else:
+                print("等待超时，没有新汇报。")
+            sys.exit(2)
+        time.sleep(a.interval)
+
+
 def cmd_inbox(a, cfg):
+    if getattr(a, "wait", False):
+        return cmd_inbox_wait(a, cfg)
     if getattr(a, "orphans", False):
         return cmd_orphans(a, cfg)
     owner = initiator_session(a)
@@ -1368,7 +1447,8 @@ def build_run_script(host, rec, round_no, timeout):
     command = 'sh "$RD_JOB_DIR/cmd.r$RD_ROUND.sh"'
     if rec.get("profile") or rec.get("isolated"):
         command = ('python3 "$RD_JOB_DIR/rd_profiles.py" "$RD_JOB_DIR" "$RD_JOB_DIR/cmd.r$RD_ROUND.sh" '
-                   + shlex.quote(rec.get("auth_file") or host["codex_auth_file"]) + " " + shlex.quote(rec.get("agent_kind") or "codex"))
+                   + shlex.quote(rec.get("auth_file") or host["codex_auth_file"]) + " " + shlex.quote(rec.get("agent_kind") or "codex")
+                   + (" refresh" if rec.get("refresh_auth_round") == round_no else ""))
     report_env, report_finish = "", ":"
     if rec.get("handoff_version"):
         report_env = 'export RD_REPORTER="$RD_JOB_DIR/rd_messages.py" RD_AGENT=' + shlex.quote(rec.get("agent") or "")
@@ -2873,6 +2953,8 @@ def resume_job(a, cfg, rec, *, prompt=None, before_launch=None, rollback_stack=N
     rec["permission_mode"] = permission
     rec["receiver_session"] = session
     rec["rounds"] += 1
+    if getattr(a, "refresh_auth", False):
+        rec["refresh_auth_round"] = rec["rounds"]  # 只对本轮生效：重新复制认证文件，不动配置副本、会话与 worktree
     if line_item:
         workline.start_item(rec, line_item["item"], rec["rounds"], line_item["base"], line_item.get("sync"))
         record_line_residue(host, rec, line_item["item"])
@@ -3724,6 +3806,7 @@ def cmd_pair(a, cfg):
 
 def cmd_serve(a, cfg):
     from .rd_serve import run_service
+    cfg.notify_channels()
     run_service(cfg, a.socket, a.poll_interval)
 
 
@@ -4093,7 +4176,10 @@ def main(argv=None, *, forwarded=None):
     p = sub.add_parser("inbox", help="列出当前发起会话待收取的结果")
     p.add_argument("--initiator-session")
     p.add_argument("--orphans", action="store_true", help="改列当前用户 ID 下没有发起会话的派单，供集中签收")
-    p.add_argument("--json", action="store_true", help="与 --orphans 合用：输出 JSON（inbox 默认即 JSON）")
+    p.add_argument("--json", action="store_true", help="与 --orphans 或 --wait 合用：输出 JSON（inbox 默认即 JSON）")
+    p.add_argument("--wait", action="store_true", help="只读等待本会话新汇报：有新汇报退出 0，超时退出 2；不签收、不写回执")
+    p.add_argument("--timeout", type=float, help="与 --wait 合用：最长等待秒数；省略则一直等")
+    p.add_argument("--interval", type=float, default=5, help=argparse.SUPPRESS)
     p.set_defaults(fn=cmd_inbox)
 
     p = sub.add_parser("ack", help="确认已收取特定回执，不自动验收或续派")
@@ -4138,6 +4224,8 @@ def main(argv=None, *, forwarded=None):
     p.add_argument("--initiator-session")
     p.add_argument("--new-context", action="store_true", help="仅上下文故障时显式接替原会话，保留任务与配置")
     p.add_argument("--retry-after-repair", help="同类故障修复后续跑的证据说明；不绕过资源或身份检查")
+    p.add_argument("--refresh-auth", action="store_true",
+                   help="本轮重新复制目标机认证文件覆盖任务内副本；默认续跑沿用首轮凭据")
     p.set_defaults(fn=cmd_resume)
 
     p = sub.add_parser("takeover", help="同一用户 ID 的其他发起会话接手工作线，写入交接记录")
@@ -4187,7 +4275,7 @@ def main(argv=None, *, forwarded=None):
                 a.initiator_session = forwarded.get("initiator_session")
             if hasattr(a, "via"):
                 a.via = "serve"
-        elif a.command in rd_serve.WRITE_COMMANDS:
+        elif a.command in rd_serve.WRITE_COMMANDS and not getattr(a, "wait", False):
             code = rd_serve.forward(a, list(sys.argv[1:] if argv is None else argv))
             if code is not None:
                 raise SystemExit(code)

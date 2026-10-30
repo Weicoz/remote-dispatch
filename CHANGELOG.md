@@ -2,6 +2,18 @@
 
 ## 未发布
 
+- **汇报与推送第二轮审查修复**：摘要汇报的 `report.delivered` 不带 `rounds`，不再抵消同轮终态回执推送；事件投影此前丢弃了 `rounds`，现保留（`job:round` 字符串列表），推送按轮次去重才真正生效；汇报投递改为至少一次（`queued` 在重启或下一次轮询重投，回写失败 30 秒后重试）；通道异常记 `error:<异常类型>` 并写 stderr（不含正文）；推送每个到期项发送后立即落盘，延后时间设下限。详见 `docs/reports.md`。
+- **汇报审查修复**：`inbox --wait` 在线时跳过摘要汇报，去重键改为汇报 id（先摘要后完成不再漏唤醒），两路基线都在命令开始时取（在线期间结束的派单在 serve 离线后仍唤醒）；提醒通道改在独立线程池调用，不阻塞汇报线程，新汇报先以 `delivery.status=queued` 落盘，通道返回后回写，事件写入失败重试不再重复通知；`inbox --json` 帮助与 Skill 补 `--wait`。详见 `docs/reports.md`。
+- **App 推送按派单与轮次去重**：同一轮的 `receipt.ready` 与 `report.delivered`（app 通道）只推一次，汇报优先（`report_ready`）；完成回执先延后「汇报合并窗口 + 30 秒」，超时无汇报仍推 `receipt_ready`；`blocked` 即时推送。`report.delivered` 新增 `rounds` 字段（`job:round`，不含正文），延后与已推送状态随推送检查点持久化。详见 `docs/reports.md`。
+- **App 推送通道**：`[monitor] notify` 含 `app` 时，汇报成功提醒后由 `rd_push` 按 `report.delivered` 事件向已配对设备发计数推送（`{"report_ready": 1}`，不含正文），沿用检查点；无推送设备记 `no_device`。详见 `docs/reports.md`。
+- **提醒通道与 Herdr 界面通知**：新增 `[monitor] notify`（`herdr`、`macos`、`app` 逗号分隔，默认三者全开，`none` 全关；非法取值退出码 4）。本版实现 `herdr` 通道：每条合并汇报调用 `herdr notification show`（失败用 `request` 提示音，其他 `done`），文本只含派单标题、目标机、轮次、状态文字，不含执行方摘要，不触碰 pane 输入；不可用记 `herdr_unavailable` 不重试；`app` 暂记 `not_implemented`。新增 `macos` 通道：macOS 控制端经 `osascript` 发系统通知（文本以独立参数传入，不可注入；serve 作为 launchd 用户代理也能发），非 macOS 记 `unsupported_platform`，失败记 `notify_failed`，不影响其他通道。结果写入 `delivery.channels`，至少一个通道成功为 `notified` 并发布 `report.delivered`。进度摘要默认不提醒，`[monitor] notify_digest = true` 时提醒。详见 `docs/reports.md`。
+- **汇报不再对已结束轮次报离线**：一轮已报完成、失败或卡住后，后续连接不可达观察被忽略，不生成汇报、不改已记录状态；运行中轮次的离线汇报不变。详见 `docs/reports.md`。
+
+- **接单判定去掉 swap 检查**：`assess` 不再按换页速率或交换区剩余拒绝派单；`max_swap_io_mb_s`、`min_swap_free_gb`、`swap_active_mb_s` 已停用（旧配置照常加载）。探针仍采集 swap，`hosts`、看板、serve 指标照常显示；load、内存、磁盘等阈值不变。
+- **`rdispatch inbox --wait`**：只读后台等待本会话新汇报（`--timeout` 秒、`--json`）；新汇报退出 0，超时退出 2，缺发起会话退出 4。输出每条 `<派单ID> 第N轮 <状态>` 与查看命令，不含执行方摘要；serve 离线时靠派单状态进入终态唤醒。不签收、不写回执。详见 `docs/reports.md`。
+- **汇报不再写入会话输入框**：serve 生成汇报后只存 inbox 并发布 `report.created`，不再调用 Herdr 会话输入，`[serve] session_access` 不再影响汇报。`delivery` 改为 `status`（`notified`／`inbox_only`）加 `channels` 列表，当前没有启用通道，新汇报固定 `inbox_only`；老记录的 `queued`、`sending`、`delivered`、`text_delivered` 与旧原因键原样返回。提醒步骤集中在 `Reports.notify`。详见 `docs/reports.md`。
+- **回执模型没传记「默认」**：回执 `model` 取值顺序为 harness 输出、`--model`、员工配置包 `config.toml` 的 `model`（Codex；清单 `manifest.model`，派单时随配置快照写入派单记录，回执读取时不访问目标机）、`默认`。新回执不再出现「未记录」的模型；老回执与未收取回执的 `status --json` 原样显示。配置包清单在下次同步时才带 `model`，之前的快照记「默认」。
+- **凭据只在首轮复制**：Codex、DSH、AGY 的认证文件只在首轮复制进任务隔离目录，续跑沿用（AGY 原先每轮重新复制，DSH 原先每轮覆盖，均改为沿用）。新增 `rdispatch resume JOB --refresh-auth`：本轮重新复制认证文件覆盖，不动员工配置副本、会话与 worktree，POSIX 与 Windows 原生路径都支持；首轮缺凭据配置时之后补配也要它才复制。本轮失败输出有明确认证失败时，回执记 `credential_suspect: true` 与 `credential_hint`，`result`、`inbox`、看板给出重新复制的命令提示；不自动重复制、不自动续跑，识别不了不标记。详见 `docs/agents.md`。
 - **工作线会话轮换**：工作线默认每个工作项换新会话，同一 worktree，提示词前附交接包（复用上下文包拼装）。上下文历史用 `reason: policy`（策略轮换）与 `context`（`--new-context` 故障换新）区分；循环重建保护只对故障换新生效。上一轮回执不健康时不做策略轮换并输出原因。可按 harness 在 `[line:<harness>]` 配置 `reuse_max_context_tokens`、`reuse_max_interval_seconds`，满足时续用当前会话。详见 `docs/session-dispatch-defaults.md`。
 - **工作线前缀合入与 `rdispatch line prefix|close`**：`line prefix <派单> <工作项...>` 在第 k 个工作项验收轮回执的 `head` 建前缀分支（只支持前 k 个，跳项或未验收退出码 4），可直接 `rdispatch gate <分支>`；线关闭前合入检查与 `clean --merged|--expired` 不把派单当作已合入；`line close` 在线上无运行中轮次时关闭线，之后按正常合入判定回收。详见 `docs/session-dispatch-defaults.md`。
 - **serve 定时回收**：`[features] scheduled_reclaim = true`（默认关闭）后，serve 每小时按目标机 `max_worktree_gb` 检查 worktree 总量，超限先瘦身、仍超限再按保留期从旧到新删除，删除只走统一回收判定、只处理当前用户 ID、离线目标机跳过；启用后前 7 天只出计划（起点持久化，重启不重计），计划与结果写入事件 `reclaim.planned` / `reclaim.result`，并显示在看板 `reclaim_plan`、`GET /v1/board` 和新增的 `GET /v1/reclaim`。详见 `docs/cache-retention.md`。

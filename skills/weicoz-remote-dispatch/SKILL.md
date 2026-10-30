@@ -119,8 +119,9 @@ rdispatch logs <job>                   # 看任务输出尾部
 rdispatch wait <job>                   # 阻塞到结束：0 成功，1 失败，2 仍在跑
 rdispatch result <job>                 # 收本轮结构化回执
 rdispatch inbox                        # 当前发起会话待收取的结果
+rdispatch inbox --wait [--timeout 秒] [--json]  # 只读等待本会话新汇报：有新汇报退出 0，超时退出 2；不签收
 rdispatch ack <job> --round 2 --receipt-id <ID>
-rdispatch resume <job> --prompt-file next.md
+rdispatch resume <job> --prompt-file next.md   # 续跑沿用首轮凭据；要重新复制目标机认证加 --refresh-auth
 rdispatch fetch <job>                  # 取回提交为 rd/<branch>
 rdispatch stop <job>                   # 终止运行中的任务
 rdispatch clean <job>                  # 删除已完成任务的远端 worktree 与日志
@@ -135,6 +136,7 @@ rdispatch keep <job> --hours 48        # 明确还要续跑时钉住，--hours 0
 - `rdispatch fetch` 取回的是候选，合并与验收由发起方判断。
 - `rdispatch clean <job>` 前先收取回执、确认没有需要保留的产物；删除指定任务的远端 worktree 需用户确认。
 - **过期 worktree 要记得回收**：每次 `rdispatch ack` 收完结果、每次派新单前，在仓库目录跑一次 `rdispatch clean --expired`，把输出里的 clean / keep 各一行报给用户。它只回收同时满足安全条件与保留期的 worktree（命令任务确认即回收；代理任务已合入 24 小时、已取回未合入 7 天；目标机磁盘不足时收紧），不需要逐个确认。判断不了下一步会不会续跑时不要手动删，交给保留期；已经知道还要续跑就先 `rdispatch keep <job> --hours N`。保留期细节见 [缓存保留](https://github.com/Weicoz/remote-dispatch/blob/main/docs/cache-retention.md)。
+- **汇报靠后台 `inbox --wait` 唤醒，不写入输入框**：派单后把 `rdispatch inbox --wait` 放进宿主后台作业（可加 `--timeout`）。退出码 0 表示有新汇报：跑 `rdispatch inbox` 读结果，处理后 `rdispatch ack` 签收，再重挂 `inbox --wait`；退出码 2 表示超时无新汇报，直接重挂。`--wait` 只读，不签收、不写回执；加 `--json` 输出 `{reports:[{job,round,state}]}`（超时为 `timed_out:true`），便于脚本解析；rdispatch 不会向会话输入框写入任何汇报内容。宿主不能后台唤醒时（如 Codex，待实测），每轮开始先跑 `rdispatch inbox`，并如实说明边界。`resume` 默认沿用首轮凭据；目标机认证已变更时加 `--refresh-auth`。
 - **派单后立即挂巡检**：把 `rdispatch watch <job>` 放进后台作业。它默认 900 秒返回一次：退出码 2＝该报进度、1＝告警、0＝完成。收到 2 时读 `rdispatch status --details` 与 `rdispatch logs` 尾部，向用户报一行真实进展（阶段、文件数、提交、阻塞、执行机资源），再重挂下一次 watch；收到 0／1 时取回结果并验收。任务结束后终结巡检作业。没有定时唤醒能力时改用 `rdispatch wait` 加超时兜底作业，并如实说明边界。
 
 ## 工作项、建议与看板

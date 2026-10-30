@@ -456,7 +456,8 @@ def run_job(spec_file):
         timing.write_text("setup_seconds=0\nsetup_note=已跳过\n", encoding="utf-8")
     runtime = None
     if spec.get("profile"):
-        runtime = profiles.prepare_runtime(directory, spec["profile"], spec.get("auth_file", ""))
+        runtime = profiles.prepare_runtime(directory, spec["profile"], spec.get("auth_file", ""),
+                                           spec.get("refresh_auth_round") == spec["round"])
         env = profiles.runtime_environment(runtime, env)
     prompt = directory / ("prompt.r" + str(spec["round"]) + ".md")
     command = codex_command(spec, runtime, prompt) if runtime else shell_command(spec["cmd"])

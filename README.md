@@ -54,7 +54,7 @@ rdispatch run --agent codex --prompt-file task.md --ref HEAD
 
 ```sh
 rdispatch status <job>
-rdispatch result <job>          # 结构化回执（含实际模型与 token 用量，取不到记「未记录」）；--summary 只要摘要
+rdispatch result <job>          # 结构化回执（含实际模型与 token 用量；模型没传记「默认」，用量取不到记「未记录」）；--summary 只要摘要
 rdispatch fetch <job>           # 把提交取回为 rd/<branch>
 ```
 

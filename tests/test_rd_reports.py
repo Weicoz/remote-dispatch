@@ -9,6 +9,7 @@ from unittest.mock import patch
 
 from remote_dispatch import cli
 from remote_dispatch import rd_events as events
+from remote_dispatch import rd_notify
 from remote_dispatch.rd_serve import Service
 from tests import test_rd_serve_sessions as sessions
 
@@ -16,6 +17,20 @@ from tests import test_rd_serve_sessions as sessions
 class ReportTests(unittest.TestCase):
     def setUp(self):
         sessions.SessionTests.setUp(self)
+        # 测试中不得真的弹出 macOS 系统通知；调用记录在 self.macos_calls。
+        self.macos_calls = []
+        self.macos_fail = False
+
+        def fake_show_macos(title, body, sound):
+            self.macos_calls.append((title, body, sound))
+            if self.macos_fail:
+                raise OSError("fake")
+        patcher = patch.object(rd_notify, "show_macos", fake_show_macos)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        patcher = patch.object(rd_notify, "is_macos", lambda: True)
+        patcher.start()
+        self.addCleanup(patcher.stop)
         # Normal report tests start after first-use migration of an empty store.
         service = Service(cli.Config(), self.path)
         try:
@@ -241,6 +256,45 @@ class ReportTests(unittest.TestCase):
         self.assertEqual(failure['state'], 'failed')
         self.assertIn('17', failure['summary'])
 
+    def test_offline_after_terminal_round_is_ignored_but_running_offline_reports(self):
+        rec = self.job()
+        service = self.service()
+        log = events.EventLog(self.state)
+        log.observe_job(rec, dict(state='running', round='1'))
+        service.reports.tick(now=0)
+        self.receipt(rec)
+        log.observe_job(rec, dict(state='done', round='1', exit=0))
+        service.reports.tick(now=1)
+        service.reports.tick(now=6)
+        self.assertEqual([e['state'] for r in self.reports(service) for e in r['entries']], ['completed'])
+        log.observe_job(rec, dict(state='unreachable', round='1'))
+        service.reports.tick(now=7)
+        service.reports.tick(now=12)
+        self.assertEqual(len(self.reports(service)), 1)
+        saved = cli.messages.read_json(service.reports.path, limit=None)
+        self.assertEqual(saved['states']['fixture-job:1'], 'completed')
+        other = self.job('running-job')
+        log.observe_job(other, dict(state='running', round='1'))
+        log.observe_job(other, dict(state='unreachable', round='1'))
+        service.reports.tick(now=13)
+        service.reports.tick(now=18)
+        states = [(e['job'], e['state']) for r in self.reports(service) for e in r['entries']]
+        self.assertIn(('running-job', 'offline'), states)
+
+    def test_cleaned_job_is_no_longer_observed(self):
+        rec = self.job()
+        service = self.service()
+        log = events.EventLog(self.state)
+        log.observe_job(rec, dict(state='running', round='1'))
+        service.reports.tick(now=0)
+        os.remove(cli.job_path(rec['job']))
+        log.observe_job(rec, dict(state='unreachable', round='1'))
+        service.reports.tick(now=1)
+        service.reports.tick(now=6)
+        service.reports.tick(now=61)
+        service.reports.tick(now=66)
+        self.assertEqual(self.reports(service), [])
+
     def test_minute_scan_recovers_a_receipt_with_no_event(self):
         rec = self.job()
         service = self.service()
@@ -325,7 +379,8 @@ class ReportTests(unittest.TestCase):
         service.reports.tick(now=66)
         self.assertEqual(len(self.reports(service)), 2)
 
-    def test_session_closed_during_merge_window_is_kept_in_inbox(self):
+    def test_session_closed_during_merge_window_is_kept_in_inbox_without_input(self):
+        self.config.write_text('[monitor]\nnotify=none\n')
         self.receipt(self.job())
         service = self.service()
         service.reports.tick(now=0)
@@ -334,8 +389,7 @@ class ReportTests(unittest.TestCase):
         service.sessions.collect()
         service.reports.tick(now=5)
         report = self.reports(service)[0]
-        self.assertEqual(report['delivery']['status'], 'inbox_only')
-        self.assertEqual(report['delivery']['reason'], 'session_closed')
+        self.assertEqual(report['delivery'], dict(status='inbox_only', channels=[]))
 
     def test_failed_receipt_without_summary_preserves_exit_reason(self):
         rec = self.job()

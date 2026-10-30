@@ -341,9 +341,9 @@ class NetworkTests(unittest.TestCase):
         device = self.request("/v1/pair", "POST", {"code": window["code"]}, key="pair")[1]
         self.assertEqual(self.request("/v1/push-tokens", "POST", {"device_id": device["device_id"], "token": "apns"})[0], 200)
         log = events.EventLog(self.state)
-        log.append("receipt.ready", dict(job="one", user_id="fixture", round=1, outcome="completed"))
+        log.append("report.delivered", dict(user_id="fixture", report_id="r1", channels=["app"], rounds=["one:1"]))
         self.assertTrue(sent.wait(3), "后台未交给假发送器")
-        self.assertEqual(deliveries, [("apns", {"aps": {"content-available": 1}, "counts": {"receipt_ready": 1}})])
+        self.assertEqual(deliveries, [("apns", {"aps": {"content-available": 1}, "counts": {"report_ready": 1}})])
         self.assertEqual(self.request("/v1/devices/" + device["device_id"], "DELETE", {}, key="revoke")[0], 200)
         # A live second device provides a delivery barrier for the same event.
         window = self.request("/v1/pairing-window", "POST", {}, key="window2")[1]
@@ -461,7 +461,7 @@ class NetworkTests(unittest.TestCase):
         stream = connection.getresponse()
         self.addCleanup(stream.close)
         self.assertEqual(stream.status, 200)
-        events.EventLog(self.state).append("receipt.ready", dict(job="one", user_id="fixture", round=1))
+        events.EventLog(self.state).append("receipt.ready", dict(job="one", user_id="fixture", round=1, outcome="blocked"))
         self.assertTrue(entered.wait(3))
         local = UnixHTTPConnection(self.path)
         local.timeout = 3

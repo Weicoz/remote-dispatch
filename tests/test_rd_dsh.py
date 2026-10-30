@@ -84,6 +84,16 @@ class DshRuntimeTests(unittest.TestCase):
         self.assertEqual(again, home)
         self.assertEqual(agents.read_text(encoding="utf-8"), "kept")
 
+    def test_refresh_overwrites_only_the_credentials_file(self):
+        home = profiles.prepare_dsh_runtime(str(self.job), str(self.auth))
+        (home / "AGENTS.md").write_text("kept", encoding="utf-8")
+        self.auth.write_text("deepseek:\n  api_key: renewed\n", encoding="utf-8")
+        profiles.prepare_dsh_runtime(str(self.job), str(self.auth))
+        self.assertIn("fixture", (home / ".credentials.yaml").read_text(encoding="utf-8"))
+        profiles.prepare_dsh_runtime(str(self.job), str(self.auth), refresh=True)
+        self.assertIn("renewed", (home / ".credentials.yaml").read_text(encoding="utf-8"))
+        self.assertEqual((home / "AGENTS.md").read_text(encoding="utf-8"), "kept")
+
     def test_environment_is_whitelisted(self):
         home = profiles.prepare_dsh_runtime(str(self.job), str(self.auth))
         inherited = {"PATH": "/usr/bin", "HOME": "/home/x", "DEEPSEEK_API_KEY": "k",

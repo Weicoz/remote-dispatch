@@ -42,7 +42,7 @@
   `hosts-offline.json` 展示离线仍保留时间。查询不探测，单纯时间刷新不发事件。
 - `board.json`：`GET /v1/board?all=1`（该用户全部派单）或 `?initiator_session=<会话>`（单个发起会话），
   二者都缺返回 400。结构与 `rdispatch board --json` 相同：`summary`（已派、运行中、待派、阻塞）与逐派单 `rows`，另有 `reclaim_plan`（serve 定时回收的计划与结果，未启用为 null）；
-  老记录缺的 `harness`、`model`、`created`、`elapsed_seconds` 为「未记录」；`regenerable_kb`（路径到 KB 大小）仅在有记录时出现。
+  老记录缺的 `harness`、`model`、`created`、`elapsed_seconds` 为「未记录」；`regenerable_kb`（路径到 KB 大小）仅在有记录时出现；`credential_suspect`（true）与 `credential_hint` 仅在本轮输出有明确认证失败时出现。
   只读本地快照，不探测目标机；`reclaim_block` 只含不连目标机可判的原因，合入与未提交检查仍由 `clean` 给出。
 - `jobs.json`：卡片列表，只含当前用户和没有用户字段的旧记录，跨发起会话。
   卡片与详情各轮可选 `snapshot_at` 是后台执行快照的控制端采集时间；
@@ -151,7 +151,10 @@
   `status/reason/pane_id/delivered_at`；旧汇报读取时补排队显示字段，不写回状态。
   `report-delivered.json` 是成功写入 Herdr 后的 `report.delivered` 事件，
   仅含汇报标识与送达元数据，不含正文；状态和原因键见 `docs/reports.md`。
-- 票 61：`reports-unsubmitted.json` 展示文本已写入、回车失败的
+- 汇报提醒改版（票 01）：`reports.json` 的 `delivery` 改为 `status`（`notified`／`inbox_only`）与 `channels`；
+  `report-delivered.json` 的 `data` 改为成功通道名列表 `channels`，仅在提醒成功后发布；
+  `reports-unsubmitted.json` 标为历史状态样例，老记录的旧状态与原因键原样返回。
+- 票 61：`reports-unsubmitted.json`（历史状态样例）展示文本已写入、回车失败的
   `delivery.status=text_delivered/reason=session_submit_failed`；保留写入时间，
   不发布 `report.delivered`、不重发。`session-dispatch-defaults-closed.json`
   展示给不存在或已关闭窗格 PUT 默认值的 404 `session_closed`，不保存默认值或发布事件。

@@ -100,6 +100,7 @@ class Query:
                        needs_initiator_review=True)
         receipt.update({key: rec[key] for key in ("user_id", "project", "origin", "created", "agent", "model", "gate") if key in rec})
         receipt.update(self.measured(rec, number))
+        receipt.update(self.credential(rec, number, receipt["executor_exit"]))
         residue = workline.residue_for(rec, number)
         if residue:
             receipt["residue"] = residue
@@ -109,6 +110,18 @@ class Query:
         receipt["captured_at"] = messages.utc_now()
         return dict(receipt, **self.review(rec, number))
 
+    def credential(self, rec, number, exit_code):
+        """本轮输出有明确认证失败时标记 credential_suspect 并附重新复制命令；读不到输出就不标记。"""
+        if not (self.output and rec.get("agent")):
+            return {}
+        try:
+            text = self.output(rec, number)
+        except Exception:
+            return {}
+        if not messages.credential_suspect(rec.get("agent"), text, exit_code):
+            return {}
+        return dict(credential_suspect=True, credential_hint=messages.refresh_auth_hint(rec["job"]))
+
     def measured(self, rec, number):
         """从本轮 harness 输出取实际模型与用量；任何读取失败都记「未记录」。"""
         text = None
@@ -117,7 +130,8 @@ class Query:
                 text = self.output(rec, number)
             except Exception:
                 text = None
-        return usage.describe(rec.get("agent"), text, rec.get("model"))
+        return usage.describe(rec.get("agent"), text, rec.get("model"),
+                              (rec.get("profile") or {}).get("model"))
 
     @staticmethod
     def usage_fields(receipt, rec):

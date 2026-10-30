@@ -120,7 +120,10 @@ def parse(harness, text):
         return None, None
 
 
-def describe(harness, text, requested=None):
-    """回执字段：模型取 harness 输出，其次派单参数，再其次「未记录」；用量取不到记「未记录」。"""
+DEFAULT_MODEL = "默认"
+
+
+def describe(harness, text, requested=None, profile_model=None):
+    """回执字段：模型取 harness 输出 > 派单参数 > 员工配置包 model > 「默认」；用量取不到记「未记录」。"""
     model, usage = parse(harness, text)
-    return dict(model=model or requested or UNRECORDED, usage=usage or UNRECORDED)
+    return dict(model=model or requested or profile_model or DEFAULT_MODEL, usage=usage or UNRECORDED)
