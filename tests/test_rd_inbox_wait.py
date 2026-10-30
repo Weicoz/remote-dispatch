@@ -32,6 +32,15 @@ class InboxWaitTests(unittest.TestCase):
         stack.enter_context(patch.dict(os.environ, {"RD_USER_ID": "fixture", "RD_INITIATOR_SESSION": "sender"}))
         stack.enter_context(patch.object(rd.native, "request", side_effect=self.target))
         self.online = True
+        self.probes = {}  # (派单, 轮次) -> 只读探测返回的回执；缺省探测不到
+        self.probe_calls = []
+
+        def probe(query_self, rec, number=None, snapshot=None):
+            self.probe_calls.append((rec["job"], number))
+            if (rec["job"], number) not in self.probes:
+                raise ValueError("探测不到回执")
+            return dict(self.probes[(rec["job"], number)])
+        stack.enter_context(patch.object(rd.query.Query, "result", probe))
         stack.enter_context(patch.object(rd, "serve_online", side_effect=lambda: self.online))
         self.state = dict(state="running", round="1", exit="", head="base", dirty="0")
         rd.save_job(dict(job="fixture-job", user_id="fixture", host="fixture", rounds=1,
@@ -53,6 +62,29 @@ class InboxWaitTests(unittest.TestCase):
                               delivery=dict(status="inbox_only", reason=None, pane_id=None, delivered_at=None)))
         path = reports.store_path(rd.STATE, "fixture")
         messages.atomic_json(path, dict(cursor=0, reports=self.rows), limit=None)
+
+    def add_job(self, job, rounds=1):
+        rd.save_job(dict(job=job, user_id="fixture", host="fixture", rounds=rounds,
+                         initiator_session="sender", handoff_version=1, agent=None, base="base"))
+        return rd.load_job(job)
+
+    def receipt(self, job="fixture-job", number=1):
+        """本地已收取的回执（未签收）。"""
+        rec = rd.load_job(job) if os.path.exists(rd.job_path(job)) else self.add_job(job, number)
+        path = rd.result_path(rec, number)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        receipt_id = "rc-%s-%d" % (job, number)
+        messages.atomic_json(path, dict(round=number, receipt_id=receipt_id))
+        return rec, path, receipt_id
+
+    def probeable(self, job="fixture-job", number=1, **extra):
+        """让只读探测返回回执（本地不落盘）。"""
+        self.probes[(job, number)] = dict(round=number, receipt_id="rc-%s-%d" % (job, number), **extra)
+
+    def ack(self, job="fixture-job", number=1):
+        """模拟 rdispatch ack：本地回执与签收文件，签收后同轮汇报不再算新。"""
+        rec, path, receipt_id = self.receipt(job, number)
+        messages.atomic_json(path.with_suffix(".ack.json"), dict(receipt_id=receipt_id, acked_by="sender", via="cli"))
 
     def wait(self, *args, during=None):
         calls = []
@@ -79,19 +111,117 @@ class InboxWaitTests(unittest.TestCase):
 
     def test_new_report_exits_zero_and_prints_line_with_view_command(self):
         self.add_report(number=1)
-        code, text = self.wait("--timeout", "5", during=lambda n: self.add_report(number=2) if n == 1 else None)
+        self.ack(number=1)
+
+        def second(n):
+            if n == 1:
+                self.add_job("fixture-job", 2)
+                self.add_report(number=2)
+        code, text = self.wait("--timeout", "5", during=second)
         self.assertEqual(code, 0)
         self.assertIn("fixture-job 第2轮 已完成", text)
         self.assertIn("rdispatch result fixture-job", text)
         self.assertNotIn("第1轮", text)
 
-    def test_baseline_report_does_not_trigger_and_timeout_exits_two(self):
+    def test_acked_report_does_not_trigger_and_timeout_exits_two(self):
         self.add_report(number=1)
+        self.ack(number=1)
         code, text = self.wait("--timeout", "0.05")
         self.assertEqual(code, 2)
         self.assertNotIn("第1轮", text)
 
+    def test_existing_unacked_report_wakes_immediately(self):
+        self.add_report(number=1)
+        self.receipt(number=1)  # 本地已有回执、未签收
+        code, text = self.wait("--timeout", "5")
+        self.assertEqual(code, 0)
+        self.assertIn("fixture-job 第1轮 已完成", text)
+
+    def test_report_after_ack_before_rehang_without_local_receipt_wakes_via_probe(self):
+        self.add_report(number=1)
+        self.ack(number=1)
+        self.add_job("fixture-job", 2)
+        self.add_report(number=2)
+        self.probeable(number=2)  # 没有本地回执，只读探测能取到
+        code, text = self.wait("--timeout", "5")
+        self.assertEqual(code, 0)
+        self.assertIn("第2轮", text)
+        self.assertNotIn("第1轮", text)
+        self.assertFalse(rd.result_path(rd.load_job("fixture-job"), 2).exists())
+
+    def test_probe_result_is_cached_per_job_round(self):
+        self.add_report(number=1)
+        self.probeable(number=1)
+        self.wait("--timeout", "5")
+        self.assertEqual(self.probe_calls.count(("fixture-job", 1)), 1)
+
+    def test_acked_report_is_not_probed_or_woken(self):
+        self.add_report(number=1)
+        self.ack(number=1)
+        self.probeable(number=1)
+        code, _ = self.wait("--timeout", "0.05")
+        self.assertEqual(code, 2)
+        self.assertEqual(self.probe_calls, [])
+
+    def test_older_round_unacked_with_receipt_wakes(self):
+        self.add_job("fixture-job", 2)
+        self.receipt(number=1)
+        self.add_report(number=1)
+        code, text = self.wait("--timeout", "5")
+        self.assertEqual(code, 0)
+        self.assertIn("第1轮", text)
+
+    def test_older_round_without_local_receipt_is_not_probed(self):
+        self.add_job("fixture-job", 2)
+        self.add_report(number=1)
+        self.probeable(number=1)
+        code, _ = self.wait("--timeout", "0.05")
+        self.assertEqual(code, 2)
+        self.assertEqual(self.probe_calls, [])
+
+    def test_probe_raising_system_exit_is_treated_as_unavailable(self):
+        self.add_report(number=1)
+        calls = []
+
+        def die(query_self, rec, number=None, snapshot=None):
+            calls.append(number)
+            raise SystemExit(4)
+        with patch.object(rd.query.Query, "result", die):
+            code, _ = self.wait("--timeout", "0.05")
+            self.assertEqual(code, 2)
+            # 新出现的汇报按基线规则仍然唤醒，不因探测 die() 退出整条命令。
+            code, text = self.wait("--timeout", "5", during=lambda n: self.add_report(number=1) if n == 1 else None)
+        self.assertEqual(code, 0)
+        self.assertEqual(text.count("第1轮"), 1)
+        self.assertTrue(calls)
+
+    def test_failed_probe_is_retried_and_later_receipt_wakes_existing_report(self):
+        self.add_report(number=1)  # 汇报已在基线中，回执当时取不到
+        with patch.object(rd, "PROBE_RETRY_SECONDS", 0):
+            code, _ = self.wait("--timeout", "5", during=lambda n: self.probeable(number=1) if n == 2 else None)
+        self.assertEqual(code, 0)
+        self.assertGreaterEqual(len(self.probe_calls), 2)
+
+    def test_failed_probe_waits_for_retry_interval(self):
+        self.add_report(number=1)
+        code, _ = self.wait("--timeout", "0.1")
+        self.assertEqual(code, 2)
+        self.assertEqual(len(self.probe_calls), 1)
+
+    def test_receipt_without_receipt_id_is_treated_as_missing_without_crash(self):
+        rec, path, _ = self.receipt(number=1)
+        messages.atomic_json(path, dict(round=1))
+        self.add_report(number=1)
+        code, _ = self.wait("--timeout", "0.05")
+        self.assertEqual(code, 2)
+        self.probeable(number=1)  # 探测得到有效回执时仍按未签收唤醒
+        code, _ = self.wait("--timeout", "5")
+        self.assertEqual(code, 0)
+
     def test_multiple_new_reports_all_printed_once_and_other_session_ignored(self):
+        self.add_job("a", 1)
+        self.add_job("b", 3)
+
         def add(n):
             if n == 1:
                 self.add_report(job="a", number=1)
@@ -107,6 +237,7 @@ class InboxWaitTests(unittest.TestCase):
         for extra in ([], ["--json"]):
             self.rows = []
             self.add_report(number=1, job="old")
+            self.ack("old", 1)
             code, text = self.wait("--timeout", "5", *extra,
                                    during=lambda n: self.add_report(number=2) if n == 1 else None)
             self.assertEqual(code, 0)
@@ -126,9 +257,18 @@ class InboxWaitTests(unittest.TestCase):
         self.assertIn("fixture-job 第1轮 已完成", text)
         self.assertIn("rdispatch result fixture-job", text)
 
-    def test_offline_job_already_finished_at_start_is_baseline(self):
+    def test_offline_job_finished_and_unacked_wakes_immediately(self):
         self.online = False
         self.state.update(state="done", exit="0")
+        self.receipt(number=1)
+        code, text = self.wait("--timeout", "0.05")
+        self.assertEqual(code, 0)
+        self.assertIn("fixture-job 第1轮 已完成", text)
+
+    def test_offline_job_finished_and_acked_does_not_wake(self):
+        self.online = False
+        self.state.update(state="done", exit="0")
+        self.ack(number=1)
         code, _ = self.wait("--timeout", "0.05")
         self.assertEqual(code, 2)
 
@@ -167,10 +307,40 @@ class InboxWaitTests(unittest.TestCase):
         code, text = self.wait("--timeout", "5", during=step)
         self.assertEqual(code, 0)
         self.assertEqual(text.count("第1轮"), 1)
-        # 在线唤醒后重挂：同轮已在基线；换到离线也不得再唤醒。
+        # 在线唤醒后签收再重挂：同轮已签收；换到离线也不得再唤醒。
+        self.ack(number=1)
         self.online = False
         code, _ = self.wait("--timeout", "0.05")
         self.assertEqual(code, 2)
+
+    def test_report_of_deleted_job_does_not_wake(self):
+        self.add_report(job="gone", number=1)
+        code, _ = self.wait("--timeout", "0.05")
+        self.assertEqual(code, 2)
+
+    def test_existing_report_without_local_receipt_does_not_spin_across_waits(self):
+        self.add_report(number=1)
+        for _ in range(2):
+            code, _ = self.wait("--timeout", "0.05")
+            self.assertEqual(code, 2)
+
+    def test_legacy_ack_record_with_old_style_receipt_id_counts_as_acked(self):
+        rec, path, _ = self.receipt(number=1)
+        messages.atomic_json(path, dict(round=1, receipt_id="legacy-id"))
+        messages.atomic_json(path.with_suffix(".ack.json"), dict(receipt_id="legacy-id", acked_by="sender"))
+        self.add_report(number=1)
+        code, _ = self.wait("--timeout", "0.05")
+        self.assertEqual(code, 2)
+
+    def test_offline_dead_job_without_receipt_is_baseline_then_new_death_wakes(self):
+        self.online = False
+        self.state.update(state="dead", exit="")
+        code, _ = self.wait("--timeout", "0.05")
+        self.assertEqual(code, 2)
+        self.state.update(state="running")
+        code, text = self.wait("--timeout", "5", during=lambda n: self.state.update(state="dead"))
+        self.assertEqual(code, 0)
+        self.assertIn("fixture-job 第1轮 失败", text)
 
     def test_missing_initiator_session_exits_four(self):
         with patch.dict(os.environ, {"RD_INITIATOR_SESSION": ""}), \

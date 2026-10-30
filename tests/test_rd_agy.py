@@ -104,6 +104,16 @@ class AgyRuntimeTests(unittest.TestCase):
         self.assertEqual(copied.read_text(encoding="utf-8"), "refreshed")
         self.assertEqual(stat.S_IMODE(copied.stat().st_mode), 0o600)
 
+    def test_resume_with_missing_task_token_is_refused_not_recopied(self):
+        home = profiles.prepare_agy_runtime(str(self.job), str(self.token))
+        (home / profiles.AGY_TOKEN).unlink()
+        with self.assertRaises(ValueError) as raised:
+            profiles.prepare_agy_runtime(str(self.job), str(self.token))
+        self.assertIn("--refresh-auth", str(raised.exception))
+        self.assertFalse((home / profiles.AGY_TOKEN).exists())
+        profiles.prepare_agy_runtime(str(self.job), str(self.token), refresh=True)
+        self.assertTrue((home / profiles.AGY_TOKEN).is_file())
+
     def test_refresh_without_auth_file_is_refused_and_keeps_old_token(self):
         home = profiles.prepare_agy_runtime(str(self.job), str(self.token))
         with self.assertRaises(ValueError):

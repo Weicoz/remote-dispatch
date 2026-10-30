@@ -1269,6 +1269,9 @@ def wait_state_name(snapshot):
     return "completed" if snapshot.get("exit") == "0" else "failed"
 
 
+PROBE_RETRY_SECONDS = 60  # inbox --wait 回执探测失败后的最短重试间隔
+
+
 def cmd_inbox_wait(a, cfg):
     """只读等待本会话新汇报：不签收、不写回执、不留常驻进程。执行方文字不输出。"""
     owner = initiator_session(a)
@@ -1277,37 +1280,99 @@ def cmd_inbox_wait(a, cfg):
     uid = require_user()
     deadline = time.monotonic() + a.timeout if a.timeout else None
 
-    def stored():
-        # 摘要汇报（kind=digest）是运行中进度，不唤醒；去重键含汇报 id，同一轮后续的终态汇报仍算新汇报。
-        return {(row["id"], e["job"], e["round"]): e["state"]
-                for row in read_reports(STATE, uid, owner) if row.get("kind") != "digest"
-                for e in row["entries"]}
+    signed = set()  # 签收不可撤销：已签收的 (派单, 轮次) 不再重读
+    probes = {}  # (派单, 轮次) -> 只读探测到的回执；失败不缓存
+    failed_at = {}  # (派单, 轮次) -> 最近一次探测失败的时刻，间隔 PROBE_RETRY_SECONDS 后才重试
 
-    def terminal():
-        recs = [r for r in all_jobs() if r.get("user_id") == uid and r.get("initiator_session") == owner]
+    def valid(receipt):
+        return isinstance(receipt, dict) and bool(receipt.get("receipt_id")) and receipt.get("round") is not None
+
+    def probe(rec, number):
+        """本地无回执时只读探测（不落盘、不签收）；探测不到（含派单已删、目标机不可达）返回 None。"""
+        key = (rec["job"], number)
+        if key in probes:
+            return probes[key]
+        if number < rec["rounds"]:
+            return None  # 历史轮次无本地回执无法重建，不发 ssh
+        if time.monotonic() - failed_at.get(key, -PROBE_RETRY_SECONDS) < PROBE_RETRY_SECONDS:
+            return None
+        try:
+            receipt = queries(cfg).result(rec, number, job_states(cfg, [rec]).get(rec["job"], {}))
+        except (Exception, SystemExit):  # host 已删、用户不匹配等会 die()，同样按探测不到处理
+            receipt = None
+        if valid(receipt):
+            probes[key] = receipt
+            return receipt
+        failed_at[key] = time.monotonic()
+        return None
+
+    def status(rec, number):
+        """acked / unacked / unknown：签收判定复用 inbox 的 acknowledgement；回执缺失或缺 receipt_id、round 按无回执处理。"""
+        key = (rec["job"], number)
+        if key in signed:
+            return "acked"
+        receipt = messages.read_json(result_path(rec, number))
+        if not valid(receipt):
+            receipt = probe(rec, number)
+        if receipt is None:
+            return "unknown"
+        if queries(cfg).acknowledgement(rec, receipt):
+            signed.add(key)
+            return "acked"
+        return "unacked"
+
+    def own_jobs():
+        return {r["job"]: r for r in all_jobs() if r.get("user_id") == uid and r.get("initiator_session") == owner}
+
+    def report_rows():
+        # 摘要汇报（kind=digest）是运行中进度，不唤醒。
+        return [row for row in read_reports(STATE, uid, owner) if row.get("kind") != "digest"]
+
+    def stored(baseline):
+        # 与 inbox 一致：派单仍在、属于本会话的任意轮次，未签收且回执可得就唤醒；
+        # 回执取不到时，命令开始前已存在的汇报算已存在，只有新汇报才唤醒，避免空转。
+        jobs = own_jobs()
+        found = {}
+        for row in report_rows():
+            for e in row["entries"]:
+                rec = jobs.get(e["job"])
+                if rec is None:
+                    continue
+                state = status(rec, e["round"])
+                if state == "unacked" or (state == "unknown" and row["id"] not in baseline):
+                    found[(row["id"], e["job"], e["round"])] = e["state"]
+        return found
+
+    def terminal_all():
+        recs = list(own_jobs().values())
         if not recs:
             return {}
         states = job_states(cfg, recs)
-        return {(rec["job"], int(states[rec["job"]].get("round") or rec["rounds"])): states[rec["job"]]
+        return {(rec["job"], int(states[rec["job"]].get("round") or rec["rounds"])): (rec, states[rec["job"]])
                 for rec in recs if states.get(rec["job"], {}).get("state") in ("done", "dead", "missing")}
 
-    # 两路基线都在命令开始时取：在线期间结束、汇报仍在合并窗口内的派单，serve 离线后仍会唤醒。
-    seen_reports = set(stored())
-    seen_states = set(terminal())
+    def terminal(baseline):
+        # 离线时看当前终态轮次；回执取不到（含 dead/missing 无回执）时，开始前已是终态的算已存在，新进入终态才唤醒。
+        found = {}
+        for key, (rec, snapshot) in terminal_all().items():
+            state = status(rec, key[1])
+            if state == "unacked" or (state == "unknown" and key not in baseline):
+                found[key] = snapshot
+        return found
+
+    seen_ids = {row["id"] for row in report_rows()}
+    seen_terminal = set(terminal_all())
     while True:
-        found = []
         if serve_online():
-            found = [(key, state) for key, state in stored().items() if key not in seen_reports]
-            seen_reports.update(key for key, _ in found)
+            found = list(stored(seen_ids).items())
         else:
-            current = terminal()
-            found = [(key, wait_state_name(snap)) for key, snap in current.items() if key not in seen_states]
-            seen_states = set(current) | seen_states
+            found = [(key, wait_state_name(snap)) for key, snap in terminal(seen_terminal).items()]
         if found:
             rows = [dict(job=key[-2], round=key[-1], state=state,
                          state_text={"completed": "已完成", "blocked": "卡住", "offline": "离线",
                                      "failed": "失败"}.get(state, state),
-                         view=f"rdispatch result {key[-2]}") for key, state in sorted(found)]
+                         view=f"rdispatch result {key[-2]}")
+                    for key, state in sorted({(key[-2:], state): (key, state) for key, state in found}.values())]
             if a.json:
                 print(json.dumps(dict(initiator_session=owner, reports=rows), ensure_ascii=False, indent=2))
             else:

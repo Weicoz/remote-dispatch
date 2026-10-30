@@ -6,7 +6,9 @@ import unittest
 from unittest.mock import patch
 
 from remote_dispatch import rd_events as events
+from remote_dispatch import rd_messages as messages
 from remote_dispatch import rd_notify
+from remote_dispatch import rd_reports
 from tests import test_rd_reports as reports_test
 from tests import test_rd_serve as serve_test
 
@@ -141,6 +143,65 @@ class ReportDeliveryTests(unittest.TestCase):
                 service.reports.tick(now=5)
             service.reports.tick(now=6)
         self.assertEqual(len(calls), 1)
+        service.close()
+
+    def start_slow_delivery(self):
+        self.config.write_text('[monitor]\nnotify=herdr\n')
+        self.receipt(self.job())
+        service = self.service()
+        release = threading.Event()
+        slow = lambda svc, row: (release.wait(10), dict(channel='herdr', ok=True, reason=None))[1]
+        patcher = patch.dict(rd_notify.SENDERS, {'herdr': slow})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        service.reports.tick(now=0, background=True)
+        service.reports.tick(now=5, background=True)
+        return service, release
+
+    def test_delivery_finishing_within_close_grace_is_recorded(self):
+        service, release = self.start_slow_delivery()
+        closer = threading.Thread(target=service.close)
+        closer.start()
+        time.sleep(0.2)
+        release.set()
+        closer.join(10)
+        self.assertFalse(closer.is_alive())
+        self.assertEqual(self.stored()['reports'][0]['delivery']['status'], 'notified')
+
+    def test_late_notify_thread_after_close_grace_does_not_write_report_store(self):
+        service, release = self.start_slow_delivery()
+        real_wait = rd_reports.wait_futures
+        with patch.object(rd_reports, 'wait_futures', lambda futures, timeout: real_wait(futures, timeout=0.2)):
+            service.close()
+        before = (self.state / 'reports' / 'fixture.json').read_bytes()
+        release.set()
+        time.sleep(0.3)
+        self.assertEqual((self.state / 'reports' / 'fixture.json').read_bytes(), before)
+        self.assertEqual(self.stored()['reports'][0]['delivery']['status'], 'queued')
+        self.assertEqual(service.reports.inflight, set())
+
+    def test_non_io_record_failure_backs_off_instead_of_redelivering_every_tick(self):
+        self.config.write_text('[monitor]\nnotify=herdr\n')
+        self.receipt(self.job())
+        service = self.service()
+        calls = []
+        sender = lambda svc, row: (calls.append(row['id']), dict(channel='herdr', ok=True, reason=None))[1]
+        real_atomic = messages.atomic_json
+        broken = [True]
+
+        def flaky(path, data, **kwargs):
+            if broken and any(r.get('delivery', {}).get('status') == 'notified' for r in data.get('reports', [])):
+                raise RuntimeError('模拟非 IO 异常')
+            return real_atomic(path, data, **kwargs)
+        with patch.dict(rd_notify.SENDERS, {'herdr': sender}), patch.object(messages, 'atomic_json', flaky):
+            service.reports.tick(now=0)
+            service.reports.tick(now=5)
+            service.reports.tick(now=6)
+            service.reports.tick(now=20)
+            self.assertEqual(len(calls), 1)
+            broken.clear()
+            service.reports.tick(now=40)
+        self.assertEqual(len(calls), 2)
         service.close()
 
     def test_legacy_records_keep_old_status_and_reason_keys_untouched(self):
