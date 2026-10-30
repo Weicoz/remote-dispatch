@@ -125,6 +125,27 @@ class NotifyChannelTests(unittest.TestCase):
             with self.assertRaises(OSError):
                 REAL_SHOW_MACOS('t', 'b', 'request')
 
+    def test_osascript_timeout_is_widened_and_reported_without_text(self):
+        with patch.object(rd_notify.subprocess, 'run') as run:
+            run.side_effect = rd_notify.subprocess.TimeoutExpired('osascript', rd_notify.MACOS_TIMEOUT)
+            with self.assertRaises(OSError) as raised:
+                REAL_SHOW_MACOS('标题-SECRET', '正文-SECRET', 'done')
+        self.assertGreaterEqual(run.call_args.kwargs['timeout'], 15)
+        self.assertIn('超过', str(raised.exception))
+        self.assertNotIn('SECRET', str(raised.exception))
+
+    def test_macos_failure_reason_goes_to_stderr_without_text(self):
+        def fail(title, body, sound):
+            raise OSError('osascript 超过 15 秒未返回')
+        row = dict(entries=[dict(title='标题-SECRET', host='h', round=1, state='completed', state_text='已完成')])
+        with patch.object(rd_notify, 'is_macos', lambda: True), \
+                patch.object(rd_notify, 'show_macos', fail), \
+                patch('sys.stderr', new_callable=__import__('io').StringIO) as err:
+            result = rd_notify.macos(None, row)
+        self.assertEqual(result, dict(channel='macos', ok=False, reason='notify_failed'))
+        self.assertIn('超过 15 秒', err.getvalue())
+        self.assertNotIn('SECRET', err.getvalue())
+
     def test_failure_uses_request_sound(self):
         self.report_with('[monitor]\nnotify=herdr\n', outcome='failed', summary='x')
         sent = self.notifications_sent()
