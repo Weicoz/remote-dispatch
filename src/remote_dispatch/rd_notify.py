@@ -55,6 +55,8 @@ def herdr(service, row):
 MACOS_SCRIPT = ("on run argv", "display notification (item 2 of argv) with title (item 1 of argv) "
                 "sound name (item 3 of argv)", "end run")
 MACOS_SOUNDS = {"request": "Basso", "done": "Glass"}
+# 高负载下 osascript 启动可能超过数秒；通道在线程池里调用，放宽超时不阻塞汇报线程。
+MACOS_TIMEOUT = 15
 
 
 def is_macos():
@@ -69,9 +71,11 @@ def show_macos(title, body, sound):
         cmd += ["-e", line]
     cmd += ["--", title, body, MACOS_SOUNDS.get(sound, "Glass")]
     try:
-        result = subprocess.run(cmd, stdin=subprocess.DEVNULL, capture_output=True, timeout=5)
+        result = subprocess.run(cmd, stdin=subprocess.DEVNULL, capture_output=True, timeout=MACOS_TIMEOUT)
+    except subprocess.TimeoutExpired as error:
+        raise OSError("osascript 超过 %d 秒未返回" % MACOS_TIMEOUT) from error
     except subprocess.SubprocessError as error:
-        raise OSError(str(error)) from error
+        raise OSError("osascript 调用失败：%s" % type(error).__name__) from error
     if result.returncode != 0:
         raise OSError("osascript 退出码 %d" % result.returncode)
 
@@ -83,7 +87,9 @@ def macos(service, row):
     title, body, sound = text(row)
     try:
         show_macos(title, body, sound)
-    except (OSError, ValueError):
+    except (OSError, ValueError) as error:
+        # 只记原因（超时、退出码），不含标题与正文。
+        print("rdispatch: macos notify_failed: %s" % error, file=sys.stderr, flush=True)
         return dict(channel="macos", ok=False, reason="notify_failed")
     return dict(channel="macos", ok=True, reason=None)
 
