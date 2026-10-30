@@ -2,6 +2,8 @@
 
 ## 未发布
 
+- **汇报不再对已结束轮次报离线**：一轮已报完成、失败或卡住后，后续连接不可达观察被忽略，不生成汇报、不改已记录状态；运行中轮次的离线汇报不变。详见 `docs/reports.md`。
+
 - **接单判定去掉 swap 检查**：`assess` 不再按换页速率或交换区剩余拒绝派单；`max_swap_io_mb_s`、`min_swap_free_gb`、`swap_active_mb_s` 已停用（旧配置照常加载）。探针仍采集 swap，`hosts`、看板、serve 指标照常显示；load、内存、磁盘等阈值不变。
 - **`rdispatch inbox --wait`**：只读后台等待本会话新汇报（`--timeout` 秒、`--json`）；新汇报退出 0，超时退出 2，缺发起会话退出 4。输出每条 `<派单ID> 第N轮 <状态>` 与查看命令，不含执行方摘要；serve 离线时靠派单状态进入终态唤醒。不签收、不写回执。详见 `docs/reports.md`。
 - **汇报不再写入会话输入框**：serve 生成汇报后只存 inbox 并发布 `report.created`，不再调用 Herdr 会话输入，`[serve] session_access` 不再影响汇报。`delivery` 改为 `status`（`notified`／`inbox_only`）加 `channels` 列表，当前没有启用通道，新汇报固定 `inbox_only`；老记录的 `queued`、`sending`、`delivered`、`text_delivered` 与旧原因键原样返回。提醒步骤集中在 `Reports.notify`。详见 `docs/reports.md`。
