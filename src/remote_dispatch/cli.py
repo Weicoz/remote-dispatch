@@ -2109,6 +2109,12 @@ def line_ask(a, cfg, scope, include_paths, prompt):
             return False, None
 
 
+def record_decline(a, scope):
+    """拒绝建议只在派单确实启动后记一次；目标机忙、预检或员工配置检查失败的派单不计。"""
+    if getattr(a, "no_line", False):
+        line_decline(scope)
+
+
 def line_decline(scope):
     """run --no-line：只在待派登记里记「本链不再建议」和拒绝次数，不创建任何派单状态。"""
     previous, _ = workline.predecessor(scope.plan_store.read(), scope.plan_item, scope.after)
@@ -2331,9 +2337,6 @@ def cmd_run(a, cfg):
         projects.ProjectIndex(STATE, uid).register(rec)
         if plan_item:
             plan_store.attach_job(plan_item, job, after)
-        if getattr(a, "no_line", False):
-            # 拒绝建议只在派单确实登记时记一次；被拒的派单（目标机忙、预检失败）不计。
-            line_decline(scope)
         try:
             if host["platform"] == "windows":
                 native_init(host, rec, repo, sha, proj.get("origin_url") or origin_url)
@@ -2349,6 +2352,7 @@ def cmd_run(a, cfg):
                 launch(host, rec, 1, "", prompt, a.timeout or host["timeout"])
                 rec["dispatch_state"] = "started"
                 save_job(rec)
+                record_decline(a, scope)
                 print(f"started. job id: {job}")
                 return
             if host["sync"] == "origin":
@@ -2393,6 +2397,7 @@ def cmd_run(a, cfg):
             launch(host, rec, 1, cmd_text, prompt, a.timeout or host["timeout"])
             rec["dispatch_state"] = "started"
             save_job(rec)
+            record_decline(a, scope)
             print(f"started. job id: {job}")
             print(f"  rdispatch status {job}    rdispatch logs {job}    rdispatch wait {job}    rdispatch fetch {job}")
         except (SystemExit, Exception, KeyboardInterrupt):
