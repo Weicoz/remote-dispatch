@@ -96,7 +96,7 @@ class HostMetricsTests(unittest.TestCase):
             (dict(load1="12.08"), True, ["pressure", "normal", "normal"]),
             (dict(memfree="9.9"), True, ["normal", "pressure", "normal"]),
             (dict(disk="9"), True, ["normal", "normal", "pressure"]),
-            (dict(swapio="20480"), True, ["normal"] * 3),
+            (dict(swapio="20480"), False, ["normal"] * 3),
             (dict(memfree=""), True, ["normal", "unknown", "normal"]),
         ]
         for values, full, levels in cases:

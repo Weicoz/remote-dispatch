@@ -2,6 +2,7 @@
 
 ## 未发布
 
+- **接单判定去掉 swap 检查**：`assess` 不再按换页速率或交换区剩余拒绝派单；`max_swap_io_mb_s`、`min_swap_free_gb`、`swap_active_mb_s` 已停用（旧配置照常加载）。探针仍采集 swap，`hosts`、看板、serve 指标照常显示；load、内存、磁盘等阈值不变。
 - **`rdispatch inbox --wait`**：只读后台等待本会话新汇报（`--timeout` 秒、`--json`）；新汇报退出 0，超时退出 2，缺发起会话退出 4。输出每条 `<派单ID> 第N轮 <状态>` 与查看命令，不含执行方摘要；serve 离线时靠派单状态进入终态唤醒。不签收、不写回执。详见 `docs/reports.md`。
 - **汇报不再写入会话输入框**：serve 生成汇报后只存 inbox 并发布 `report.created`，不再调用 Herdr 会话输入，`[serve] session_access` 不再影响汇报。`delivery` 改为 `status`（`notified`／`inbox_only`）加 `channels` 列表，当前没有启用通道，新汇报固定 `inbox_only`；老记录的 `queued`、`sending`、`delivered`、`text_delivered` 与旧原因键原样返回。提醒步骤集中在 `Reports.notify`。详见 `docs/reports.md`。
 - **工作线会话轮换**：工作线默认每个工作项换新会话，同一 worktree，提示词前附交接包（复用上下文包拼装）。上下文历史用 `reason: policy`（策略轮换）与 `context`（`--new-context` 故障换新）区分；循环重建保护只对故障换新生效。上一轮回执不健康时不做策略轮换并输出原因。可按 harness 在 `[line:<harness>]` 配置 `reuse_max_context_tokens`、`reuse_max_interval_seconds`，满足时续用当前会话。详见 `docs/session-dispatch-defaults.md`。
