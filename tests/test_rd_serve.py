@@ -22,8 +22,8 @@ CONTRACTS = Path(__file__).resolve().parents[1] / "contracts" / "v1"
 
 
 class UnixHTTPConnection(http.client.HTTPConnection):
-    def __init__(self, path):
-        super().__init__("localhost", timeout=5)
+    def __init__(self, path, timeout=5):
+        super().__init__("localhost", timeout=timeout)
         self.path = str(path)
 
     def connect(self):
@@ -106,8 +106,8 @@ class ServeTests(unittest.TestCase):
         cli.save_job(other)
         return self.start(poll_interval=poll_interval)
 
-    def eventually(self, read, predicate):
-        deadline = time.monotonic() + 5
+    def eventually(self, read, predicate, timeout=5):
+        deadline = time.monotonic() + timeout
         value = None
         while time.monotonic() < deadline:
             value = read()

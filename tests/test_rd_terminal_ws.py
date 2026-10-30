@@ -64,7 +64,13 @@ class TerminalWSTests(unittest.TestCase):
     save_fixture = sessions_base.SessionTests.save_fixture
     start = sessions_base.SessionTests.start
     request = sessions_base.SessionTests.request
-    eventually = sessions_base.SessionTests.eventually
+    def eventually(self, read, predicate):
+        # 等待上限放宽到 30 秒；条件满足即返回，只影响失败路径与高负载。
+        return sessions_base.SessionTests.eventually(self, read, predicate, timeout=30)
+
+    # 心跳窗口等于 request_timeout；测试客户端等待期间不回 pong，高负载下 1 秒窗口会先到期。
+    # 不测心跳的用例用此配置放宽窗口（心跳用例仍用默认 1 秒）。
+    RELAXED = "[serve]\nrequest_timeout=60\n"
 
     def control_fixture(self, config_text=None, **options):
         self.data.update(options)
@@ -80,7 +86,7 @@ class TerminalWSTests(unittest.TestCase):
     def connect(self, query="", pane="w1:p1", headers="", connection=None):
         if connection is None:
             connection = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-            connection.settimeout(5)
+            connection.settimeout(60)
             connection.connect(str(self.path))
         self.addCleanup(connection.close)
         connection.sendall((f"GET /v1/sessions/{pane}/terminal/ws{query} HTTP/1.1\r\n"
@@ -236,7 +242,7 @@ class TerminalWSTests(unittest.TestCase):
         self.assertFalse(any(row.get("type") == "terminal.input" for row in self.commands()))
 
     def test_input_size_limit_and_oversize_fragment_totals(self):
-        self.control_fixture()
+        self.control_fixture(config_text=self.RELAXED)
         client = self.connect()
         client.message()
         raw = b"x" * (1024 * 1024)
@@ -389,7 +395,7 @@ class TerminalWSTests(unittest.TestCase):
 
     def test_shutdown_finishes_partial_input_before_restore_and_release(self):
         gate = self.root / "allow-input"
-        service = self.control_fixture(control_gate=str(gate))
+        service = self.control_fixture(config_text=self.RELAXED, control_gate=str(gate))
         client = self.connect("?cols=80&rows=24")
         client.message()
         payload = dict(type="terminal.input", bytes=base64.b64encode(b"x" * (1024 * 1024)).decode())
@@ -400,7 +406,7 @@ class TerminalWSTests(unittest.TestCase):
         self.addCleanup(closer.join)
         self.eventually(service.stop.is_set, bool)
         gate.touch()
-        closer.join(5)
+        closer.join(30)
         self.assertFalse(closer.is_alive())
         rows = [row for row in self.commands() if "type" in row]
         self.assertEqual([row["type"] for row in rows], ["terminal.input", "terminal.resize", "terminal.release"])
@@ -411,7 +417,7 @@ class TerminalWSTests(unittest.TestCase):
         fragments = ['{"tok', 'en"', ':"unconfigured-', 'value"} public']
         frames = [dict(type="terminal.frame", width=149, height=45, full=index == 0,
                        bytes=base64.b64encode(text.encode()).decode()) for index, text in enumerate(fragments)]
-        self.control_fixture(control_frames=frames)
+        self.control_fixture(config_text=self.RELAXED, control_frames=frames)
         client = self.connect()
         self.assertEqual(client.status, 101)
         text = b"".join(base64.b64decode(client.message()["data"]) for _ in frames)

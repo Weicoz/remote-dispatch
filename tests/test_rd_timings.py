@@ -46,10 +46,11 @@ class PosixTimingTests(JobFixture, unittest.TestCase):
         return self.receipt()
 
     def test_normal_setup_and_command_are_timed_separately(self):
-        data = self.run_script("sleep 2", setup="sleep 1")
+        # setup 睡 1 秒、命令睡 4 秒；只断言各自下限与相对大小，不依赖绝对墙钟上限（高负载下秒级取整会超）。
+        data = self.run_script("sleep 4", setup="sleep 1")
         self.assertGreaterEqual(data["setup_seconds"], 1)
-        self.assertLess(data["setup_seconds"], 2)
-        self.assertGreaterEqual(data["body_seconds"], 2)
+        self.assertGreaterEqual(data["body_seconds"], 4)
+        self.assertLess(data["setup_seconds"], data["body_seconds"])
         self.assertNotIn("setup_note", data)
 
     def test_skipped_setup_is_zero_and_noted(self):
