@@ -398,7 +398,10 @@ class LineTests(unittest.TestCase):
         before = {r["job"] for r in rd.all_jobs()}
         values = dict(dir=str(self.repo), ref=name, host="fixture", project="app", timeout=15,
                       initiator_session=None, force_host=False, tag=[], include=[], name=None, branch=None, wip=False)
-        self.capture(rd.cmd_gate, argparse.Namespace(**values))
+        # 选机探测替换为空闲读数，避免用例随本机真实负载（swap、load）失败。
+        idle = dict(reachable=True, memfree="80", disk="100", load1="0.1", ncpu="8", heavy="0")
+        with patch.object(rd, "probe", return_value=idle):
+            self.capture(rd.cmd_gate, argparse.Namespace(**values))
         (gate,) = [r for r in rd.all_jobs() if r["job"] not in before]
         self.assertEqual(gate["gate"], {"ref": name, "commit": head_b})
 
