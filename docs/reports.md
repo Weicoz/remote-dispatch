@@ -95,8 +95,11 @@ notify_digest = false      # 默认 false；true 时进度摘要（kind: digest�
 
 - 取值只能是 `herdr`、`macos`、`app`（逗号分隔，忽略大小写与空格）或单独的 `none`；
   其他取值在启动 serve 与配置重载时按配置错误处理，退出码 4（重载时保留旧配置）。
-- 本版只实现 `herdr` 通道；`macos`、`app` 尚未实现，跳过并在 `channels` 记
-  `{channel, ok: false, reason: "not_implemented"}`。
+- 未实现的通道跳过并在 `channels` 记 `{channel, ok: false, reason: "not_implemented"}`。
+- `app` 通道：存在已登记推送令牌且未撤销的设备时记 `ok: true`，否则记
+  `{channel: "app", ok: false, reason: "no_device"}`。推送由 `rd_push` 处理 `report.delivered`
+  事件（`channels` 含 `app`）触发，沿用检查点与去重，serve 关闭期间的待推送重启后补发；
+  负载只有计数 `{"report_ready": 1}`，不含汇报正文或执行方文字。
 - `herdr` 通道每条汇报调用一次 `herdr notification show <标题> --body <正文> --sound done|request`，
   含失败的汇报用 `request`，其他用 `done`。标题与正文只含派单标题、目标机、轮次、状态文字，
   不含执行方摘要或任何来自目标机的文字。只调用界面通知，不触碰任何 pane 输入。

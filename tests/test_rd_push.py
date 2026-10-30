@@ -43,6 +43,15 @@ class PushTests(unittest.TestCase):
         PushDispatcher(self.state, "fixture", self.sender).dispatch(rows, self.devices, now=1792886400)
         self.assertEqual(len(self.sender.deliveries), 2)
 
+    def test_report_delivered_pushes_only_when_app_channel_succeeded(self):
+        dispatcher = PushDispatcher(self.state, "fixture", self.sender)
+        rows = [self.event(1, "report.delivered", user_id="fixture", report_id="r1", channels=["herdr"]),
+                self.event(2, "report.delivered", user_id="fixture", report_id="r2", channels=["herdr", "app"]),
+                self.event(3, "report.delivered", user_id="other", report_id="r3", channels=["app"])]
+        dispatcher.dispatch(rows, self.devices, now=1792886400)
+        self.assertEqual(self.sender.deliveries, [
+            ("private-apns", {"aps": {"content-available": 1}, "counts": {"report_ready": 1}})])
+
     def test_dead_or_unreachable_must_persist_over_five_minutes_and_recovery_resets_timer(self):
         dispatcher = PushDispatcher(self.state, "fixture", self.sender)
         rows = [self.event(1, "job.state_changed", job="one", user_id="fixture", round=1, execution_state="dead"),

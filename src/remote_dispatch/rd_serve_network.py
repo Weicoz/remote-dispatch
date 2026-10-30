@@ -276,6 +276,11 @@ class Network:
                 delay = min(delay * 2, 30.0)
             self.service.stop.wait(delay)
 
+    def has_push_device(self):
+        """是否存在已登记推送令牌且未撤销的设备。"""
+        with self.lock:
+            return any(row.get("push_token") and not row.get("revoked") for row in self.read()["devices"].values())
+
     def push_active(self, device):
         # Recheck immediately before a send without holding the lock during I/O.
         # A delivery already in flight may finish; revocation never waits for it.

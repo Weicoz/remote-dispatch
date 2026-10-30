@@ -49,7 +49,18 @@ def herdr(service, row):
     return dict(channel="herdr", ok=True, reason=None)
 
 
-SENDERS = {"herdr": herdr}
+def app(service, row):
+    """App 推送：无推送设备记 no_device；实际计数推送由 rd_push 按 report.delivered 事件触发（带检查点）。"""
+    try:
+        has_device = service.network.has_push_device()
+    except (OSError, ValueError, AttributeError):
+        return dict(channel="app", ok=False, reason="no_device")
+    if not has_device:
+        return dict(channel="app", ok=False, reason="no_device")
+    return dict(channel="app", ok=True, reason=None)
+
+
+SENDERS = {"herdr": herdr, "app": app}
 
 
 def dispatch(service, row):

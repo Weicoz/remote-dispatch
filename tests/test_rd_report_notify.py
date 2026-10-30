@@ -37,12 +37,12 @@ class NotifyChannelTests(unittest.TestCase):
         self.tick_report(service)
         return service, self.reports(service)[0]
 
-    def test_default_config_notifies_herdr_and_skips_unimplemented_channels(self):
+    def test_default_config_notifies_herdr_and_skips_unimplemented_and_deviceless_channels(self):
         service, report = self.report_with('', summary='SECRET-摘要')
         self.assertEqual(report['delivery'], dict(status='notified', channels=[
             dict(channel='herdr', ok=True, reason=None),
             dict(channel='macos', ok=False, reason='not_implemented'),
-            dict(channel='app', ok=False, reason='not_implemented')]))
+            dict(channel='app', ok=False, reason='no_device')]))
         sent = self.notifications_sent()
         self.assertEqual(len(sent), 1)
         self.assertEqual(sent[0][:2], ['notification', 'show'])
@@ -133,3 +133,78 @@ class NotifyChannelTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class AppChannelTests(NotifyChannelTests):
+    """app 通道：serve 接缝（设备登记）+ 推送发送器边界。"""
+
+    def pair_device(self, service, **fields):
+        import time
+        from remote_dispatch import rd_messages as messages
+        device = dict(device_id='phone', push_token='private-apns', revoked=False)
+        device.update(fields)
+        messages.atomic_json(service.network.path, dict(devices={'phone': device}, requests={}), limit=None)
+
+    def push_deliveries(self, service):
+        from remote_dispatch.rd_push import PushDispatcher
+        sent = []
+        class Sender:
+            def send(self, token, payload, *, stop):
+                sent.append((token, payload))
+        devices = list(service.network.read()['devices'].values())
+        PushDispatcher(self.state, 'fixture', Sender()).dispatch(
+            events.read_after(self.state, 0), devices, now=1792886400)
+        return sent
+
+    def test_device_present_triggers_count_only_push_without_report_text(self):
+        self.config.write_text('[monitor]\nnotify=app\n')
+        self.receipt(self.job(), summary='SECRET-摘要')
+        service = self.service()
+        self.pair_device(service)
+        self.tick_report(service)
+        report = self.reports(service)[0]
+        self.assertEqual(report['delivery'], dict(status='notified', channels=[
+            dict(channel='app', ok=True, reason=None)]))
+        sent = [d for d in self.push_deliveries(service) if 'report_ready' in d[1]['counts']]
+        self.assertEqual(sent, [('private-apns', {'aps': {'content-available': 1}, 'counts': {'report_ready': 1}})])
+        text = json.dumps(sent, ensure_ascii=False)
+        self.assertNotIn('实现汇报', text)
+        self.assertNotIn('SECRET', text)
+
+    def test_push_checkpoint_does_not_resend_after_restart(self):
+        self.config.write_text('[monitor]\nnotify=app\n')
+        self.receipt(self.job())
+        service = self.service()
+        self.pair_device(service)
+        self.tick_report(service)
+        first = [d for d in self.push_deliveries(service) if 'report_ready' in d[1]['counts']]
+        again = [d for d in self.push_deliveries(service) if 'report_ready' in d[1]['counts']]
+        self.assertEqual(len(first), 1)
+        self.assertEqual(again, [])
+
+    def test_no_device_or_revoked_records_no_device(self):
+        for fields in (None, dict(revoked=True), dict(push_token=None)):
+            with self.subTest(fields=fields):
+                self.config.write_text('[monitor]\nnotify=app\n')
+                name = 'nodev%d' % len(str(fields))
+                self.receipt(self.job(name))
+                service = self.service()
+                if fields is not None:
+                    self.pair_device(service, **fields)
+                self.tick_report(service)
+                rows = [r for r in self.reports(service) if r['entries'][0]['job'] == name]
+                self.assertEqual(rows[0]['delivery'], dict(status='inbox_only', channels=[
+                    dict(channel='app', ok=False, reason='no_device')]))
+
+    def test_app_failure_does_not_block_other_channels(self):
+        from unittest import mock
+        self.config.write_text('[monitor]\nnotify=herdr,app\n')
+        self.receipt(self.job())
+        service = self.service()
+        with mock.patch.object(type(service.network), 'has_push_device', side_effect=OSError('boom')):
+            self.tick_report(service)
+        report = self.reports(service)[0]
+        self.assertEqual(report['delivery']['status'], 'notified')
+        self.assertEqual(report['delivery']['channels'], [
+            dict(channel='herdr', ok=True, reason=None), dict(channel='app', ok=False, reason='no_device')])
+        self.assertEqual(len(self.notifications_sent()), 1)

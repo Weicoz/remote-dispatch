@@ -49,6 +49,10 @@ class PushDispatcher:
                     incidents.pop(job_key, None)
                     if not data.get("suppress_push"):
                         self.deliver("blocked" if data.get("outcome") == "blocked" else "receipt_ready", devices)
+                elif row["type"] == "report.delivered":
+                    # 汇报的 app 通道：只发计数推送，负载不含汇报正文与执行方文字。
+                    if "app" in (data.get("channels") or []):
+                        self.deliver("report_ready", devices)
                 elif row["type"] in ("job.state_changed", "host.changed"):
                     key = job_key or "host:" + str(data.get("host"))
                     state = data.get("execution_state") if job_key else (
