@@ -29,7 +29,8 @@ class ScheduleFixture(ReclaimFixture):
 
     def setUp(self):
         super().setUp()
-        (self.repo / "big.bin").write_bytes(b"\0" * 1_500_000)
+        # 用非零内容：新版 git checkout 会把连续零写成稀疏空洞，du 只计几 KB。
+        (self.repo / "big.bin").write_bytes(b"x" * 1_500_000)
         self.git("add", ".")
         self.git("commit", "-qm", "big tracked file")
         self.services = []
