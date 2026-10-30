@@ -852,10 +852,12 @@ class DispatchTests(unittest.TestCase):
         rd.save_job(record)
         return record
 
-    def replayed_receipt(self, kind, fixture, model=None):
+    def replayed_receipt(self, kind, fixture, model=None, profile=None):
         """假 launch 之后回放录制输出到 stdout 日志，再经 CLI 的 result 取回执。"""
         record = self.dispatch(model=model)
         record["agent"] = kind
+        if profile is not None:
+            record["profile"] = profile
         rd.save_job(record)
         log = self.worker / "jobs" / record["job"] / f"stdout.r{record['rounds']}.log"
         log.write_text((Path(__file__).parent / "fixtures" / "usage" / fixture).read_text(encoding="utf-8"), encoding="utf-8")
@@ -870,7 +872,7 @@ class DispatchTests(unittest.TestCase):
             ("kimi", "kimi.jsonl", None, "kimi-k2", dict(input=900, cache_read=700, cache_write=50, output=120)),
             ("agy", "agy.jsonl", None, "gemini-3-pro", dict(input=1500, cache_read=1000, cache_write=0, output=300)),
             # 真实录制：用量嵌在 result 事件的 result 对象里，init 不带模型
-            ("agy", "agy-recorded.jsonl", None, unrecorded, dict(input=50955, cache_read=0, cache_write=unrecorded, output=1501)),
+            ("agy", "agy-recorded.jsonl", None, "默认", dict(input=50955, cache_read=0, cache_write=unrecorded, output=1501)),
             ("dsh", "dsh.jsonl", None, "deepseek-v4", dict(input=500, cache_read=1500, cache_write=unrecorded, output=250)),
         )
         for kind, fixture, requested, model, usage in cases:
@@ -885,17 +887,38 @@ class DispatchTests(unittest.TestCase):
     def test_missing_or_broken_usage_is_unrecorded_and_dispatch_completes(self):
         for kind, fixture, requested, model in (("claude", "claude-truncated.jsonl", None, "claude-sonnet-5-5"),
                                                 ("codex", "codex-nousage.jsonl", "gpt-x", "gpt-x"),
-                                                ("codex", "codex-nousage.jsonl", None, "未记录")):
+                                                ("codex", "codex-nousage.jsonl", None, "默认")):
             with self.subTest(fixture=fixture, requested=requested):
                 receipt, _ = self.replayed_receipt(kind, fixture, requested)
                 self.assertEqual((receipt["execution_state"], receipt["model"], receipt["usage"]),
                                  ("done", model, "未记录"))
 
-    def test_command_job_without_harness_is_unrecorded(self):
+    def test_command_job_without_harness_records_default_model_and_unrecorded_usage(self):
         record = self.dispatch()
         self.remote_head(record)
         receipt = rd.collect_result(self.cfg, record, dict(state="done", round="1", exit="0"))
-        self.assertEqual((receipt["model"], receipt["usage"]), ("未记录", "未记录"))
+        self.assertEqual((receipt["model"], receipt["usage"]), ("默认", "未记录"))
+
+    def test_receipt_model_falls_back_through_four_levels(self):
+        profile = dict(model="gpt-profile")
+        cases = (
+            ("claude", "claude.jsonl", "gpt-flag", profile, "claude-sonnet-5-5"),  # harness 输出
+            ("codex", "codex-nousage.jsonl", "gpt-flag", profile, "gpt-flag"),      # --model
+            ("codex", "codex-nousage.jsonl", None, profile, "gpt-profile"),        # 员工配置包
+            ("codex", "codex-nousage.jsonl", None, dict(), "默认"),                # 默认
+        )
+        for kind, fixture, requested, snapshot, model in cases:
+            with self.subTest(model=model):
+                receipt, _ = self.replayed_receipt(kind, fixture, requested, snapshot)
+                self.assertEqual(receipt["model"], model)
+
+    def test_profile_manifest_carries_config_model(self):
+        source = self.root / "model-profile"
+        source.mkdir()
+        (source / "config.toml").write_text('approval_policy="never"\nmodel="gpt-profile"\n')
+        (source / "AGENTS.md").write_text("仅执行测试")
+        manifest, _ = rd.profiles.bundle(source, "employee_a", self.root / "model-state")
+        self.assertEqual(manifest["model"], "gpt-profile")
 
     def test_status_json_shows_model_and_usage_and_legacy_records_unrecorded(self):
         _, record = self.replayed_receipt("claude", "claude.jsonl")
