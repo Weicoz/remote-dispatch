@@ -34,6 +34,7 @@ from . import __version__
 from . import rd_profiles as profiles
 from . import rd_native as native
 from . import rd_messages as messages
+from . import rd_notify as notifier
 from . import rd_slim as slim
 from . import rd_timings as timings
 from . import rd_health as health
@@ -257,6 +258,13 @@ class Config:
         if interval <= 0:
             self.fail("RD_REPORT_INTERVAL_SECONDS / [monitor] report_interval_seconds must be a positive integer (seconds)", 4)
         return interval
+
+    def notify_channels(self):
+        """[monitor] notify：启用的提醒通道；非法取值按配置错误退出 4。"""
+        try:
+            return notifier.parse(self.cp)
+        except ValueError as error:
+            self.fail(str(error), 4)
 
     def rollout_stats(self):
         """[features] rollout_stats：读取 Codex rollout 逐次调用用量，默认关闭；取值无效按关闭处理。"""
@@ -3796,6 +3804,7 @@ def cmd_pair(a, cfg):
 
 def cmd_serve(a, cfg):
     from .rd_serve import run_service
+    cfg.notify_channels()
     run_service(cfg, a.socket, a.poll_interval)
 
 

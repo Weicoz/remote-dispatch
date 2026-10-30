@@ -83,6 +83,8 @@ def display_data(kind, data):
         raise ValueError("unsupported event type")
     projected = {key: data[key] for key in FIELDS[kind].split() if key in data
                  and (data[key] is None or type(data[key]) in (str, int, float, bool))}
+    if kind == "report.delivered" and isinstance(data.get("channels"), list):
+        projected["channels"] = [name for name in data["channels"] if isinstance(name, str)]
     if kind == "network.addresses_changed" and isinstance(data.get("candidates"), list):
         projected["candidates"] = [{"address": row["address"], "port": row["port"],
             **({"kind": row["kind"]} if row.get("kind") in ("lan", "tailscale", "easytier", "other") else {})}

@@ -326,6 +326,7 @@ class ReportTests(unittest.TestCase):
         self.assertEqual(len(self.reports(service)), 2)
 
     def test_session_closed_during_merge_window_is_kept_in_inbox_without_input(self):
+        self.config.write_text('[monitor]\nnotify=none\n')
         self.receipt(self.job())
         service = self.service()
         service.reports.tick(now=0)

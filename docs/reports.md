@@ -75,7 +75,7 @@ digest_interval_seconds = 900 # 可选，单独指定摘要间隔
 汇报生成后只存 inbox 并发布 `report.created`。任何路径都不再写入会话输入框
 （不调用 `rd_herdr.Herdr.input`，不取会话输入锁），`[serve] session_access`
 总开关也不再影响汇报。App 终端里用户主动输入（`Sessions.write_input`）不变。
-生成汇报后的提醒步骤是 `Reports.notify` 单一入口；提醒通道在此接入。
+生成汇报后的提醒步骤是 `Reports.notify` 单一入口，按 `[monitor] notify` 分派通道（`rd_notify.py`）。
 
 `GET /v1/reports` 与 `inbox` 的每条汇报带 `delivery`，记录提醒结果：
 
@@ -84,7 +84,26 @@ digest_interval_seconds = 900 # 可选，单独指定摘要间隔
 | `status` | `notified` 至少一个通道成功；`inbox_only` 没有启用任何通道或全部失败 |
 | `channels` | 通道结果列表，每项 `{channel, ok, reason}`；没有通道时为空列表 |
 
-当前没有启用任何通道，新汇报固定为 `inbox_only`、`channels` 为空。
+### 提醒通道配置
+
+```ini
+[monitor]
+notify = herdr,macos,app   # 默认三者全开；none 全关
+notify_digest = false      # 默认 false；true 时进度摘要（kind: digest）也提醒
+```
+
+- 取值只能是 `herdr`、`macos`、`app`（逗号分隔，忽略大小写与空格）或单独的 `none`；
+  其他取值在启动 serve 与配置重载时按配置错误处理，退出码 4（重载时保留旧配置）。
+- 本版只实现 `herdr` 通道；`macos`、`app` 尚未实现，跳过并在 `channels` 记
+  `{channel, ok: false, reason: "not_implemented"}`。
+- `herdr` 通道每条汇报调用一次 `herdr notification show <标题> --body <正文> --sound done|request`，
+  含失败的汇报用 `request`，其他用 `done`。标题与正文只含派单标题、目标机、轮次、状态文字，
+  不含执行方摘要或任何来自目标机的文字。只调用界面通知，不触碰任何 pane 输入。
+- Herdr 不可用或调用超时（5 秒）记 `{channel: "herdr", ok: false, reason: "herdr_unavailable"}`，
+  不重试；汇报照常存入 inbox。
+- 至少一个通道成功时 `status` 为 `notified`，并发布 `report.delivered`（含成功通道，不含正文）；
+  否则为 `inbox_only`。没有启用通道（`none`）时 `channels` 为空。
+- 进度摘要默认不提醒（`inbox_only`、`channels` 为空）；`notify_digest = true` 时与状态汇报同样分派。
 
 老记录兼容：此前写入的 `queued`、`sending`、`delivered`、`text_delivered` 状态和
 `reason`、`pane_id`、`delivered_at` 字段原样返回，不迁移、不重算；
@@ -93,7 +112,7 @@ digest_interval_seconds = 900 # 可选，单独指定摘要间隔
 `session_input_failed`、`session_submit_failed`、`delivery_result_unknown`）仅出现在老记录。
 无 `delivery` 字段的更老记录读取时补 `queued` 显示，不写回。
 
-`report.delivered` 事件不再因写入会话产生；它改为在提醒通道成功后发布（后续票据接入），
+`report.delivered` 事件不再因写入会话产生；它改为在提醒通道成功后发布，
 字段为用户、汇报 ID、发起会话、成功通道名 `channels` 和时间，不含正文。
 样例见 `contracts/v1/report-delivered.json`；`contracts/v1/reports-unsubmitted.json`
 是历史状态样例（老记录的 `text_delivered/session_submit_failed`）。

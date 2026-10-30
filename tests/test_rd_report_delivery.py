@@ -41,6 +41,7 @@ class ReportDeliveryTests(unittest.TestCase):
             'closed': lambda: self.data.update(agents=[]),
             'herdr-unavailable': lambda: self.data.update(unavailable=True),
         }
+        self.config.write_text('[monitor]\nnotify=none\n')
         for name, change in cases.items():
             with self.subTest(case=name):
                 change()
@@ -56,7 +57,7 @@ class ReportDeliveryTests(unittest.TestCase):
                 service.close()
 
     def test_session_access_switch_does_not_change_report_handling(self):
-        self.config.write_text('[serve]\nsession_access=false\n')
+        self.config.write_text('[serve]\nsession_access=false\n[monitor]\nnotify=none\n')
         self.data['unavailable'] = True
         self.save_fixture()
         self.receipt(self.job())
@@ -69,6 +70,7 @@ class ReportDeliveryTests(unittest.TestCase):
         self.assertEqual(len(created), 1)
 
     def test_new_report_publishes_created_but_no_delivered_event_and_survives_restart(self):
+        self.config.write_text('[monitor]\nnotify=none\n')
         self.receipt(self.job())
         service = self.service()
         self.tick_report(service)
@@ -83,7 +85,7 @@ class ReportDeliveryTests(unittest.TestCase):
         self.assertEqual(self.writes_sent(), [])
 
     def test_digest_report_uses_the_same_delivery_result_without_input(self):
-        self.config.write_text('[monitor]\ndigest_interval_seconds=10\n')
+        self.config.write_text('[monitor]\ndigest_interval_seconds=10\nnotify=none\n')
         self.receipt(self.job(), summary='摘要')
         service = self.service()
         service.reports.tick(now=0)
@@ -123,6 +125,7 @@ class ReportDeliveryTests(unittest.TestCase):
         self.assertEqual(self.writes_sent(), [])
 
     def test_contract_examples_match_new_and_historical_delivery_shapes(self):
+        self.config.write_text('[monitor]\nnotify=none\n')
         self.receipt(self.job(title='token=title-marker'))
         service = self.service()
         self.tick_report(service)

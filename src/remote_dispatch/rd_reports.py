@@ -14,6 +14,7 @@ import time
 from . import rd_digest as digest
 from . import rd_events as events
 from . import rd_messages as messages
+from . import rd_notify as notifier
 from .rd_query import result_path
 from .rd_serve_history import instant
 
@@ -125,13 +126,21 @@ class Reports:
             created.append(dict(report_id=report_id, user_id=self.service.user_id,
                                 initiator_session=owner, job_count=len(row["entries"])))
             del saved["pending"][owner]
+        delivered = []
         for row in saved["reports"][known:]:
             row["delivery"] = self.notify(saved, row)
+            if row["delivery"]["status"] == "notified":
+                delivered.append(dict(user_id=self.service.user_id, report_id=row["id"],
+                                      initiator_session=row["initiator_session"],
+                                      channels=[c["channel"] for c in row["delivery"]["channels"] if c["ok"]],
+                                      delivered_at=messages.utc_now()))
         if saved != before:
             with events.write_transaction([self.path]):
                 messages.atomic_json(self.path, saved, limit=None)
                 for data in created:
                     events.emit(self.service.state, "report.created", data)
+                for data in delivered:
+                    events.emit(self.service.state, "report.delivered", data)
         # Retain the batch on failure, so an in-process retry cannot lose events
         # already consumed by the incremental cursor.
         self.batch = None
@@ -167,10 +176,10 @@ class Reports:
     def notify(self, saved, row):
         """生成汇报后的提醒步骤，返回要写入 row["delivery"] 的结果。
 
-        这是唯一入口：通道在此接入，各通道结果追加到 channels。
-        没有启用任何通道时为 inbox_only；绝不写入会话输入框。
+        这是唯一入口：按 [monitor] notify 分派通道，各通道结果追加到 channels。
+        没有成功通道时为 inbox_only；绝不写入会话输入框。
         """
-        return dict(status="inbox_only", channels=[])
+        return notifier.dispatch(self.service, row)
 
     def observe(self, saved, rec, number, snapshot, receipt, now, *, observed_at=None):
         report = receipt.get("report") or {}
