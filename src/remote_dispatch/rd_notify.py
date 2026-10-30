@@ -3,6 +3,9 @@
 提醒文本只用 rdispatch 自己的字段（派单标题、目标机、轮次、状态文字），
 不含执行方摘要或任何来自目标机的文字；任何通道都不写入会话输入框。
 """
+import subprocess
+import sys
+
 CHANNELS = ("herdr", "macos", "app")
 NOTIFY_ERROR = "[monitor] notify 取值无效：只能是 herdr、macos、app（逗号分隔）或 none。"
 
@@ -49,7 +52,43 @@ def herdr(service, row):
     return dict(channel="herdr", ok=True, reason=None)
 
 
-SENDERS = {"herdr": herdr}
+MACOS_SCRIPT = ("on run argv", "display notification (item 2 of argv) with title (item 1 of argv) "
+                "sound name (item 3 of argv)", "end run")
+MACOS_SOUNDS = {"request": "Basso", "done": "Glass"}
+
+
+def is_macos():
+    return sys.platform == "darwin"
+
+
+def show_macos(title, body, sound):
+    """调用 osascript；标题、正文、提示音作为独立 argv 传入脚本，不拼进脚本文本，无法注入。
+    launchd 用户代理在登录的图形会话内，可直接调用。失败抛 OSError。"""
+    cmd = ["osascript"]
+    for line in MACOS_SCRIPT:
+        cmd += ["-e", line]
+    cmd += ["--", title, body, MACOS_SOUNDS.get(sound, "Glass")]
+    try:
+        result = subprocess.run(cmd, stdin=subprocess.DEVNULL, capture_output=True, timeout=5)
+    except subprocess.SubprocessError as error:
+        raise OSError(str(error)) from error
+    if result.returncode != 0:
+        raise OSError("osascript 退出码 %d" % result.returncode)
+
+
+def macos(service, row):
+    """macOS 系统通知；非 macOS 记 unsupported_platform，失败记 notify_failed，不重试。"""
+    if not is_macos():
+        return dict(channel="macos", ok=False, reason="unsupported_platform")
+    title, body, sound = text(row)
+    try:
+        show_macos(title, body, sound)
+    except (OSError, ValueError):
+        return dict(channel="macos", ok=False, reason="notify_failed")
+    return dict(channel="macos", ok=True, reason=None)
+
+
+SENDERS = {"herdr": herdr, "macos": macos}
 
 
 def dispatch(service, row):

@@ -95,8 +95,12 @@ notify_digest = false      # 默认 false；true 时进度摘要（kind: digest�
 
 - 取值只能是 `herdr`、`macos`、`app`（逗号分隔，忽略大小写与空格）或单独的 `none`；
   其他取值在启动 serve 与配置重载时按配置错误处理，退出码 4（重载时保留旧配置）。
-- 本版只实现 `herdr` 通道；`macos`、`app` 尚未实现，跳过并在 `channels` 记
+- 本版实现 `herdr`、`macos` 通道；`app` 尚未实现，跳过并在 `channels` 记
   `{channel, ok: false, reason: "not_implemented"}`。
+- `macos` 通道：控制端为 macOS 时调用 `osascript` 发系统通知（serve 以 launchd 用户代理运行时同样可发），
+  内容规则同 `herdr`。标题、正文、提示音作为独立参数传给脚本，不拼进脚本文本，无法注入命令或脚本；
+  含失败的汇报用 Basso，其他用 Glass。非 macOS 跳过并记 `unsupported_platform`；调用失败或超时（5 秒）
+  记 `notify_failed`，不重试，不影响其他通道。
 - `herdr` 通道每条汇报调用一次 `herdr notification show <标题> --body <正文> --sound done|request`，
   含失败的汇报用 `request`，其他用 `done`。标题与正文只含派单标题、目标机、轮次、状态文字，
   不含执行方摘要或任何来自目标机的文字。只调用界面通知，不触碰任何 pane 输入。
