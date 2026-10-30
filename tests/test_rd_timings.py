@@ -68,7 +68,9 @@ class PosixTimingTests(JobFixture, unittest.TestCase):
         self.assertEqual(data["executor_exit"], 3)
         self.assertEqual(data["outcome"], "failed")
         self.assertGreaterEqual(data["body_seconds"], 1)
-        self.assertEqual(data["setup_seconds"], 0)
+        # setup 为 true：秒级取整在负载下可能得 1；只断言为非负整数且不超过主体耗时。
+        self.assertIsInstance(data["setup_seconds"], int)
+        self.assertLessEqual(data["setup_seconds"], data["body_seconds"])
 
     def test_failed_setup_records_setup_time_and_no_body(self):
         data = self.run_script("true", setup="sleep 1; exit 1")

@@ -80,7 +80,8 @@ class TerminalWSTests(unittest.TestCase):
         branch = Path(__file__).with_name("fixtures").joinpath("herdr_control.inc").read_text()
         script.write_text(content.replace('elif a[:2] == ["pane", "read"]:',
                                          branch + '\nelif a[:2] == ["pane", "read"]:'))
-        self.config.write_text(config_text or "[serve]\nrequest_timeout=1\n")
+        # 默认放宽心跳窗口：只有心跳用例显式用 1 秒（见 test_heartbeat_timeout_...）。
+        self.config.write_text(config_text or self.RELAXED)
         return self.start(poll_interval=3600)
 
     def connect(self, query="", pane="w1:p1", headers="", connection=None):
@@ -259,7 +260,9 @@ class TerminalWSTests(unittest.TestCase):
         pidfile = self.root / "control.pid"
         frame = dict(type="terminal.frame", full=True, width=149, height=45,
                      bytes=base64.b64encode(b"x" * 32768).decode())
-        service = self.control_fixture(control_frames=[frame], flood=True, control_pid=str(pidfile))
+        # 慢客户端用例依赖短 socket 超时让写线程尽快退出，保留 1 秒窗口。
+        service = self.control_fixture(config_text="[serve]\nrequest_timeout=1\n", control_frames=[frame], flood=True,
+                                       control_pid=str(pidfile))
         client = self.connect()
         self.assertEqual(client.status, 101)
         def audit():
@@ -278,7 +281,7 @@ class TerminalWSTests(unittest.TestCase):
 
     def test_heartbeat_timeout_and_shutdown_restore_release_and_reap(self):
         pidfile = self.root / "control.pid"
-        service = self.control_fixture(control_pid=str(pidfile))
+        service = self.control_fixture(config_text="[serve]\nrequest_timeout=1\n", control_pid=str(pidfile))
         client = self.connect()
         # 心跳用例用短 socket 超时：服务端未按时断开时快速失败，而不是等满 60 秒。
         client.connection.settimeout(5)
