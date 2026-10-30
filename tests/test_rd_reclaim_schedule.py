@@ -33,6 +33,11 @@ class ScheduleFixture(ReclaimFixture):
         self.git("add", ".")
         self.git("commit", "-qm", "big tracked file")
         self.services = []
+        # 选机探测替换为空闲读数，避免用例随本机真实负载（swap、load）被判离线而失败。
+        idle = dict(reachable=True, memfree="80", disk="100", load1="0.1", ncpu="8", heavy="0")
+        patcher = patch.object(rd, "probe", return_value=idle)
+        patcher.start()
+        self.addCleanup(patcher.stop)
 
     def configure(self, limit=None, enabled=True):
         text = self.config_path.read_text(encoding="utf-8")
