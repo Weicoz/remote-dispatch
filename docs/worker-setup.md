@@ -54,7 +54,21 @@ max_heavy = 1
 
 非交互的 SSH 会话不读 `.zshrc`、`.bashrc`，装在用户目录下的命令往往找不到。把这些目录写进该机器的 `path`。默认已包含 `~/.local/bin`、`~/.kimi-code/bin`、`/opt/homebrew/bin`、`/usr/local/bin`。需要的环境变量（例如接口密钥）写进远端的一个文件，用 `env_file` 指过去，任务启动前会被加载。
 
+
 员工配置包不携带凭据。要共用现有登录，管理员显式设置 `codex_auth_file` 指向已授权的远端认证文件；否则使用配置引用的 API 环境变量。配置不自动读目标机默认 `auth.json` 或钥匙串。后台权限使用员工配置，`approval_policy` 必须是 `never`。
+
+## 缓存目录
+
+目标机配置 `cache_dirs` 声明各生态的缓存目录，派单时自动注入为环境变量（POSIX 运行脚本和 Windows 原生都注入），目录会自动创建。格式是 `NAME=目录`，多项用分号分隔：
+
+```ini
+cache_dirs = CARGO_HOME=cargo; PIP_CACHE_DIR=pip; npm_config_cache=npm; PNPM_HOME=/data/rd-cache/{user}/pnpm
+```
+
+- 相对目录展开到该用户 ID 根目录下的 `cache/` 子目录（`<workdir>/users/<ID>/cache/<目录>`），不同用户 ID 互不共享。
+- 绝对目录必须含 `{user}`，展开为用户 ID。
+- 展开后落在任何 worktree（`<workdir>/wt`、`<workdir>/users/<ID>/wt`）内、含 `..` 或变量名不合法的声明，加载配置时报错（退出码 4）。缓存在 worktree 之外，回收 worktree 不会删掉它。
+- 没有声明时，行为与之前一致。
 
 ## 4. 仓库访问（只在 `sync = origin` 时需要）
 
@@ -70,14 +84,29 @@ max_heavy = 1
 ```ini
 [project:myrepo]
 setup = <在新 worktree 里装依赖的命令>
-test = <完整测试命令>
+test_quick = <快测命令>
+test_full = <完整测试命令>
 ```
 
 小节名是 `origin` 地址的仓库名（没有 `origin` 时是目录名）。
 
 - `setup` 在每个任务第一次启动前执行一次，失败则任务以 97 结束。新 worktree 没有依赖环境，不配这一项的话，代理第一件事就是自己摸索怎么装，既慢又不稳定。
-- `test` 是 `rdispatch run --test` 跑的命令，默认按重命令排队。不需要排队时加 `test_heavy = false`。
+- `test_quick` 是 `rdispatch run --test` 跑的快测，`test_full` 是 `rdispatch run --test-full` 跑的全量测试。`--test-full` 一律按重命令排队；`--test` 默认也排队，加 `test_heavy = false` 可让快测不排队。
+- 旧的 `test` 继续有效，视同 `test_full`。各配置下的取值：
+
+  | 配置 | `--test` | `--test-full` |
+  |---|---|---|
+  | 只配 `test` | `test` | `test` |
+  | 配 `test_quick` 与 `test_full` | `test_quick` | `test_full` |
+  | 三者都配 | `test_quick` | `test_full`（优先于 `test`） |
+  | 只配 `test_quick` | `test_quick` | 报错 |
+  | 只配 `test_full` | `test_full` | `test_full` |
+
+- `rdispatch gate <ref> [--host H]` 是合入前门禁：对 `<ref>` 在目标机跑一次 `test_full`（自动按重命令排队）。不带 `--host` 时，用该项目全量测试（`test_tier=full`）历史里退出码为 0 的中位主体耗时，选最快且有空闲重命令名额、能接单的目标机；没有历史时用 `[defaults] host`，也没有则报错。输出目标机与选择理由。派单记录和回执带 `gate = {ref, commit}`。
+- 每次派单会注入环境变量 `RD_BASE`（本派单的基线提交），POSIX 与 Windows 原生目标机、代理派单与命令派单都有。快测命令可以据此只测改动部分。
 - `origin_url` 只在远端访问仓库的地址和本机不同时才写。
+- `regenerable_paths` 声明 worktree 内可以再生成的子路径，多项用分号分隔，例如 `regenerable_paths = target; node_modules`。必须是相对 worktree 的具体子路径：不得指向 worktree 根、不得含 `..`、通配符，路径任一层不得叫 `evidence`、`reports` 或 `.git`；违反时加载配置报错。每轮结束时回执 `report.regenerable_kb` 记录各路径大小（KB，路径不存在记 0）。
+  `rdispatch clean --slim [JOB] [--project P] [--dry-run] [--json]` 只删这些路径和 setup 完成标记，保留 worktree、代码、未声明的未跟踪文件与被忽略文件；下次 `resume` 会重新执行 `setup`。省略 JOB 时处理当前仓库内已结束的任务。运行中的任务、含已跟踪文件的声明路径、父目录越出 worktree 的路径一律跳过；符号链接只删链接本身。不使用 `git clean -x`。POSIX（含 SSH）与 Windows 原生目标机行为一致。
 
 ## 6. 体检
 

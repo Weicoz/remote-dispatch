@@ -24,6 +24,7 @@
 | `host.changed` | 后台显式观察到目标机变化；host、reachable、负载、资源、full |
 | `network.addresses_changed` | serve 启动或本机写接口改变实际监听候选；user_id、candidates（address/port）、spki_sha256；幂等重放和失败不发事件 |
 | `project.changed` | 登记、hide、show、rebuild 改变项目；用户、项目 ID、计数、时间、hidden、removed；后台累计通过数变化另带 host、accepted_round_count，按用户＋项目＋目标机去重 |
+| `reclaim.planned` / `reclaim.result` | serve 定时回收；目标机、mode（plan/execute）、上限与用量（GB）、阻塞数、`actions`（job、action=slim/delete、kb；result 另有 ok、reason）；见 [回收](cache-retention.md) |
 | `harness.stats_changed` | 后台保留回执统计变化；用户、harness、total_round_count、今日轮次、时长样本、连续验收与最近结果；date_basis=controller_local、host_stats 含近 14 个本地日的 date/round_count；无具名 harness 的机器统计事件 harness=null |
 
 停止产生的状态、回执与签收事件均带 `suppress_push=true`，推送渠道必须遵守。

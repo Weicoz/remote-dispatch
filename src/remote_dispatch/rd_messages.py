@@ -299,12 +299,19 @@ def validate_report(data, job, number, kind):
         raise ValueError("结果或检查状态无效。")
     if not isinstance(data.get("artifacts", []), list) or any(not isinstance(x, str) for x in data.get("artifacts", [])):
         raise ValueError("产物必须是路径列表。")
+    for field in ("decisions", "unfinished"):
+        rows = data.get(field, [])
+        if kind != "result" and field in data:
+            raise ValueError("决策和未完成项只用于结果回执。")
+        if (not isinstance(rows, list) or len(rows) > 50
+                or any(not isinstance(x, str) or not x.strip() or len(x) > 2000 for x in rows)):
+            raise ValueError("决策和未完成项必须是最多 50 条、每条不超过 2000 字的非空文本列表。")
     if "evidence" in data:
         validate_evidence(data["evidence"])
     return data
 
 
-def report(directory, job, number, kind, phase="", summary="", outcome="completed", checks="not_reported", artifacts=(), evidence=None):
+def report(directory, job, number, kind, phase="", summary="", outcome="completed", checks="not_reported", artifacts=(), evidence=None, decisions=(), unfinished=()):
     job, number = job_id(job), round_id(number)
     if kind not in ("progress", "result"):
         raise ValueError("只支持 progress 或 result。")
@@ -312,6 +319,12 @@ def report(directory, job, number, kind, phase="", summary="", outcome="complete
                 artifacts=list(artifacts), updated_at=utc_now())
     if kind == "result":
         data.update(outcome=outcome, checks=checks)
+        if decisions:
+            data["decisions"] = list(decisions)
+        if unfinished:
+            data["unfinished"] = list(unfinished)
+    elif decisions or unfinished:
+        raise ValueError("--decision 和 --unfinished 只用于 result。")
     if evidence is not None:
         data["evidence"] = validate_evidence(evidence)
     validate_report(data, job, number, kind)
@@ -346,6 +359,65 @@ def agy_result(directory, number):
     return None
 
 
+def phase_timings(directory, number):
+    """读取 run 脚本写的 timing.rN（key=value 行）；缺失或损坏的字段不写，查询时视为未记录。"""
+    path = Path(directory) / ("timing.r" + str(number))
+    result = {}
+    if not path.is_file() or path.is_symlink():
+        return result
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except (OSError, ValueError):
+        return result
+    for line in lines:
+        key, _, value = line.partition("=")
+        if key in ("setup_seconds", "body_seconds"):
+            try:
+                seconds = float(value)
+            except ValueError:
+                continue
+            if 0 <= seconds < 10 ** 8:
+                result[key] = int(seconds) if seconds == int(seconds) else round(seconds, 1)
+        elif key == "setup_note" and value == "已跳过":
+            result[key] = value
+        elif key == "path_size_kb":
+            number, tab, rel = value.partition("\t")
+            try:
+                kb = int(number)
+            except ValueError:
+                continue
+            if tab and rel and 0 <= kb < 10 ** 12:
+                result.setdefault("regenerable_kb", {})[rel] = kb
+    return result
+
+
+def rollout_calls(directory):
+    """汇总 Codex rollout 里逐次调用的用量；任何读取或解析失败都返回「未记录」，不影响派单。"""
+    try:
+        total = dict(count=0, input_tokens=0, cached_input_tokens=0, output_tokens=0)
+        for path in sorted((Path(directory) / "codex" / "sessions").rglob("rollout-*.jsonl")):
+            if path.is_symlink() or not path.is_file():
+                continue
+            with path.open("rb") as stream:
+                for raw in stream:
+                    try:
+                        row = json.loads(raw)
+                        payload = row["payload"]
+                        if row["type"] != "event_msg" or payload["type"] != "token_count":
+                            continue
+                        usage = payload["info"]["last_token_usage"]
+                        values = [int(usage.get(key) or 0) for key in ("input_tokens", "cached_input_tokens", "output_tokens")]
+                    except (ValueError, KeyError, TypeError, AttributeError):
+                        continue
+                    total["count"] += 1
+                    total["input_tokens"] += values[0]
+                    total["cached_input_tokens"] += values[1]
+                    total["output_tokens"] += values[2]
+        return total if total["count"] else "未记录"
+    except (OSError, ValueError):
+        return "未记录"
+
+
 def finish(directory, job, number, code, agent=None):
     directory, job, number = Path(directory).resolve(), job_id(job), round_id(number)
     agent = agent or os.environ.get("RD_AGENT")
@@ -369,6 +441,11 @@ def finish(directory, job, number, code, agent=None):
         data["started_at"] = started.read_text(encoding="utf-8").strip()
     data.update(executor_exit=int(code), finished_at=utc_now(),
                 reply_file="last.r" + str(number) + ".txt", stdout_file="stdout.r" + str(number) + ".log")
+    for key in ("setup_seconds", "body_seconds", "setup_note", "rollout_calls", "regenerable_kb"):
+        data.pop(key, None)
+    data.update(phase_timings(directory, number))
+    if agent == "codex" and os.environ.get("RD_ROLLOUT_STATS") == "1":
+        data["rollout_calls"] = rollout_calls(directory)
     data.pop("runtime_failure", None)
     data.pop("denied_actions", None)
     denied = final.get("denied_actions") if final else None
@@ -395,6 +472,8 @@ def main():
     parser.add_argument("--outcome", choices=OUTCOMES, default="completed")
     parser.add_argument("--checks", choices=CHECKS, default="not_reported")
     parser.add_argument("--artifact", action="append", default=[])
+    parser.add_argument("--decision", action="append", default=[], help="本轮做出的决策（可重复，仅 result）")
+    parser.add_argument("--unfinished", action="append", default=[], help="未完成项（可重复，仅 result）")
     parser.add_argument("--evidence-file", type=Path, help="小型结构化证据JSON；原件保留在任务目录")
     parser.add_argument("--source-fingerprint", help="当前绑定输入的SHA256，不冒充编译或验收版本")
     parser.add_argument("--exit", type=int)
@@ -415,7 +494,8 @@ def main():
                 evidence["source_fingerprint"] = args.source_fingerprint
             if args.artifact:
                 evidence["artifacts"] = artifact_index(os.environ.get("RD_WT", directory), args.artifact)
-            report(directory, job, number, args.action, args.phase, args.summary, args.outcome, args.checks, args.artifact, evidence or None)
+            report(directory, job, number, args.action, args.phase, args.summary, args.outcome, args.checks, args.artifact, evidence or None,
+                   args.decision, args.unfinished)
         print("本轮回执已保存；下一步由发起方判断。")
     except (KeyError, ValueError, OSError) as error:
         parser.exit(4, "rd-report: " + ("请在派单任务环境中执行。" if isinstance(error, KeyError) else str(error)) + "\n")

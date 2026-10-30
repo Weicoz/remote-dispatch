@@ -10,7 +10,8 @@
       "harness": null,
       "config": {
         "host": "auto",
-        "harness": null
+        "harness": null,
+        "dispatch_mode": "suggest"
       }
     }
   },

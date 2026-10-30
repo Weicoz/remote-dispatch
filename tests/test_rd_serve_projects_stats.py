@@ -18,6 +18,7 @@ class ProjectsStatsTests(unittest.TestCase):
     request = support.ServeTests.request
     eventually = support.ServeTests.eventually
     snapshot = support.ServeTests.snapshot
+    quiet_snapshot = support.ServeTests.quiet_snapshot
     open_events = support.ServeTests.open_events
     next_event = support.ServeTests.next_event
     command = support.ServeTests.command
@@ -294,7 +295,7 @@ class ProjectsStatsTests(unittest.TestCase):
         self.start(poll_interval=3600)
         self.eventually(lambda: self.request("/v1/jobs")[1]["jobs"],
                         lambda rows: len(rows) == 2 and all(row["execution_state"] == "running" for row in rows))
-        before = self.snapshot()
+        before = self.quiet_snapshot()
         projects = self.request("/v1/projects")[1]["projects"]
         self.assertEqual([row["name"] for row in projects], ["app-tools", "未归属"])
         self.assertTrue(all(row["recent_event"] and row["recent_event"]["type"] == "job.state_changed" for row in projects))
@@ -417,7 +418,7 @@ class ProjectsStatsTests(unittest.TestCase):
         self.assertGreaterEqual(stats[0]["current_rounds"][0]["elapsed_seconds"], 45)
         self.assertEqual(stats[0]["today_round_count"], 0)
         self.eventually(lambda: self.request("/v1/hosts")[1]["hosts"], bool)
-        before = self.snapshot()
+        before = self.quiet_snapshot()
         self.request("/v1/harness-stats")
         self.assertEqual(self.snapshot(), before)
         service.close()

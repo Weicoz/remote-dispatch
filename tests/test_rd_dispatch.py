@@ -11,7 +11,7 @@ import sys
 import tempfile
 import time
 import unittest
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from test_rd import rd, native
 from remote_dispatch import rd_events as events
@@ -97,7 +97,7 @@ class DispatchTests(unittest.TestCase):
         (directory / f"run.r{rec['rounds']}.{suffix}").write_text("")
 
     def args(self, **overrides):
-        values = dict(dir=str(self.repo), agent=None, prompt_file=None, cmd="true", test=False,
+        values = dict(dir=str(self.repo), agent=None, prompt_file=None, cmd="true", test=False, test_full=False,
                       heavy=False, host="fixture", force_host=True, tag=[], ref="baseline", wip=False,
                       branch=None, name="fixture", project=None, include=[], model=None, effort=None,
                       timeout=15, initiator_session=None)
@@ -131,6 +131,67 @@ class DispatchTests(unittest.TestCase):
     def queried_job(self, job):
         args = argparse.Namespace(job=job, details=False, json=True)
         return json.loads(self.capture(rd.cmd_status, args))[0]
+
+    def configure_project(self, **commands):
+        text = "".join(f"{k}={v}\n" for k, v in commands.items())
+        with open(rd.CONFIG, "a") as stream:
+            stream.write(f"\n[project:app]\n{text}")
+        self.cfg = rd.Config()
+
+    def test_only_legacy_test_serves_both_flags_as_full_test(self):
+        self.configure_project(test="echo legacy")
+        quick = self.dispatch(project="app", cmd=None, test=True)
+        full = self.dispatch(project="app", cmd=None, test_full=True)
+        self.assertEqual((quick["cmd"], quick["heavy"]), ("echo legacy", True))
+        self.assertEqual((full["cmd"], full["heavy"]), ("echo legacy", True))
+
+    def test_quick_and_full_commands_are_chosen_by_flag(self):
+        self.configure_project(test_quick="echo quick", test_full="echo full", test_heavy="false")
+        quick = self.dispatch(project="app", cmd=None, test=True)
+        full = self.dispatch(project="app", cmd=None, test_full=True)
+        self.assertEqual((quick["cmd"], quick["heavy"]), ("echo quick", False))
+        self.assertEqual((full["cmd"], full["heavy"]), ("echo full", True))
+
+    def test_all_three_configured_prefers_quick_and_full_over_legacy(self):
+        self.configure_project(test="echo legacy", test_quick="echo quick", test_full="echo full")
+        self.assertEqual(self.dispatch(project="app", cmd=None, test=True)["cmd"], "echo quick")
+        self.assertEqual(self.dispatch(project="app", cmd=None, test_full=True)["cmd"], "echo full")
+
+    def test_full_flag_without_any_full_command_is_rejected(self):
+        self.configure_project(test_quick="echo quick")
+        with self.assertRaises(SystemExit):
+            self.dispatch(project="app", cmd=None, test_full=True)
+
+    def test_full_flag_queues_through_rd_heavy(self):
+        self.configure_project(test_quick="echo quick", test_full="echo full", test_heavy="false")
+        with patch.object(rd, "launch", side_effect=self.finish) as launch:
+            self.dispatch(project="app", cmd=None, test_full=True)
+        self.assertTrue(launch.call_args.args[3].startswith("rd-heavy sh -c"))
+
+    def test_posix_run_script_exports_baseline_for_command_and_agent_jobs(self):
+        host = self.cfg.host("fixture")
+        for kwargs in ({}, {"cmd": None, "agent": "codex", "prompt_file": str(self.root / "p.md")}):
+            (self.root / "p.md").write_text("hi")
+            with patch.object(rd, "launch", side_effect=self.finish), patch.object(rd, "agent_preflight", return_value=None):
+                rec = self.dispatch(**kwargs)
+            script = rd.build_run_script(host, rec, 1, 10)
+            self.assertIn(f" RD_BASE={self.base}\n", script)
+
+    def test_windows_native_job_environment_carries_baseline(self):
+        rec = self.dispatch()
+        directory, wt = self.root / "native-job", self.root / "native-wt"
+        for folder in (directory, wt, self.root / "native-bin"):
+            folder.mkdir()
+        (directory / "prompt.r1.md").write_text("")
+        command = f'"{sys.executable}" -c "import os; print(os.environ[\'RD_BASE\'])"'
+        spec = dict(rec, round=1, user_id="employee_a", timeout=20, max_heavy=1, heavy=False, cmd=command,
+                    directory=str(directory), wt=str(wt), bin=str(self.root / "native-bin"),
+                    lock_dir=str(self.root / "locks"), sync="direct", profile=None, handoff_version=None)
+        spec_file = self.root / "spec.json"
+        spec_file.write_text(json.dumps(spec))
+        self.addCleanup(os.chdir, os.getcwd())  # run_job 会切换工作目录
+        native.run_job(str(spec_file))
+        self.assertEqual((directory / "stdout.r1.log").read_text().strip(), self.base)
 
     def test_project_history_survives_clean_with_dispatch_count_and_times(self):
         with patch.object(rd.time, "strftime", side_effect=lambda fmt: "2026-10-24 10:00:00" if fmt == "%Y-%m-%d %H:%M:%S" else "20261024-100000"):
@@ -734,7 +795,7 @@ class DispatchTests(unittest.TestCase):
                              {record["job"], other_project["job"]})
         with patch.object(rd, "job_states", wraps=rd.job_states) as states:
             self.capture(rd.cmd_clean, self.bulk_args(project=record["project"]))
-        self.assertEqual([r["job"] for r in states.call_args.args[1]], [record["job"]])
+        self.assertEqual({r["job"] for r in states.call_args.args[1]}, {record["job"], other_repo["job"]})
 
     def test_clean_merged_dry_run_then_preserves_reports_and_branches_on_both_platforms(self):
         for platform in ("posix", "windows"):
@@ -790,6 +851,71 @@ class DispatchTests(unittest.TestCase):
         record["agent"] = "codex"
         rd.save_job(record)
         return record
+
+    def replayed_receipt(self, kind, fixture, model=None):
+        """假 launch 之后回放录制输出到 stdout 日志，再经 CLI 的 result 取回执。"""
+        record = self.dispatch(model=model)
+        record["agent"] = kind
+        rd.save_job(record)
+        log = self.worker / "jobs" / record["job"] / f"stdout.r{record['rounds']}.log"
+        log.write_text((Path(__file__).parent / "fixtures" / "usage" / fixture).read_text(encoding="utf-8"), encoding="utf-8")
+        return json.loads(self.capture(rd.cmd_result, argparse.Namespace(
+            job=record["job"], round=None, summary=False, initiator_session=None))), record
+
+    def test_receipt_records_model_and_usage_for_each_harness(self):
+        unrecorded = "未记录"
+        cases = (
+            ("codex", "codex.jsonl", "gpt-x", "gpt-x", dict(input=315, cache_read=24448, cache_write=unrecorded, output=122)),
+            ("claude", "claude.jsonl", None, "claude-sonnet-5-5", dict(input=12, cache_read=51000, cache_write=3400, output=820)),
+            ("kimi", "kimi.jsonl", None, "kimi-k2", dict(input=900, cache_read=700, cache_write=50, output=120)),
+            ("agy", "agy.jsonl", None, "gemini-3-pro", dict(input=1500, cache_read=1000, cache_write=0, output=300)),
+            ("dsh", "dsh.jsonl", None, "deepseek-v4", dict(input=500, cache_read=1500, cache_write=unrecorded, output=250)),
+        )
+        for kind, fixture, requested, model, usage in cases:
+            with self.subTest(kind):
+                receipt, _ = self.replayed_receipt(kind, fixture, requested)
+                self.assertEqual((receipt["model"], receipt["usage"]), (model, usage))
+
+    def test_harness_output_model_wins_over_dispatch_parameter(self):
+        receipt, _ = self.replayed_receipt("claude", "claude.jsonl", "requested-model")
+        self.assertEqual(receipt["model"], "claude-sonnet-5-5")
+
+    def test_missing_or_broken_usage_is_unrecorded_and_dispatch_completes(self):
+        for kind, fixture, requested, model in (("claude", "claude-truncated.jsonl", None, "claude-sonnet-5-5"),
+                                                ("codex", "codex-nousage.jsonl", "gpt-x", "gpt-x"),
+                                                ("codex", "codex-nousage.jsonl", None, "未记录")):
+            with self.subTest(fixture=fixture, requested=requested):
+                receipt, _ = self.replayed_receipt(kind, fixture, requested)
+                self.assertEqual((receipt["execution_state"], receipt["model"], receipt["usage"]),
+                                 ("done", model, "未记录"))
+
+    def test_command_job_without_harness_is_unrecorded(self):
+        record = self.dispatch()
+        self.remote_head(record)
+        receipt = rd.collect_result(self.cfg, record, dict(state="done", round="1", exit="0"))
+        self.assertEqual((receipt["model"], receipt["usage"]), ("未记录", "未记录"))
+
+    def test_status_json_shows_model_and_usage_and_legacy_records_unrecorded(self):
+        _, record = self.replayed_receipt("claude", "claude.jsonl")
+        rd.collect_result(self.cfg, record, dict(state="done", round="1", exit="0"))
+        row = self.queried_job(record["job"])
+        self.assertEqual((row["model"], row["usage"]["cache_read"]), ("claude-sonnet-5-5", 51000))
+        legacy = self.dispatch(name="legacy")
+        row = self.queried_job(legacy["job"])
+        self.assertEqual((row["model"], row["usage"]), ("未记录", "未记录"))
+
+    def test_run_without_initiator_session_warns_on_stderr_but_dispatches(self):
+        with self.initiator_context({}, CODEX_THREAD_ID="", CLAUDE_CODE_SESSION_ID="", DSH_SESSION_ID="",
+                                    ANTIGRAVITY_CONVERSATION_ID=""), \
+             contextlib.redirect_stderr(io.StringIO()) as warning:
+            record = self.dispatch()
+        self.assertIsNone(record.get("initiator_session"))
+        self.assertIn("发起会话", warning.getvalue())
+
+    def test_run_with_initiator_session_does_not_warn(self):
+        with contextlib.redirect_stderr(io.StringIO()) as warning:
+            self.dispatch(initiator_session="sender")
+        self.assertNotIn("发起会话", warning.getvalue())
 
     def test_clean_expired_reclaims_command_jobs_once_acknowledged(self):
         record = self.dispatch()
@@ -1115,10 +1241,315 @@ class DispatchTests(unittest.TestCase):
         self.assertTrue((self.worker / "wt" / record["job"]).exists())
         self.assertIn("cleaned ", self.capture(rd.cmd_clean, self.bulk_args(into=record["base"])))
 
+    def verdict(self, record, **overrides):
+        """dry-run --json 的单个派单判定。"""
+        overrides = dict(dict(dry_run=True, json=True), **overrides)
+        mode = dict(merged=False, expired=True) if overrides.pop("expired", False) else {}
+        with patch.object(rd, "disk_low", return_value=False):
+            rows = json.loads(self.capture(rd.cmd_clean, self.bulk_args(**mode, **overrides)))
+        return {row["job"]: row for row in rows}[record["job"]]
+
+    def test_clean_dry_run_json_reports_ready_job_as_ok_and_text_has_code(self):
+        record = self.dispatch()
+        self.remote_head(record)
+        self.acknowledge(record)
+        row = self.verdict(record)
+        self.assertEqual((row["reclaimable"], row["code"]), (True, "ok"))
+        text = self.capture(rd.cmd_clean, self.bulk_args(dry_run=True))
+        self.assertIn(f"would clean {record['job']} [ok]", text)
+        self.assertTrue(Path(rd.job_path(record["job"])).exists())
+
+    def test_clean_json_requires_dry_run(self):
+        with self.assertRaises(SystemExit):
+            rd.cmd_clean(self.bulk_args(json=True), self.cfg)
+
+    def test_clean_dry_run_json_state_blocks(self):
+        record = self.dispatch()
+        self.remote_head(record)
+        self.acknowledge(record)
+        for state, dispatch_state, code in (
+            ("running", "started", "running"),
+            ("starting", "started", "preparing"),
+            ("unreachable", "started", "unreachable"),
+            ("unknown", "started", "not_finished"),
+        ):
+            with self.subTest(code=code):
+                record["dispatch_state"] = dispatch_state
+                rd.save_job(record)
+                with patch.object(rd, "job_states", return_value={record["job"]: {"state": state}}):
+                    row = self.verdict(record)
+                self.assertEqual((row["reclaimable"], row["code"]), (False, code))
+                with patch.object(rd, "job_states", return_value={record["job"]: {"state": state}}):
+                    text = self.capture(rd.cmd_clean, self.bulk_args(dry_run=True))
+                self.assertIn(f"skip {record['job']} [{code}]", text)
+
+    def test_clean_dry_run_json_worktree_and_merge_blocks(self):
+        record = self.dispatch()
+        self.remote_head(record, commit=True)
+        self.acknowledge(record)
+        self.assertEqual(self.verdict(record)["code"], "not_fetched")
+        self.remote_head(record, fetch=True)
+        self.assertEqual(self.verdict(record)["code"], "not_merged")
+        missing_ref = record["source_branch"] + "-" + record["job"]
+        self.assertEqual(self.verdict(record, into=missing_ref)["code"], "ref_invalid")
+        with patch.object(rd, "worktree_changes", side_effect=ValueError("无法核验 worktree")):
+            self.assertEqual(self.verdict(record)["code"], "unverifiable")
+        legacy = dict(record)
+        legacy.pop("source_branch")
+        rd.save_job(legacy)
+        self.assertEqual(self.verdict(record)["code"], "into_required")
+
+    def test_clean_dry_run_json_receipt_dirty_and_source_missing_blocks(self):
+        record = self.dispatch(include=["tracked.txt"])
+        self.remote_head(record)
+        self.assertEqual(self.verdict(record)["code"], "receipt_pending")
+        self.acknowledge(record)
+        wt = self.worker / "wt" / record["job"]
+        (wt / "stray.txt").write_text("outside include")
+        self.assertEqual(self.verdict(record)["code"], "uncommitted")
+        (wt / "stray.txt").unlink()
+        gone = dict(record, repo=str(self.root / "deleted-repo"))
+        rd.save_job(gone)
+        row = self.verdict(record, dir=None, project=record["project"])
+        self.assertEqual((row["reclaimable"], row["code"]), (False, "needs_confirmation"))
+        self.assertIn("bare", row["reason"])
+
+    def delete_source(self, record):
+        """模拟源仓库被删除：登记改指向不存在的目录。"""
+        rd.save_job(dict(record, repo=str(self.root / "deleted-repo")))
+
+    def single_clean(self, record, stdin=None, **overrides):
+        """单个 clean（不带 --force）；stdin 为 None 表示非终端。"""
+        values = dict(job=record["job"], force=False, delete_branch=False, discard_reports=False, initiator_session=None)
+        values.update(overrides)
+        fake = MagicMock()
+        fake.isatty.return_value = stdin is not None
+        with patch.object(sys, "stdin", fake), patch("builtins.input", return_value=stdin or ""):
+            rd.cmd_clean(argparse.Namespace(**values), self.cfg)
+
+    def test_source_missing_reports_bare_check_and_non_tty_refuses_with_exit_4(self):
+        record = self.dispatch()
+        head = self.remote_head(record, commit=True, fetch=True)
+        self.acknowledge(record)
+        self.delete_source(record)
+        errors = io.StringIO()
+        with contextlib.redirect_stderr(errors), self.assertRaises(SystemExit) as raised:
+            self.single_clean(record)
+        self.assertEqual(raised.exception.code, 4)
+        self.assertIn("bare", errors.getvalue())
+        self.assertIn(head[:12], errors.getvalue())
+        self.assertTrue(os.path.exists(rd.job_path(record["job"])))
+
+    def test_source_missing_clean_requires_confirmation_then_reclaims(self):
+        record = self.dispatch()
+        self.remote_head(record, commit=True, fetch=True)
+        self.acknowledge(record)
+        self.delete_source(record)
+        with self.assertRaises(SystemExit):
+            self.single_clean(record, stdin="n")
+        self.assertTrue(os.path.exists(rd.job_path(record["job"])))
+        self.assertTrue((self.worker / "wt" / record["job"]).exists())
+        output = self.capture(lambda a, c: self.single_clean(record, stdin="y"), None)
+        self.assertIn("cleaned", output)
+        self.assertFalse(os.path.exists(rd.job_path(record["job"])))
+
+    def test_source_missing_force_prints_bare_check_and_reclaims(self):
+        record = self.dispatch()
+        self.remote_head(record, commit=True)
+        self.acknowledge(record)
+        self.delete_source(record)
+        output = self.capture(lambda a, c: self.single_clean(record, force=True), None)
+        self.assertIn("bare", output)
+        self.assertIn("cleaned", output)
+
+    def test_source_missing_check_says_when_commit_is_on_no_bare_branch(self):
+        record = self.dispatch()
+        self.remote_head(record)
+        self.acknowledge(record)
+        wt = self.worker / "wt" / record["job"]
+        native.git(wt, "checkout", "-q", "--detach")
+        (wt / "x.txt").write_text("x")
+        native.git(wt, "add", "x.txt")
+        native.git(wt, "-c", "user.name=F", "-c", "user.email=f@example.invalid", "commit", "-qm", "detached")
+        self.delete_source(record)
+        row = self.verdict(record, dir=None, project=record["project"])
+        self.assertEqual(row["code"], "needs_confirmation")
+        self.assertIn("不在任何分支上", row["reason"])
+
+    def test_inbox_orphans_lists_only_own_user_jobs_without_initiator_session(self):
+        orphan = self.dispatch()
+        rd.save_job(dict(orphan, initiator_session=None))
+        owned = self.dispatch(initiator_session="sender")
+        foreign = self.dispatch()
+        rd.save_job(dict(foreign, user_id="employee_b", initiator_session=None))
+        self.remote_head(orphan)
+        args = argparse.Namespace(initiator_session=None, orphans=True, json=True)
+        rows = json.loads(self.capture(rd.cmd_inbox, args))
+        self.assertEqual([r["job"] for r in rows], [orphan["job"]])
+        self.assertEqual(rows[0]["pending_receipts"][0]["round"], 1)
+        self.assertNotIn(owned["job"], [r["job"] for r in rows])
+        text = self.capture(rd.cmd_inbox, argparse.Namespace(initiator_session=None, orphans=True, json=False))
+        self.assertIn(orphan["job"], text)
+        self.assertNotIn(owned["job"], text)
+
+    def test_clean_dry_run_json_expired_pinned_and_retention_blocks(self):
+        record = self.agent_job(self.dispatch())
+        self.remote_head(record, commit=True, fetch=True)
+        self.acknowledge(record)
+        self.age_ack(record, 1)
+        self.assertEqual(self.verdict(record, expired=True)["code"], "retention_not_expired")
+        rd.cmd_keep(argparse.Namespace(job=record["job"], hours=2), self.cfg)
+        self.assertEqual(self.verdict(record, expired=True)["code"], "pinned")
+        rd.cmd_keep(argparse.Namespace(job=record["job"], hours=0), self.cfg)
+        self.age_ack(record, 30 * 24)
+        row = self.verdict(record, expired=True)
+        self.assertEqual((row["reclaimable"], row["code"]), (True, "ok"))
+
     def test_bulk_cli_rejects_unsafe_combinations(self):
         for option in (dict(force=True), dict(delete_branch=True), dict(discard_reports=True), dict(job="fixture-job")):
             with self.subTest(option=option), self.assertRaises(SystemExit):
                 rd.cmd_clean(self.bulk_args(**option), self.cfg)
+
+    def run_scripts(self, user, cache_dirs):
+        """派单并返回控制端生成的运行脚本文本；其余路径照常执行。"""
+        self.cfg.cp.set("host:fixture", "cache_dirs", cache_dirs)
+        scripts = []
+        def launch(host, rec, round_no, *args):
+            scripts.append(rd.build_run_script(host, rec, round_no, 10))
+            return self.finish(host, rec, round_no, *args)
+        with patch.dict(os.environ, {"RD_USER_ID": user}), patch.object(rd, "launch", side_effect=launch):
+            self.dispatch(name="cache-" + user)
+        return scripts[0]
+
+    def test_cache_dirs_are_injected_per_user_outside_worktrees(self):
+        declared = "CARGO_HOME=cargo;PIP_CACHE_DIR=pip/cache"
+        script_a = self.run_scripts("employee_a", declared)
+        script_b = self.run_scripts("employee_b", declared)
+        for script in (script_a, script_b):
+            self.assertIn('export CARGO_HOME="$ROOT"/cache/cargo;', script)
+            self.assertIn('export PIP_CACHE_DIR="$ROOT"/cache/pip/cache;', script)
+        # ROOT 是用户 ID 级根目录，各用户目录不同；worktree 在 $ROOT/wt 下，缓存不在其中。
+        self.assertIn(f"ROOT={self.root}/worker/users/employee_a\n", script_a)
+        self.assertIn(f"ROOT={self.root}/worker/users/employee_b\n", script_b)
+
+    def test_absolute_cache_dir_expands_user_id(self):
+        script = self.run_scripts("employee_b", "CARGO_HOME=/var/cache/rd/{user}/cargo")
+        self.assertIn("export CARGO_HOME=/var/cache/rd/employee_b/cargo;", script)
+
+    def test_without_cache_dirs_the_script_has_no_injection(self):
+        script = self.run_scripts("employee_a", "")
+        self.assertNotIn("/cache/", script)
+        self.assertNotIn("export CARGO_HOME", script)
+
+    def test_cache_dir_inside_a_worktree_is_rejected_at_config_load(self):
+        worker = self.root / "worker"
+        for declared in (f"CARGO_HOME={worker}/users/{{user}}/wt/job/cargo", f"CARGO_HOME={worker}/wt/x/{{user}}",
+                         "CARGO_HOME=../wt/x", "CARGO_HOME=/var/cache/shared", "BAD NAME=x"):
+            with self.subTest(declared=declared):
+                self.cfg.cp.set("host:fixture", "cache_dirs", declared)
+                with self.assertRaises(SystemExit) as stopped:
+                    self.cfg.host("fixture")
+                self.assertEqual(stopped.exception.code, 4)
+
+    def test_windows_launch_spec_carries_cache_dirs_per_user(self):
+        self.cfg.cp.set("host:fixture", "platform", "windows")
+        self.cfg.cp.set("host:fixture", "cache_dirs", "CARGO_HOME=cargo;PIP_CACHE_DIR=D:\\caches\\{user}\\pip")
+        specs = []
+        original = self.local_rpc
+        def rpc(host, operation, data=None, **kwargs):
+            if operation == "launch":
+                specs.append(data["spec"])
+                return None
+            return original(host, operation, data, **kwargs)
+        with patch.object(rd, "launch", side_effect=self.real_launch), patch.object(native, "request", side_effect=rpc):
+            self.dispatch(name="cache-windows")
+        env = specs[0]["cache_env"]
+        self.assertEqual(env["PIP_CACHE_DIR"], "D:\\caches\\employee_a\\pip")
+        self.assertTrue(env["CARGO_HOME"].replace("\\", "/").endswith("/users/employee_a/cache/cargo"), env)
+
+
+class GateTests(unittest.TestCase):
+    """gate 子命令：CLI 接缝；探针与回执历史以真实文件和打桩探针提供。"""
+
+    def setUp(self):
+        # 复用 DispatchTests 的临时仓库与本机 shell 夹具；组合而非继承，避免重复运行其用例。
+        self.d = DispatchTests("test_full_flag_queues_through_rd_heavy")
+        self.d.setUp()
+        self.addCleanup(self.d.doCleanups)
+        self.root, self.repo, self.base = self.d.root, self.d.repo, self.d.base
+        self.dispatch, self.capture = self.d.dispatch, self.d.capture
+        for name in ("slow", "fast", "mid"):
+            with open(rd.CONFIG, "a") as stream:
+                stream.write(f"\n[host:{name}]\nssh={name}.invalid\nworkdir={self.root / name}\nsync=direct\n"
+                             f"path={os.environ['PATH']}\n")
+        self.d.configure_project(test_quick="echo quick", test_full="echo full")
+        self.busy = set()
+        self.probed = []
+
+    def probe(self, host):
+        self.probed.append(host["name"])
+        return dict(reachable=True, memfree="80", disk="100", load1="0.1", ncpu="8",
+                    heavy="1" if host["name"] in self.busy else "0")
+
+    def history(self, **seconds):
+        for name, body in seconds.items():
+            rec = self.dispatch(project="app", cmd=None, test_full=True, host=name, name="old-" + name)
+            path = Path(rd.STATE) / "results" / rec["job"] / "r1.json"
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(json.dumps(dict(host=name, report=dict(body_seconds=body, executor_exit=0))))
+
+    def gate(self, **kwargs):
+        values = dict(dir=str(self.repo), ref="baseline", host=None, project="app", timeout=15, initiator_session=None,
+                      force_host=False, tag=[], include=[], name=None, branch=None, wip=False)
+        values.update(kwargs)
+        before = {r["job"] for r in rd.all_jobs()}
+        with patch.object(rd, "probe", side_effect=self.probe):
+            output = self.d.capture(rd.cmd_gate, argparse.Namespace(**values))
+        jobs = [r for r in rd.all_jobs() if r["job"] not in before]
+        return output, (jobs[0] if jobs else None)
+
+    def test_fastest_idle_host_with_history_is_chosen_and_explained(self):
+        self.history(slow=900, fast=300, mid=600)
+        output, rec = self.gate()
+        self.assertEqual(rec["host"], "fast")
+        self.assertIn("fast", output)
+        self.assertIn("300", output)
+
+    def test_gate_job_is_full_heavy_test_marked_with_commit(self):
+        self.history(fast=300)
+        _, rec = self.gate()
+        self.assertEqual((rec["cmd"], rec["heavy"], rec["test_tier"]), ("echo full", True, "full"))
+        self.assertEqual(rec["gate"], {"ref": "baseline", "commit": self.base})
+        receipt = rd.queries(self.d.cfg).result(rec, 1, dict(state="done", exit=0, round=1))
+        self.assertEqual(receipt["gate"], {"ref": "baseline", "commit": self.base})
+
+    def test_without_history_uses_default_host(self):
+        with open(rd.CONFIG, "a") as stream:
+            stream.write("\n[defaults]\nhost=mid\n")
+        self.d.cfg = rd.Config()
+        output, rec = self.gate()
+        self.assertEqual(rec["host"], "mid")
+        self.assertIn("无数据，用默认目标机", output)
+
+    def test_fastest_host_without_free_heavy_slot_falls_to_next(self):
+        self.history(slow=900, fast=300, mid=600)
+        self.busy.add("fast")
+        _, rec = self.gate()
+        self.assertEqual(rec["host"], "mid")
+
+    def test_quick_tier_history_is_ignored(self):
+        quick = self.dispatch(project="app", cmd=None, test=True, host="fast", name="quick")
+        path = Path(rd.STATE) / "results" / quick["job"] / "r1.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(dict(host="fast", report=dict(body_seconds=1, executor_exit=0))))
+        self.history(slow=900)
+        _, rec = self.gate()
+        self.assertEqual(rec["host"], "slow")
+
+    def test_host_flag_overrides_selection(self):
+        self.history(fast=300)
+        _, rec = self.gate(host="slow")
+        self.assertEqual(rec["host"], "slow")
 
 
 if __name__ == "__main__":

@@ -40,6 +40,10 @@
   票 59 追加 `last_seen_at`：后台最近一次成功探测的控制端时间（带时区 ISO 8601），
   在线时每次成功探测刷新；离线、冷启动时保留持久记录，从未成功则为 null。
   `hosts-offline.json` 展示离线仍保留时间。查询不探测，单纯时间刷新不发事件。
+- `board.json`：`GET /v1/board?all=1`（该用户全部派单）或 `?initiator_session=<会话>`（单个发起会话），
+  二者都缺返回 400。结构与 `rdispatch board --json` 相同：`summary`（已派、运行中、待派、阻塞）与逐派单 `rows`，另有 `reclaim_plan`（serve 定时回收的计划与结果，未启用为 null）；
+  老记录缺的 `harness`、`model`、`created`、`elapsed_seconds` 为「未记录」；`regenerable_kb`（路径到 KB 大小）仅在有记录时出现。
+  只读本地快照，不探测目标机；`reclaim_block` 只含不连目标机可判的原因，合入与未提交检查仍由 `clean` 给出。
 - `jobs.json`：卡片列表，只含当前用户和没有用户字段的旧记录，跨发起会话。
   卡片与详情各轮可选 `snapshot_at` 是后台执行快照的控制端采集时间；
   冷启动回退本地回执时取 `captured_at`，未知为 null。
@@ -114,6 +118,10 @@
   明确验收通过的累计轮次数；`project.changed` 的统计变体另带 `host/accepted_round_count`。
   机器迁移前的轮次按回执目标机归属。App 同步契约时保留可选字段兼容。
 
+- `write-runs-suggestion.json`：`POST /v1/runs` 带 `plan_item` 且有工作线建议时的两步派单第一步，
+  返回 200 `{suggestion}`（内容同 `rdispatch suggest --json`），此时不派单。App 确认后用新幂等键
+  再 POST 同一请求体并加 `suggestion`，成功返回 201 `job, round, line`；详情见 `docs/serve.md`。
+  样例由 `tests/test_rd_serve_writes.py` 经真实 serve 校验结构。
 - `write-idempotency-reused.json` / `network-idempotency-reused.json`：同调用方的幂等键
   先执行可选 `previous_request`，再执行同键的 `request`；幂等键
   已绑定其他方法、路径或规范 JSON 请求体时返回 422 `idempotency_key_reused`，不执行动作。
@@ -126,6 +134,9 @@
   清除样例先执行 `previous_request`；详情见 `docs/session-dispatch-defaults.md`。
   票 59 的 GET 增加 `config: {host, harness}`，只读当前 `[defaults]` 配置，
   不受会话覆盖影响；host 缺省为 auto，harness 未配置为 null。PUT 和事件结构保持不变。
+  票 15 在 `config` 只读追加 `dispatch_mode`（`suggest` / `line` / `ticket`，缺省 `suggest`）。
+  会话级派单模式用独立接口 `GET/PUT /v1/sessions/{窗格ID}/dispatch-mode`，体为
+  `{dispatch_mode}`；整体替换 `dispatch-defaults` 不会清掉它。
 
 - 票 57：`projects-summary.json` / `projects-summary-breakdown.json` 固定
   `blocked_count/offline_count/failed_count`，总字段 `needs_attention_count` 等于三项之和。

@@ -13,6 +13,8 @@ from tests import test_rd_serve as serve
 
 
 class DefaultsTests(unittest.TestCase):
+    snapshot = serve.ServeTests.snapshot
+    quiet_snapshot = serve.ServeTests.quiet_snapshot
     setUp = sessions.SessionTests.setUp
     agent = sessions.SessionTests.agent
     save_fixture = sessions.SessionTests.save_fixture
@@ -34,9 +36,9 @@ class DefaultsTests(unittest.TestCase):
         self.command('session-one', '--host', 'session-target', '--harness', 'codex')
         path = '/v1/sessions/w1:p1/dispatch-defaults'
         for settings, expected in (
-            ('', dict(host='auto', harness=None)),
-            ('[defaults]\nharness=claude\n', dict(host='auto', harness='claude')),
-            ('[defaults]\nhost=config-target\nharness=dsh\n', dict(host='config-target', harness='dsh')),
+            ('', dict(host='auto', harness=None, dispatch_mode='suggest')),
+            ('[defaults]\nharness=claude\n', dict(host='auto', harness='claude', dispatch_mode='suggest')),
+            ('[defaults]\nhost=config-target\nharness=dsh\n', dict(host='config-target', harness='dsh', dispatch_mode='suggest')),
         ):
             with self.subTest(settings=settings):
                 self.config.write_text(settings)
@@ -55,7 +57,7 @@ class DefaultsTests(unittest.TestCase):
                                        key + '=' + marker + '\n')
                 status, body = self.request('/v1/sessions/w1:p1/dispatch-defaults')
                 self.assertEqual(status, 200)
-                self.assertEqual(body['config'], dict(host='target-[redacted]', harness='codex'))
+                self.assertEqual(body['config'], dict(host='target-[redacted]', harness='codex', dispatch_mode='suggest'))
                 self.assertEqual(body['host'], 'session-[redacted]')
                 self.assertNotIn(marker, json.dumps(body))
 
@@ -85,7 +87,7 @@ class DefaultsTests(unittest.TestCase):
         self.start(poll_interval=3600)
         path = '/v1/sessions/w1:p1/dispatch-defaults'
         self.assertEqual(self.request(path), (200, dict(host=None, harness=None,
-                         config=dict(host='auto', harness=None))))
+                         config=dict(host='auto', harness=None, dispatch_mode='suggest'))))
         body = json.dumps({'host': 'target', 'harness': 'codex'})
         headers = {'Content-Type': 'application/json', 'Idempotency-Key': 'default-one'}
         self.assertEqual(self.request(path, 'PUT', body, {'Content-Type': 'application/json'})[0], 400)
@@ -101,7 +103,57 @@ class DefaultsTests(unittest.TestCase):
         self.assertEqual(self.request(path, 'PUT', '{"host": null, "harness": null}', headers),
                          (200, {'host': None, 'harness': None}))
         self.assertEqual(self.request(path), (200, dict(host=None, harness=None,
-                         config=dict(host='auto', harness=None))))
+                         config=dict(host='auto', harness=None, dispatch_mode='suggest'))))
+
+    def test_dispatch_mode_is_stored_independently_and_survives_whole_replacement(self):
+        self.saved_session()
+        self.start(poll_interval=3600)
+        mode_path = '/v1/sessions/w1:p1/dispatch-mode'
+        path = '/v1/sessions/w1:p1/dispatch-defaults'
+        headers = {'Content-Type': 'application/json', 'Idempotency-Key': 'mode-one'}
+        self.assertEqual(self.request(mode_path), (200, dict(dispatch_mode=None,
+                         config=dict(dispatch_mode='suggest'))))
+        self.assertEqual(self.request(mode_path, 'PUT', '{"dispatch_mode": "line"}', headers),
+                         (200, dict(dispatch_mode='line')))
+        self.assertEqual(self.request(mode_path, 'PUT', '{"dispatch_mode": "line"}', headers),
+                         (200, dict(dispatch_mode='line')))
+        self.assertEqual(self.request(mode_path)[1]['dispatch_mode'], 'line')
+        # 老客户端整体替换 host/harness，dispatch_mode 保持。
+        replace = {'Content-Type': 'application/json', 'Idempotency-Key': 'replace-one'}
+        self.assertEqual(self.request(path, 'PUT', '{"host": "t", "harness": "codex"}', replace),
+                         (200, dict(host='t', harness='codex')))
+        self.assertEqual(self.request(mode_path)[1]['dispatch_mode'], 'line')
+        self.assertEqual(self.command('session-one', '--host', 'x')['dispatch_mode'], 'line')
+        # 读取接口的 config 只读带 dispatch_mode。
+        self.config.write_text('[defaults]\ndispatch_mode=ticket\n')
+        status, body = self.request(path)
+        self.assertEqual(body['config']['dispatch_mode'], 'ticket')
+        self.assertNotIn('dispatch_mode', {k for k in body if k != 'config'})
+        # 非法取值与多余字段被拒绝，不写状态。
+        bad = dict(headers, **{'Idempotency-Key': 'mode-bad'})
+        for raw in ('{"dispatch_mode": "bogus"}', '{"host": "x"}'):
+            self.assertEqual(self.request(mode_path, 'PUT', raw, bad)[0], 400)
+        self.assertEqual(self.request(path, 'PUT', '{"dispatch_mode": "line"}', dict(bad, **{'Idempotency-Key': 'x2'}))[0], 400)
+        self.assertEqual(self.request(mode_path)[1]['dispatch_mode'], 'line')
+        clear = dict(headers, **{'Idempotency-Key': 'mode-clear'})
+        self.assertEqual(self.request(mode_path, 'PUT', '{"dispatch_mode": null}', clear),
+                         (200, dict(dispatch_mode=None)))
+
+    def test_cli_dispatch_mode_sets_clears_and_rejects_invalid_values(self):
+        self.assertEqual(self.command('one', '--dispatch-mode', 'ticket'),
+                         {'host': None, 'harness': None, 'dispatch_mode': 'ticket'})
+        self.assertEqual(self.command('one', '--host', 'h'),
+                         {'host': 'h', 'harness': None, 'dispatch_mode': 'ticket'})
+        self.assertEqual(self.command('one', '--clear'),
+                         {'host': None, 'harness': None, 'dispatch_mode': 'ticket'})
+        self.assertEqual(self.command('one', '--clear-dispatch-mode'),
+                         {'host': None, 'harness': None, 'dispatch_mode': None})
+        self.assertEqual(self.command('one'), {'host': None, 'harness': None})
+        errors = io.StringIO()
+        with contextlib.redirect_stderr(errors), self.assertRaises(SystemExit) as result:
+            self.command('one', '--dispatch-mode', 'bogus')
+        self.assertEqual(result.exception.code, 4)
+        self.assertEqual(self.command('one'), {'host': None, 'harness': None})
 
     def test_closed_defaults_survive_restart_until_thirty_days_after_observed_close(self):
         from remote_dispatch import rd_messages
@@ -155,7 +207,7 @@ class DefaultsTests(unittest.TestCase):
         self.assertEqual(first, (200, {'host': 'target', 'harness': None}))
         self.data['agents'] = []
         self.save_fixture()
-        before = serve.ServeTests.snapshot(self)
+        before = serve.ServeTests.quiet_snapshot(self)
         self.assertEqual(self.request(path, 'PUT', '{"host":"target"}', headers), first)
         self.assertEqual(self.request(path, 'PUT', '{}', headers),
                          (422, {'error': {'reason': 'idempotency_key_reused'}}))
@@ -183,10 +235,10 @@ class DefaultsTests(unittest.TestCase):
         serialized = json.dumps([self.request('/v1/sessions/w1:p1/dispatch-defaults'),
                                  service.redact(rd_events.read_after(self.state, 0))])
         self.assertEqual(self.request('/v1/sessions/w1:p1/dispatch-defaults')[1]['config'],
-                         dict(host='auto', harness=None))
+                         dict(host='auto', harness=None, dispatch_mode='suggest'))
         for forbidden in ('PRIVATE_MARKER', 'auth_file', 'env_file', 'token'):
             self.assertNotIn(forbidden, serialized)
-        before = serve.ServeTests.snapshot(self)
+        before = serve.ServeTests.quiet_snapshot(self)
         self.request('/v1/sessions/w1:p1/dispatch-defaults')
         self.assertEqual(serve.ServeTests.snapshot(self), before)
 
@@ -209,7 +261,7 @@ class DefaultsTests(unittest.TestCase):
             headers['Idempotency-Key'] = 'invalid-' + str(number)
             self.assertEqual(self.request(path, 'PUT', json.dumps(body), headers)[0], 400)
         self.assertEqual(self.request(path)[1], dict(host='target', harness=None,
-                         config=dict(host='auto', harness=None)))
+                         config=dict(host='auto', harness=None, dispatch_mode='suggest')))
 
     def test_discovery_failure_does_not_start_retention_and_reopening_resets_close_time(self):
         from remote_dispatch import rd_messages
@@ -275,7 +327,7 @@ class DefaultsTests(unittest.TestCase):
         with patch.object(os, 'replace', side_effect=fail_events):
             self.assertEqual(self.request(path, 'PUT', '{"host":"target"}', headers)[0], 503)
         self.assertEqual(self.request(path)[1], dict(host=None, harness=None,
-                         config=dict(host='auto', harness=None)))
+                         config=dict(host='auto', harness=None, dispatch_mode='suggest')))
         self.assertFalse(any('dispatch_defaults' in event['data'] for event in rd_events.read_after(self.state, 0)))
         self.assertEqual(self.request(path, 'PUT', '{"host":"target"}', headers)[0], 200)
 
@@ -294,7 +346,7 @@ class DefaultsTests(unittest.TestCase):
         self.save_fixture()
         service.sessions.collect()
         self.assertEqual(self.request(path)[1], dict(host=None, harness=None,
-                         config=dict(host='auto', harness=None)))
+                         config=dict(host='auto', harness=None, dispatch_mode='suggest')))
         self.assertEqual(self.command('session-one')['host'], 'first')
         self.assertEqual(self.command('session-two')['host'], 'second')
 
@@ -363,6 +415,25 @@ class RunDefaultsTests(unittest.TestCase):
             self.assertEqual((harness_override['host'], harness_override['agent']), ('session-target', 'dsh'))
             command = self.dispatch(host=None, initiator_session='session-one')
             self.assertEqual((command['host'], command['agent'], command['cmd']), ('session-target', None, 'true'))
+
+    def test_dispatch_mode_priority_is_cli_then_session_then_configuration(self):
+        def resolved(**overrides):
+            args = self.args(initiator_session='session-one', **overrides)
+            self.cfg.cp['defaults'] = dict(self.cfg.cp['defaults'] if self.cfg.cp.has_section('defaults') else {})
+            self.dispatch_args = args
+            cli.cmd_run(args, self.cfg)
+            return args.dispatch_mode
+        self.assertEqual(resolved(), 'suggest')
+        self.cfg.cp['defaults'] = {'dispatch_mode': 'line'}
+        self.assertEqual(resolved(), 'line')
+        self.defaults('--dispatch-mode', 'ticket')
+        self.assertEqual(resolved(), 'ticket')
+        self.assertEqual(resolved(dispatch_mode='suggest'), 'suggest')
+        self.defaults('--clear-dispatch-mode')
+        self.assertEqual(resolved(), 'line')
+        errors = io.StringIO()
+        with contextlib.redirect_stderr(errors), self.assertRaises(ValueError):
+            resolved(dispatch_mode='bogus')
 
     def test_missing_session_uses_herdr_pane_and_unmatched_pane_reads_config(self):
         self.defaults('--host', 'missing-target')

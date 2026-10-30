@@ -30,6 +30,99 @@ harness = codex
 会话变量。ID 缺失时按 `HERDR_PANE_ID`（经 serve 转交时使用原始来源窗格）匹配。
 找不到唯一匹配时读配置。具备会话 ID 时不跨会话套用同窗格的旧记录。
 
+## 派单模式
+
+`dispatch_mode` 取值 `suggest`（默认）、`line`、`ticket`，优先级为命令行 `--dispatch-mode` >
+会话默认值 > `[defaults] dispatch_mode`。取值为 `line` 时的接线行为见下节；`suggest`、`ticket` 本版不接线。
+
+### 工作线接线（`line` 模式）
+
+`run --plan-item <新工作项>` 在 `line` 模式下判断能否接入前序派单所在的线（前序派单取 `--after`、待派登记里的 `after`
+与依赖工作项最后一个派单，必须唯一）。全部满足才接线，新工作项作为同一派单、worktree、分支的新轮次追加：
+
+- 前序派单有交接协议版本、属于同一用户 ID 与发起会话、worktree 在且不在运行，最新一轮已验收通过且回执有 `head`；
+- harness、模型、权限档位、`--include` 与线一致；不带 `--wip`；不指定 `--branch`，或等于线分支；`--host` 不指定或等于线所在目标机；
+- `[features] line` 未设为 false（已有线不受此项限制）。
+
+任一不满足，按默认方式派单并输出「工作线未接线：原因」。接线时打印线名、分支、权限档位和基线。
+同一线同一时间只有一个运行中的轮次，沿用派单级文件锁；锁被占用时退出码 4。
+派单记录的 `line` 字段含 `items`（工作项到轮次列表）、`bases`（工作项开始时的基线）与 `current`；
+`RD_BASE` 在线上取所属工作项的基线（上一个工作项验收轮回执的 `head`），第一个工作项仍取派单基线。
+打回只续跑当前工作项，新轮次记入同一工作项。
+
+### 会话轮换与交接包
+
+默认每个工作项换新会话：同一 worktree、新会话，提示词前附交接包（由 `rd_context_pack.build()` 拼装，与 `--context-from` 相同）。
+轮换在 `context_history` 里记 `reason: "policy"`；`--new-context` 的故障换新记 `reason: "context"`，换机记 `host_changed`。
+`--new-context` 的循环重建保护只看故障换新，策略轮换不触发它。
+策略轮换要求上一轮回执健康（没有 `runtime_failure`）；不健康时输出原因、不做策略轮换，按默认方式派出。
+
+按 harness 配置续用阈值，满足全部已配置阈值才续用当前会话，否则轮换：
+
+```ini
+[line:codex]
+reuse_max_context_tokens = 20000   ; 上一轮回执 rollout_calls 的单次调用平均输入 token 上限
+reuse_max_interval_seconds = 3600  ; 距上一轮最后回执确认的秒数上限
+```
+
+未配置任何阈值时总是轮换。配置了上下文阈值但回执没有 `rollout_calls`（需 `[features] rollout_stats = true`）时按轮换处理。
+会话策略集中在 `rd_line.session_policy`。判定集中在 `rd_line.decide`，由 `cli.line_wiring` 收集事实后调用，后续 `suggest` 复用。
+
+### `suggest` 与建议令牌
+
+`rdispatch suggest`（参数同 `run`，另有 `--json`）只读判断本工作项能否接线，退出码恒为 0。判断在生成派单 ID 和代理预检之前，
+条件为：严格接线条件（`rd_line.decide`，经 `cli.line_wiring`，不另写一份）、本链未拒绝过建议、前序派单所在目标机在线且可接单
+（只读探测）、integration 同步预检无冲突（见下）。不满足时输出原因，不生成令牌。
+
+满足时输出工作项顺序（已完成、本项、后续待派，按依赖拓扑排序）、线名、目标机、分支、权限档位、基线、不接受时的派法和令牌。
+令牌绑定建议内容指纹、用户 ID 和发起会话，30 分钟内单次有效，存于控制端 `state/suggest/<用户ID>/`。
+`cli.build_suggestion(cfg, args)` 返回 `suggest --json` 的结构，serve 可直接调用。
+
+- 接受：`run --line <线名> --accept <令牌>`；加 `--accept-chain` 同时记「本链后续工作项都接受」。接受时重算指纹，
+  过期、已用、内容变化、用户或会话不符一律退出码 4，不消耗令牌以外的状态。
+- 常驻同意：该线有常驻同意时，`run --line <线名>` 免令牌；每次仍校验严格接线条件，不满足就按默认方式派出并写明原因。
+  `--line` 既无有效令牌又无常驻同意，退出码 4。
+- 拒绝：`run --no-line` 按默认方式派出，只在待派登记里记「本链不再建议」和拒绝次数。
+- integration 同步：integration 新头取控制端解析的 `--ref`。它已是前序验收提交的祖先就不同步。否则控制端先取回前序提交，
+  再用 `git merge-tree --write-tree` 预检二者能否无冲突合并，结果写入建议的 `sync`（`needed`、`integration`、`from_head`、
+  `precheck`）并计入指纹；预检有冲突不给建议并列出冲突文件。不在目标机上试合并。接受即授权一次写操作：把新头推到目标机 bare
+  的 `refs/rd-sync/<派单>`，在 worktree 里合并（只在 worktree 停在验收提交且无跟踪文件改动时执行），新工作项基线取合并后的 head。
+  实际合并冲突时 `merge --abort`，worktree 回到合并前，按默认方式派出并写明原因。同步记录写入派单 `line.syncs`、
+  回执 `integration_sync` 和看板。Windows 目标机本版不同步。
+- 管理：`rdispatch plan chain <线名>` 查看；`--clear` 清除拒绝设置并恢复建议；`--revoke-accept` 撤销常驻同意。
+
+### 前缀合入与关闭线
+
+工作线只支持前缀合入。`rdispatch line prefix <派单> <工作项...>` 的工作项必须恰好是线上顺序的前 k 个（不跳项，
+也不接受未验收的工作项），否则退出码 4。第 k 个工作项取其最近一个验收轮回执的 `head`（需已 `fetch`），在该提交建本地分支
+`<线分支>-prefix-<k>`（`--branch` 可改名；同名分支指向别处时拒绝，不改写）。门禁直接对该分支执行：`rdispatch gate <前缀分支>`。
+
+中途前缀合入不把派单算作已合入：线关闭前，合入检查（`status --unmerged`、`clean --merged|--expired`）都带原因
+「工作线未关闭」，`clean --merged` 阻塞码为 `not_merged`。`rdispatch line close <派单>` 在线上没有运行中轮次时记
+`line.closed`，之后按正常合入判定与回收；有运行中轮次或目标机不可达时退出码 4。线关闭后不再接新工作项。
+新增逻辑在 `rd_line.py`（`prefix_items`、`accepted_round`、`close_blocker`、`merge_blocker`）。
+
+### 工作线生命周期
+
+- **停滞**：线上还有待派工作项（后续工作项仍引用该派单）时，最后一次推进（回执确认或新轮次）距今超过停滞天数，
+  或发起会话缺失，看板显示「停滞」并给出提醒（JSON 行字段 `stale`）。天数取 `RD_LINE_STALE_DAYS`，其次
+  `[line] stale_days`，默认 7；非法值退出码 4。继续无人处理（再过同样天数）后，`clean --expired` 不再因待派工作项保留，
+  按「已取回未合入」的保留期回收；未取回、未提交等安全条件照常拦截。
+- **残留可见**：每个新工作项接入前，记录 worktree 里的未跟踪文件清单（最多 50 条加总数），写入该工作项各轮回执的
+  `residue` 和看板行 `residue`，不删除。
+- **接手**：`rdispatch takeover JOB --initiator-session 新会话`。只对工作线放宽：同一用户 ID 的其他发起会话可以接手，
+  `line.handovers` 记录交接，发起会话改为新会话；跨用户 ID 或非工作线退出码 4。普通派单仍只允许原发起会话。
+- **换机**：`resume --host 新目标机` 沿用现有导出／导入，换新会话并把交接包（由 `rd_context_pack.build` 从前序回执拼装）
+  放在提示词前面；导出包含整个工作树，输出提示先用 `clean JOB --slim` 瘦身。
+
+```sh
+rdispatch session-default <会话> --dispatch-mode line
+rdispatch session-default <会话> --clear-dispatch-mode
+```
+
+`--clear` 只清 host、harness，不清派单模式。非法取值退出码 4。serve 在线时 CLI 写入按
+ADR 0003 转交 serve（单写入者）。
+
 ## serve 契约
 
 - `GET /v1/sessions/{Herdr窗格ID}/dispatch-defaults` 返回 `{host, harness, config: {host, harness}}`。
@@ -38,6 +131,10 @@ harness = codex
   未配置 harness（或空值）为 `null`，与 CLI 没有隐含默认 harness 的行为一致。
   配置中的其他字段不返回。服务启动后修改默认值，下次 GET 即可读到；查询不写状态。
   返回值按本次配置的敏感值脱敏；配置格式损坏时返回 503 `read_unavailable` 与中文错误信息。
+- `GET/PUT /v1/sessions/{Herdr窗格ID}/dispatch-mode`：会话级派单模式的独立接口，
+  体为 `{dispatch_mode}`（`null` 清除），响应 `{dispatch_mode, config: {dispatch_mode}}`（GET）。
+  `dispatch-defaults` 的 `config` 只读追加 `dispatch_mode`；其 PUT 只替换 host/harness，
+  不接受 `dispatch_mode`，也不会清掉已存的值。非法取值返回 400。
 - `PUT` 相同路径，要求 JSON 对象和 `Idempotency-Key`；完整替换两项，缺项或 `null`
   表示读配置。CLI 设置只更新指定项。
   PUT 在写入前重新发现窗格；窗格不存在或已关闭时返回 404 `session_closed`，

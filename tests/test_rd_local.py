@@ -489,7 +489,8 @@ class LocalTargetProfileSyncTest(unittest.TestCase):
         directory = Path(worker or self.worker) / "users" / "employee_a" / "jobs" / job
         deadline = time.time() + 30
         while time.time() < deadline:
-            if (directory / f"exit.r{round_no}").exists():
+            # exit.rN 先于 REPORT_FINISH 写入；exit_code 是 run 脚本的最后一步，两者都在才代表 runner 完全结束。
+            if (directory / f"exit.r{round_no}").exists() and (directory / "exit_code").exists():
                 return directory
             time.sleep(0.05)
         self.fail(f"任务第 {round_no} 轮未在 30 秒内结束：{directory}")

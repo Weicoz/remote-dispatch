@@ -1,5 +1,24 @@
 # 变更记录
 
+## 未发布
+
+- **工作线会话轮换**：工作线默认每个工作项换新会话，同一 worktree，提示词前附交接包（复用上下文包拼装）。上下文历史用 `reason: policy`（策略轮换）与 `context`（`--new-context` 故障换新）区分；循环重建保护只对故障换新生效。上一轮回执不健康时不做策略轮换并输出原因。可按 harness 在 `[line:<harness>]` 配置 `reuse_max_context_tokens`、`reuse_max_interval_seconds`，满足时续用当前会话。详见 `docs/session-dispatch-defaults.md`。
+- **工作线前缀合入与 `rdispatch line prefix|close`**：`line prefix <派单> <工作项...>` 在第 k 个工作项验收轮回执的 `head` 建前缀分支（只支持前 k 个，跳项或未验收退出码 4），可直接 `rdispatch gate <分支>`；线关闭前合入检查与 `clean --merged|--expired` 不把派单当作已合入；`line close` 在线上无运行中轮次时关闭线，之后按正常合入判定回收。详见 `docs/session-dispatch-defaults.md`。
+- **serve 定时回收**：`[features] scheduled_reclaim = true`（默认关闭）后，serve 每小时按目标机 `max_worktree_gb` 检查 worktree 总量，超限先瘦身、仍超限再按保留期从旧到新删除，删除只走统一回收判定、只处理当前用户 ID、离线目标机跳过；启用后前 7 天只出计划（起点持久化，重启不重计），计划与结果写入事件 `reclaim.planned` / `reclaim.result`，并显示在看板 `reclaim_plan`、`GET /v1/board` 和新增的 `GET /v1/reclaim`。详见 `docs/cache-retention.md`。
+- **工作线生命周期**：线上有待派工作项且无人推进超过 `RD_LINE_STALE_DAYS`／`[line] stale_days`（默认 7 天）或发起会话缺失时，看板显示「停滞」；再过同样天数 `clean --expired` 按已取回未合入的保留期回收。新工作项接入前记录 worktree 未跟踪文件清单，写入回执 `residue` 与看板，不删除。新增 `rdispatch takeover JOB`：同一用户 ID 的其他发起会话接手工作线并记录，跨用户 ID 与非工作线退出码 4。`resume --host` 换机时换新会话并附交接包，输出提示先瘦身。详见 `docs/session-dispatch-defaults.md`。
+- **看板 `rdispatch board`**：一屏显示已派、运行中、待派、阻塞四个数字，及每个派单的工作单元、目标机、harness 与模型、派出时刻、已运行时长、轮次、最新进度、状态、回收阻塞原因和可再生目录大小（有记录时）。默认当前发起会话，`--all` 为该用户全部派单；支持 `--json`。serve 新增只读 `GET /v1/board`，结构相同。不写状态。详见 `docs/board.md`。
+- **上下文包 `run --context-from <派单>`**（可重复，仅代理派单）：rdispatch 从前序派单最新验收轮（没有验收轮时取最新回执）的结构化数据拼装上下文包，放在提示词前面：回执摘要、提交列表、改动文件（取回后才有提交列表）、决策与未完成项（执行方用 `rd-report result --decision/--unfinished`（可重复）写入回执 `report.decisions`、`report.unfinished`，没有则省略）。不调用模型；约 4k token 上限，超出时按「摘要 > 未完成项 > 决策 > 提交 > 改动文件」截断并注明。前序派单不属于当前用户 ID 或没有回执时退出码 4。拼装与截断集中在 `rd_context_pack.build()`，工作线交接包复用它。
+- **工作线接线**：派单模式为 `line` 且带 `--plan-item` 时，前序工作项已验收、harness／模型／权限档位／`--include` 与线一致、不带 `--wip`、分支未指定或等于线分支，新工作项作为前序派单的新轮次追加（复用续跑路径），输出线名、分支、权限档位和基线；任一条件不满足按默认方式派出并写明原因。派单记录新增 `line`（工作项 → 轮次列表、各工作项基线）；`RD_BASE` 按工作项取上一个工作项验收轮回执的 `head`；打回只续跑当前工作项。`[features] line = false` 不接新线，已有线继续。本版会话沿用当前会话。详见 `docs/session-dispatch-defaults.md`。
+- **`suggest` 与建议令牌**：新增只读 `rdispatch suggest`（参数同 `run`，`--json` 输出结构化建议）。严格接线条件与前序目标机在线可接单都满足才建议，并发 30 分钟单次有效的令牌（绑定内容指纹、用户 ID、发起会话）。`run --line <线名> --accept <令牌>` 接受（`--accept-chain` 设常驻同意），`run --no-line` 拒绝并记「本链不再建议」，`plan chain <线名> --clear` 恢复；令牌无效或无令牌直接接线退出码 4。详见 `docs/session-dispatch-defaults.md`。
+- **接受建议时同步 integration 新头**：`suggest` 在控制端取回前序验收提交，用 `git merge-tree` 预检它与 integration 新头能否无冲突合并，把「需要同步」和预检结果写入建议；有冲突不建议。接受后把新头推到目标机 bare 并在 worktree 合并，结果写入派单 `line.syncs`、回执 `integration_sync` 和看板；实际合并冲突时中止、worktree 恢复，按默认方式派出。
+- **每轮记录 setup 与主体耗时**：回执 `report` 新增 `setup_seconds`、`body_seconds`（命令派单为命令耗时，`--test` 为测试耗时）；跳过 setup 时 `setup_seconds` 为 0 并带 `setup_note: 已跳过`；setup 失败只有 setup 耗时。POSIX 运行脚本与 Windows 原生 runner 都记录。新增 `rdispatch timings [--project] [--host] [--kind test|command|agent]` 与 `rd_timings.history()` 按项目、目标机查询已保存回执，供门禁选机使用。
+- **可选 rollout 增强**：`[features] rollout_stats = true` 时，Codex 轮次回执附 `rollout_calls`（逐次调用数与用量汇总）；默认关闭，读取失败只记「未记录」。
+- **回执记录实际模型与 token 用量**：回执和 `status --json` 新增 `model`（优先取 harness 输出，其次派单参数）与 `usage`（`input` 不含缓存、`cache_read`、`cache_write`、`output`）。Codex `--json`、Claude／Kimi／AGY `stream-json`、DSH `--json` 在 `rd_usage.py` 集中解析；没有用量或解析失败记「未记录」，老记录同样显示「未记录」。`status --json` 读取已收取的回执，未收取时显示「未记录」。
+- 派单缺发起会话时 stderr 输出警告，退出码不变。
+- **缓存目录**：目标机配置新增 `cache_dirs`，派单时注入各生态缓存目录的环境变量；目录按用户 ID 分开、放在 worktree 之外，落在 worktree 内的声明加载配置时报错。详见 `docs/worker-setup.md`。
+- **可再生子路径瘦身**：项目配置新增 `regenerable_paths`（如 `target; node_modules`），非法声明加载配置时报错；回执 `report.regenerable_kb` 记录各路径大小；新增 `rdispatch clean --slim [JOB]`，只删声明路径和 setup 完成标记，保留 worktree 与其余文件，续跑重新 setup。详见 `docs/worker-setup.md`。
+- **回收去阻塞**：已声明为 `regenerable_paths` 的未跟踪目录不再算「未提交内容」（已跟踪文件改动与未声明的未跟踪文件仍阻塞）；`clean --merged` / `--expired` 按项目 ID 选择当前用户的派单，从其他 worktree 派出的派单在主仓库也能回收。
+
 ## 0.3.1 — 2026-10-28
 
 - **新增 `rdispatch service`**：`install | uninstall | restart | status` 用用户级 LaunchAgent 托管常驻 serve，开机自启、崩溃拉起，日志写状态目录；`status` 报告 launchd 加载状态、进程、socket、包版本、合同版本与最近一次配置重载结果，支持 `--json`，未安装时非零退出并提示安装。只支持 macOS，详见 `docs/serve.md`。

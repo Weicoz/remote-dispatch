@@ -1,0 +1,3 @@
+{"type":"system","subtype":"init","session_id":"2f6c0a43-1f5e-4d6a-9d0e-5f5a3c1b7a10","model":"claude-sonnet-5-5","tools":["Bash"]}
+{"type":"assistant","message":{"model":"claude-sonnet-5-5","role":"assistant","content":[{"type":"text","text":"完成"}],"usage":{"input_tokens":3,"output_tokens":10}},"session_id":"2f6c0a43-1f5e-4d6a-9d0e-5f5a3c1b7a10"}
+{"type":"result","subtype":"success","is_error":false,"session_id":"2f6c0a43-1f5e-4d6a-9d0e-5f5a3c1b7a10","usage":{"input_tokens":12,"cache_creation_input_tokens":3400,"cache_read_input_tokens":51000,"output_tokens":820},"modelUsage":{"claude-sonnet-5-5":{"inputTokens":12,"outputTokens":820}}}

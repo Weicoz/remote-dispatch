@@ -110,6 +110,72 @@ def git(repo, *args, check=True):
     return result
 
 
+def tree_kb(path):
+    """目录占用（KB，向上取整）；不跟随符号链接，读不到的条目忽略。"""
+    total = 0
+    try:
+        if os.path.islink(path) or not os.path.isdir(path):
+            return (os.lstat(path).st_size + 1023) // 1024
+        for base, dirs, files in os.walk(path):
+            for name in files + dirs:
+                try:
+                    total += os.lstat(os.path.join(base, name)).st_size
+                except OSError:
+                    pass
+    except OSError:
+        return 0
+    return (total + 1023) // 1024
+
+
+def _remove_tree(path):
+    def writable(function, target, _error):
+        os.chmod(target, 0o700)
+        function(target)
+    shutil.rmtree(path, onerror=writable)
+
+
+def slim_job(root, job, paths, dry_run=False):
+    """删除 worktree 内声明的可再生子路径和 setup 完成标记；其余文件保留。
+
+    与 POSIX 瘦身脚本行为一致：符号链接只删链接；父目录越出 worktree 或含已跟踪文件的路径跳过。"""
+    wt = checked_path(root, "wt/" + job)
+    directory = checked_path(root, "jobs/" + job)
+    if not wt.is_dir():
+        raise ValueError("worktree 不存在，无法瘦身。")
+    wt_real = wt.resolve()
+    removed, skipped = [], []
+    for rel in paths:
+        parts = Path(rel).parts
+        if not parts or Path(rel).is_absolute() or ".." in parts or ".git" in parts:
+            skipped.append(dict(path=rel, reason="路径越出 worktree"))
+            continue
+        target = wt.joinpath(*parts)
+        if not os.path.lexists(target):
+            continue
+        try:
+            target.parent.resolve().relative_to(wt_real)
+        except ValueError:
+            skipped.append(dict(path=rel, reason="路径越出 worktree"))
+            continue
+        if git(wt, "ls-files", "--", rel, check=False).stdout.strip():
+            skipped.append(dict(path=rel, reason="含已跟踪文件"))
+            continue
+        kb = tree_kb(target)
+        if not dry_run:
+            try:
+                if target.is_symlink() or not target.is_dir():
+                    target.unlink()
+                else:
+                    _remove_tree(target)
+            except OSError as error:
+                skipped.append(dict(path=rel, reason="删除失败：" + str(error)))
+                continue
+        removed.append(dict(path=rel, kb=kb))
+    if not dry_run:
+        (directory / "setup.done").unlink(missing_ok=True)
+    return dict(removed=removed, skipped=skipped)
+
+
 def alive(pid):
     try:
         pid = int(pid)
@@ -362,20 +428,32 @@ def run_job(spec_file):
         if not isinstance(values, dict) or not all(isinstance(k, str) and isinstance(v, str) for k, v in values.items()):
             raise ValueError("Windows env_file 必须是字符串键值的 JSON 文件。")
         env.update(values)
+    for key, path in (spec.get("cache_env") or {}).items():
+        Path(path).mkdir(parents=True, exist_ok=True)
+        env[key] = path
     env.update(RD_USER_ID=spec["user_id"], RD_JOB=spec["job"], RD_WT=str(wt), RD_JOB_DIR=str(directory),
                RD_LOCK_DIR=spec["lock_dir"], RD_MAX_HEAVY=str(spec["max_heavy"]), RD_ROUND=str(spec["round"]),
                PATH=spec["bin"] + os.pathsep + env.get("PATH", ""))
+    if spec.get("base"):
+        env["RD_BASE"] = spec["base"]
     if spec.get("handoff_version"):
         env["RD_REPORTER"] = str(directory / "rd_messages.py")
+    if str(spec.get("rollout_stats", "0")).lower() in ("1", "true", "yes"):
+        os.environ["RD_ROLLOUT_STATS"] = "1"  # messages.finish 在本进程内读取
     os.chdir(wt)
     setup = directory / "setup.ps1"
+    timing = directory / ("timing.r" + str(spec["round"]))
     if setup.exists() and not (directory / "setup.done").exists():
+        began = time.monotonic()
         with (directory / "setup.log").open("wb") as output:
             result = subprocess.run(shell_command(setup.read_text(encoding="utf-8")), stdout=output, stderr=subprocess.STDOUT, env=env)
+        timing.write_text("setup_seconds=%d\n" % (time.monotonic() - began), encoding="utf-8")
         if result.returncode:
             (directory / "exit_code").write_text("97", encoding="utf-8")
             return
         (directory / "setup.done").touch()
+    else:
+        timing.write_text("setup_seconds=0\nsetup_note=已跳过\n", encoding="utf-8")
     runtime = None
     if spec.get("profile"):
         runtime = profiles.prepare_runtime(directory, spec["profile"], spec.get("auth_file", ""))
@@ -384,6 +462,7 @@ def run_job(spec_file):
     command = codex_command(spec, runtime, prompt) if runtime else shell_command(spec["cmd"])
     slot = heavy_slot(Path(spec["lock_dir"]), spec["max_heavy"]) if spec.get("heavy") else None
     rc = 98
+    began = time.monotonic()
     try:
         with (directory / ("stdout.r" + str(spec["round"]) + ".log")).open("wb") as output, (directory / ("stderr.r" + str(spec["round"]) + ".log")).open("wb") as error, prompt.open("rb") as incoming:
             child = subprocess.Popen(command, stdin=incoming if runtime else subprocess.DEVNULL, stdout=output, stderr=error,
@@ -396,6 +475,10 @@ def run_job(spec_file):
                 child.wait()
                 rc = 124
     finally:
+        with timing.open("a", encoding="utf-8") as stream:
+            stream.write("body_seconds=%d\n" % (time.monotonic() - began))
+            for rel in spec.get("regenerable_paths") or []:
+                stream.write("path_size_kb=%d\t%s\n" % (tree_kb(wt.joinpath(*Path(rel).parts)), rel))
         if slot:
             shutil.rmtree(slot)
         (directory / "head").write_text(git(wt, "rev-parse", "HEAD", check=False).stdout.strip(), encoding="utf-8")
@@ -579,6 +662,8 @@ def handle(q, incoming):
         if directory.exists():
             shutil.rmtree(directory)
         return None
+    if op == "slim":
+        return slim_job(root, q["job"], q["paths"], bool(q.get("dry_run")))
     if op == "stop":
         directory = checked_path(root, "jobs/" + q["job"])
         pid = directory / "pid"

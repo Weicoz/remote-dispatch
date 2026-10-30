@@ -1,6 +1,6 @@
 ---
 name: weicoz-remote-dispatch
-version: 1.4.0
+version: 1.5.0
 description: 把 Codex、DSH 或 AGY（Antigravity CLI）编码代理会话、测试和构建命令经 SSH 派到另一台机器，或在本机以独立 worktree 另起一个 harness 会话执行，本机只负责派单、看进度和取回提交。只在用户主动要求或明确授权把任务放到别的机器或另一个 harness 上跑时使用，例如“派到另一台机器／远端／mac mini／服务器上跑”“让别的机器跑测试”“用双机／多机跑”“本机派单给其他 harness”“remote dispatch”“rdispatch run”“rd run”，或要求添加、检查目标机器。用户没有要求也没有授权时不要使用：派代理、跑测试默认都在当前会话执行；本机负载高时可以建议派到远端，但要等用户同意。
 ---
 
@@ -137,6 +137,33 @@ rdispatch keep <job> --hours 48        # 明确还要续跑时钉住，--hours 0
 - **过期 worktree 要记得回收**：每次 `rdispatch ack` 收完结果、每次派新单前，在仓库目录跑一次 `rdispatch clean --expired`，把输出里的 clean / keep 各一行报给用户。它只回收同时满足安全条件与保留期的 worktree（命令任务确认即回收；代理任务已合入 24 小时、已取回未合入 7 天；目标机磁盘不足时收紧），不需要逐个确认。判断不了下一步会不会续跑时不要手动删，交给保留期；已经知道还要续跑就先 `rdispatch keep <job> --hours N`。保留期细节见 [缓存保留](https://github.com/Weicoz/remote-dispatch/blob/main/docs/cache-retention.md)。
 - **派单后立即挂巡检**：把 `rdispatch watch <job>` 放进后台作业。它默认 900 秒返回一次：退出码 2＝该报进度、1＝告警、0＝完成。收到 2 时读 `rdispatch status --details` 与 `rdispatch logs` 尾部，向用户报一行真实进展（阶段、文件数、提交、阻塞、执行机资源），再重挂下一次 watch；收到 0／1 时取回结果并验收。任务结束后终结巡检作业。没有定时唤醒能力时改用 `rdispatch wait` 加超时兜底作业，并如实说明边界。
 
+## 工作项、建议与看板
+
+术语见 [术语表](https://github.com/Weicoz/remote-dispatch/blob/main/docs/glossary.md)。
+
+```bash
+rdispatch plan add <工作项> --depends <工作项> --after <派单>   # 登记还没派出的工作项及依赖；另有 set/done/cancel/remove/list
+rdispatch suggest --plan-item <工作项> --agent codex --prompt-file task.md   # 只读：能否接入工作线，参数同 run
+rdispatch run --plan-item <工作项> --context-from <前序派单> --prompt-file task.md   # 默认方式，带上下文包
+rdispatch run --line <线名> --accept <令牌> --plan-item <工作项> --prompt-file task.md   # 接受建议（加 --accept-chain 本链后续都接受）
+rdispatch run --no-line --plan-item <工作项> --prompt-file task.md   # 拒绝建议，按默认方式派出
+rdispatch board                        # 派单数量、目标机、模型、时长、待派与阻塞
+rdispatch gate <ref> [--host H]        # 合入前门禁：对提交跑一次全量测试
+rdispatch inbox --orphans              # 没有发起会话的派单，集中签收
+rdispatch line prefix <job> <工作项...> [--branch B]   # 线上前 k 个工作项都已验收后，在验收轮 head 建前缀分支供先合入
+rdispatch line close <job>             # 关闭工作线；之后该派单按合入状态进入回收
+rdispatch takeover <job> --initiator-session <会话>    # 同一用户 ID 的其他会话接手工作线，写入交接记录
+rdispatch clean --slim [<job>] [--dry-run]   # 瘦身：只删可再生子路径，保留 worktree 与代码
+```
+
+- **派单前先调 `suggest`**：派单模式为 `suggest` 且用户在场时，每次派新工作项前先跑 `rdispatch suggest`（参数同 `run`）。有建议就原文转告用户（线名、目标机、分支、权限档位、令牌），用户接受才用 `--line --accept` 派；用户拒绝用 `--no-line`。不得代用户接受。
+- **无人值守**：用户不在场时不调 `suggest` 等人，按默认方式派出；会话已设派单模式 `line` 时由 `run` 自己判断接线。
+- **上下文来源**：派新工作项时，用 `--context-from` 取该工作项依赖边上的前序派单（`plan` 里 `--depends` 工作项所关联的派单，以及 `--after` 派单），可重复。不靠自己转述前序内容。
+- 工作线管理用 `rdispatch plan chain <线名>`（`--clear`、`--revoke-accept`）。`board` 只读，不连目标机。
+- `line prefix` 的工作项必须是线上顺序的前 k 个且已验收，提交需先 `fetch` 取回；`line close` 在线上有运行中轮次或目标机不可达时拒绝。`takeover` 只限同一 `RD_USER_ID` 与工作线，其他情况一律拒绝。
+- `clean --slim` 后下次 `resume` 会重新跑 setup；`inbox --orphans` 的输出带可直接执行的 `ack` 命令。
+- **局限：rdispatch 不能强制代理先调 `suggest`。** 这条规则只靠本技能提示，代理跳过时 `run` 照常按默认方式派出，不报错。用户要求必须先建议时，编排方自己核对每次派单前有没有跑过 `suggest`。
+
 ## serve 与设置命令
 
 `rdispatch serve` 是控制端上常驻的 rdispatch 进程，CLI 与其他客户端共用同一份状态和配置。serve 在运行时，CLI 的写命令（`run`、`resume`、`stop`、`ack`、`review` 等）经本机 Unix socket 交给它执行；不在运行时 CLI 直接写，两条路径共用同一把锁。转交失败时提示"命令可能已执行"，先 `rdispatch status` 查状态，不要重试。
@@ -206,4 +233,5 @@ rdispatch project hide|show <项目ID>                 # 隐藏或恢复项目�
 - [目标机准备](https://github.com/Weicoz/remote-dispatch/blob/main/docs/worker-setup.md)
 - [员工配置包格式](https://github.com/Weicoz/remote-dispatch/blob/main/docs/user-profiles.md)
 - [多轮交接协议](https://github.com/Weicoz/remote-dispatch/blob/main/docs/handoff.md)
+- [术语表](https://github.com/Weicoz/remote-dispatch/blob/main/docs/glossary.md)
 - [运行状态与缓存保留](https://github.com/Weicoz/remote-dispatch/blob/main/docs/cache-retention.md)

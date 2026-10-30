@@ -54,7 +54,7 @@ rdispatch run --agent codex --prompt-file task.md --ref HEAD
 
 ```sh
 rdispatch status <job>
-rdispatch result <job>          # 结构化回执；--summary 只要摘要
+rdispatch result <job>          # 结构化回执（含实际模型与 token 用量，取不到记「未记录」）；--summary 只要摘要
 rdispatch fetch <job>           # 把提交取回为 rd/<branch>
 ```
 
@@ -179,6 +179,8 @@ ln -s "$PWD/skills/weicoz-remote-dispatch" ~/.agents/skills/weicoz-remote-dispat
 - `docs/reports.md`：状态变化汇报、合并窗口与 inbox
 - `docs/serve.md`：本机 Unix socket HTTP、事件流与 CLI 转交
 - `docs/cache-retention.md`：运行状态与缓存保留
+- `docs/board.md`：看板 `board` 与 serve 只读接口
+- `docs/glossary.md`：术语表（工作项、工作线、派单模式等）
 
 ## 开发
 

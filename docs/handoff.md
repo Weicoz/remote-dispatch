@@ -31,8 +31,11 @@ POSIX示例：
 ```bash
 python3 "$RD_REPORTER" progress --phase testing --summary '正在运行相关检查'
 python3 "$RD_REPORTER" result --outcome partial --checks failed \
-  --summary '一项检查失败，等待发起方决定' --artifact private/evidence/check.json
+  --summary '一项检查失败，等待发起方决定' --artifact private/evidence/check.json \
+  --decision '用递归下降解析' --unfinished '补错误位置信息'
 ```
+
+`result` 可重复 `--decision <文本>`、`--unfinished <文本>`，写入回执 `report.decisions`、`report.unfinished`（字符串列表，最多 50 条、每条不超过 2000 字，仍受 64KiB 总上限约束）。`progress` 不接受这两项。`rdispatch run --context-from` 把它们拼进上下文包。
 
 Windows使用该机器当前Python与 `$env:RD_REPORTER`。无Python的POSIX普通命令保持基础执行能力；发起方仍可读取退出/提交等元数据，结构化执行方报告需要Python3。
 

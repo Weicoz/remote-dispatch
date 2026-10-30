@@ -25,6 +25,8 @@ FIELDS = {
     "receipt.ready": "job user_id project_id host round receipt_id execution_state executor_exit outcome checks suppress_push stopped_by stopped_at",
     "receipt.acked": "job user_id project_id host round receipt_id received_at acked_by via suppress_push",
     "review.updated": "job user_id project_id host round review_state reviewed_by reviewed_at",
+    "reclaim.planned": "user_id host mode limit_gb used_gb estimated_gb blocked_count",
+    "reclaim.result": "user_id host mode limit_gb used_gb after_gb slimmed_count deleted_count failed_count",
     "harness.stats_changed": "user_id harness total_round_count today_round_count recent_round_limit duration_sample_count average_duration_seconds consecutive_accepted consecutive_rejected last_result last_checks last_job last_round last_finished_at date_basis",
     "host.changed": "host reachable state load1 ncpu cpu_pct memfree disk disk_total running heavy full",
     "project.changed": "user_id project_id name first_dispatch_at last_dispatch_at dispatch_count hidden removed host accepted_round_count",
@@ -88,6 +90,12 @@ def display_data(kind, data):
             and isinstance(row.get("address"), str) and type(row.get("port")) is int]
     if kind == "session.changed" and isinstance(data.get("dispatch_defaults"), dict):
         projected["dispatch_defaults"] = {key: data["dispatch_defaults"].get(key) for key in ("host", "harness")}
+        if "dispatch_mode" in data["dispatch_defaults"]:
+            projected["dispatch_defaults"]["dispatch_mode"] = data["dispatch_defaults"]["dispatch_mode"]
+    if kind in ("reclaim.planned", "reclaim.result") and isinstance(data.get("actions"), list):
+        projected["actions"] = [{key: row[key] for key in ("job", "action", "kb", "ok", "reason")
+                                 if key in row and type(row[key]) in (str, int, bool)}
+                                for row in data["actions"] if isinstance(row, dict)]
     if kind == "harness.stats_changed" and isinstance(data.get("host_stats"), list):
         projected["host_stats"] = [dict(host=row["host"], daily_round_counts=[
             dict(date=day["date"], round_count=day["round_count"])

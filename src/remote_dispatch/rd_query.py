@@ -7,7 +7,9 @@ import hashlib
 import json
 from pathlib import Path
 
+from . import rd_line as workline
 from . import rd_messages as messages
+from . import rd_usage as usage
 from .rd_projects import ProjectIndex, project_fields
 
 
@@ -22,12 +24,14 @@ def receipt_id(receipt):
 
 
 class Query:
-    def __init__(self, state, *, states, report, receiver, project_names=(), read_json=None):
+    def __init__(self, state, *, states, report, receiver, project_names=(), read_json=None, output=None):
         self.state = Path(state).resolve()
         self.read_json = read_json or messages.read_json
         self.states = states
         self.report = report
         self.receiver = receiver
+        # 读本轮 harness 输出日志文本的回调；缺省或读不到时模型与用量记为「未记录」。
+        self.output = output
         self.project_names = project_names
         # A Query is a single read view. Resolve legacy project names once,
         # even when the adapter renders its records one card at a time.
@@ -59,7 +63,9 @@ class Query:
             row = dict(rec, **project_fields(rec, uid, names_by_user[uid]))
             snapshot = snapshots.get(rec["job"], {})
             row.update(snapshot)
-            row.update(self.review(rec, int(snapshot.get("round") or 0) or rec["rounds"]))
+            number = int(snapshot.get("round") or 0) or rec["rounds"]
+            row.update(self.review(rec, number))
+            row.update(self.usage_fields(self.read_json(self.result_path(rec, number)), rec))
             rows.append(row)
         return rows
 
@@ -73,7 +79,7 @@ class Query:
         number = messages.round_id(number if number is not None else rec["rounds"])
         cached = self.read_json(self.result_path(rec, number))
         if cached is not None:
-            return dict(cached, **self.review(rec, number))
+            return dict(cached, **self.usage_fields(cached, rec), **self.review(rec, number))
         if snapshot is None:
             snapshot = self.states([rec]).get(rec["job"], {})
         current = (int(snapshot.get("round") or 0) or rec["rounds"])
@@ -92,10 +98,33 @@ class Query:
                        receiver_session=receiver, report=report,
                        head=snapshot.get("head"), dirty=snapshot.get("dirty"),
                        needs_initiator_review=True)
-        receipt.update({key: rec[key] for key in ("user_id", "project", "origin", "created", "agent", "model") if key in rec})
+        receipt.update({key: rec[key] for key in ("user_id", "project", "origin", "created", "agent", "model", "gate") if key in rec})
+        receipt.update(self.measured(rec, number))
+        residue = workline.residue_for(rec, number)
+        if residue:
+            receipt["residue"] = residue
+        if workline.sync_for_round(rec, number):
+            receipt["integration_sync"] = workline.sync_for_round(rec, number)
         receipt["receipt_id"] = receipt_id(receipt)
         receipt["captured_at"] = messages.utc_now()
         return dict(receipt, **self.review(rec, number))
+
+    def measured(self, rec, number):
+        """从本轮 harness 输出取实际模型与用量；任何读取失败都记「未记录」。"""
+        text = None
+        if self.output and rec.get("agent"):
+            try:
+                text = self.output(rec, number)
+            except Exception:
+                text = None
+        return usage.describe(rec.get("agent"), text, rec.get("model"))
+
+    @staticmethod
+    def usage_fields(receipt, rec):
+        """老记录缺字段时显示「未记录」，不迁移数据。"""
+        receipt = receipt or {}
+        return dict(model=receipt.get("model") or rec.get("model") or usage.UNRECORDED,
+                    usage=receipt.get("usage") or usage.UNRECORDED)
 
     def review(self, rec, number):
         return self.read_json(self.result_path(rec, number).with_suffix(".review.json")) or dict(review_state="pending")

@@ -79,3 +79,24 @@ job 锁与项目锁不互相嵌套。后台观察也可直接取事件锁。
 事件补读不创建目录、不取写锁、不写状态；状态／回执／目标机的纯查询也不发布事件。
 serve 后台观察必须显式走写入口，不能在查询回调里偷偷采集。
 轮转、补读及后台观察接口详见 [事件日志](events.md)。
+
+## 轮次耗时记录与查询
+
+每轮回执（`report`）分开记录两段耗时，单位秒：
+
+- `setup_seconds`：目标机 setup 脚本耗时。已执行过或没有 setup 时为 0，并带 `setup_note: 已跳过`；setup 失败（退出码 97）只有这一项。
+- `body_seconds`：主体耗时。命令派单是命令耗时，`--test` 派单是测试耗时，会话派单是代理耗时。POSIX 命令派单的主体包含等待 `rd-heavy` 名额的时间；Windows 原生 runner 从拿到名额后计时。
+
+POSIX 运行脚本与 Windows 原生 runner 都写 `jobs/<job>/timing.rN`，`finish` 合入回执。缺失或损坏的字段不写，查询时视为未记录。
+
+查询只读本地已保存的回执（经 `inbox`、`result`、续跑或清理收取后才有），不连接目标机：
+
+```bash
+rdispatch timings --project P --host m4 --kind test
+```
+
+`--kind` 取 `test`（`--test` 派单）、`command`（`--cmd` 派单）、`agent`。输出 `rows` 与各目标机退出码为 0 的主体耗时中位数。门禁选机以同一接口取数：`rd_timings.history(state, records, project=, host=, kind=)` 返回行，`rd_timings.median_body_by_host(rows, success_only=True)` 返回 `{目标机: 中位秒数}`；没有数据的目标机不在结果里。
+
+### rollout 增强（可选）
+
+配置 `[features] rollout_stats = true` 后，Codex 轮次的回执另有 `rollout_calls`（调用次数与输入、缓存读、输出 token 汇总），数据来自任务目录下 `codex/sessions` 的 rollout 文件。默认关闭；文件缺失、损坏或格式不符只记 `未记录`，不影响派单与回执。
