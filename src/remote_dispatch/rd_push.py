@@ -1,5 +1,6 @@
 """Count-only push decisions. The injected sender owns APNs credentials/transport."""
 import json
+import math
 from datetime import datetime
 from pathlib import Path
 import threading
@@ -27,7 +28,8 @@ class PushDispatcher:
         self.is_active = is_active
         # 回执推送先延后 hold 秒，等同轮汇报（report.delivered）合并；超时仍推，不丢。
         # 下限 0：配置派生的负值或非数值不得让回执被立刻推送或永不推送。
-        self.hold = hold if isinstance(hold, (int, float)) and hold == hold and hold >= 0 else 30.0
+        self.hold = (float(hold) if isinstance(hold, (int, float)) and not isinstance(hold, bool)
+                     and math.isfinite(hold) and hold >= 0 else 30.0)
 
     def dispatch(self, rows, devices, *, now):
         """Consume ordered events and tick persisted incident timers, without APNs I/O of our own.

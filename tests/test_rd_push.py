@@ -175,7 +175,7 @@ class PushAtLeastOnceTests(PushTests):
         self.assertEqual(self.counts(), [{"report_ready": 1}] * 2)
 
     def test_hold_has_a_floor_and_each_due_item_is_checkpointed_after_its_send(self):
-        for bad in (-100.0, float("nan")):
+        for bad in (-100.0, float("nan"), float("inf"), True):
             self.assertGreaterEqual(PushDispatcher(self.state, "fixture", self.sender, hold=bad).hold, 0)
         rows = [self.event(1, "receipt.ready", job="one", user_id="fixture", round=1, outcome="completed"),
                 self.event(2, "receipt.ready", job="two", user_id="fixture", round=1, outcome="completed")]
