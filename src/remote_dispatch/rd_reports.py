@@ -193,6 +193,9 @@ class Reports:
                       receipt.get("executor_exit") not in (None, 0, "0"))
                  else "completed" if execution == "done" else "running")
         key = rec["job"] + ":" + str(number)
+        if state == "offline" and saved["states"].get(key) in ("completed", "failed", "blocked"):
+            # 已报终态的轮次不再因连接不可达改状态或生成「离线」汇报。
+            return
         if key in saved.get("baseline_pending", []):
             stamp = instant(observed_at)
             if stamp is None or stamp < instant(saved["baseline_started_at"]):
