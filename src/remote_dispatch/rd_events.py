@@ -85,6 +85,9 @@ def display_data(kind, data):
                  and (data[key] is None or type(data[key]) in (str, int, float, bool))}
     if kind == "report.delivered" and isinstance(data.get("channels"), list):
         projected["channels"] = [name for name in data["channels"] if isinstance(name, str)]
+    if kind == "report.delivered" and isinstance(data.get("rounds"), list):
+        # 「派单:轮次」标识列表，推送按它去重；不含汇报正文。
+        projected["rounds"] = [key for key in data["rounds"] if isinstance(key, str)]
     if kind == "network.addresses_changed" and isinstance(data.get("candidates"), list):
         projected["candidates"] = [{"address": row["address"], "port": row["port"],
             **({"kind": row["kind"]} if row.get("kind") in ("lan", "tailscale", "easytier", "other") else {})}

@@ -115,6 +115,12 @@ notify_digest = false      # 默认 false；true 时进度摘要（kind: digest�
 - Herdr 不可用或调用超时（5 秒）记 `{channel: "herdr", ok: false, reason: "herdr_unavailable"}`，
   不重试；汇报照常存入 inbox。
 - 提醒在独立线程池里调用，不阻塞汇报线程：新汇报先以 `status=queued`、`channels=[]` 存入 inbox 并发布 `report.created`，通道返回后回写结果；事件写入失败的重试不会重复通知；serve 关闭时最多等待 10 秒。
+- 投递语义为至少一次：`status=queued` 的汇报在 serve 重启或下一次轮询时重新投递（含关闭时被取消的任务、
+  回写失败的汇报，后者 30 秒后重试）；崩溃或重启窗口内同一汇报的提醒可能重复一次，不会丢失。
+  通道抛异常时记 `{channel, ok: false, reason: "error:<异常类型>"}` 并向 stderr 写通道名与异常类型（不含正文）；
+  `channels` 为空表示没有启用通道，与「通道失败」区分。摘要汇报（`kind=digest`）的 `report.delivered` 不带 `rounds`。
+- 推送同为至少一次：发送成功后才落盘已推送轮次，落盘前崩溃或多设备部分发送后被取消，重启后可能重复推送一次，不会丢。
+  每个到期项发送后立即落盘；延后时间下限为 30 秒（窗口为负或无效时按 0 计）。
 - 至少一个通道成功时 `status` 为 `notified`，并发布 `report.delivered`（含成功通道，不含正文）；
   否则为 `inbox_only`。没有启用通道（`none`）时 `channels` 为空。
 - 进度摘要默认不提醒（`inbox_only`、`channels` 为空）；`notify_digest = true` 时与状态汇报同样分派。

@@ -140,6 +140,20 @@ class NotifyChannelTests(unittest.TestCase):
         self.assertEqual(len(self.notifications_sent()), 1)
         self.assertEqual(self.delivered_events(), [])
 
+    def test_channel_exception_is_logged_by_type_and_other_channels_still_run(self):
+        import contextlib, io
+        def boom(svc, row):
+            raise RuntimeError('SECRET-正文')
+        err = io.StringIO()
+        with patch.dict(rd_notify.SENDERS, {'macos': boom}), contextlib.redirect_stderr(err):
+            service, report = self.report_with('[monitor]\nnotify=macos,herdr\n')
+        self.assertEqual(report['delivery'], dict(status='notified', channels=[
+            dict(channel='herdr', ok=True, reason=None),
+            dict(channel='macos', ok=False, reason='error:RuntimeError')]))
+        self.assertIn('macos', err.getvalue())
+        self.assertIn('RuntimeError', err.getvalue())
+        self.assertNotIn('SECRET', err.getvalue())
+
     def test_digest_does_not_notify_by_default_but_does_when_enabled(self):
         base = '[monitor]\ndigest_interval_seconds=10\nnotify=herdr\n'
         for extra, calls in (('', 0), ('notify_digest=true\n', 1)):

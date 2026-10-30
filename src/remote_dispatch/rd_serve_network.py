@@ -69,7 +69,8 @@ class Network:
         self.seen_thread = None
         self.listen_addresses = self.configured_listeners()
         try:
-            hold = service.config.cp.getfloat("monitor", "report_merge_window_seconds", fallback=5) + 30
+            window = service.config.cp.getfloat("monitor", "report_merge_window_seconds", fallback=5)
+            hold = (max(0.0, window) if window == window and window != float("inf") else 5.0) + 30
         except ValueError:
             hold = 35
         self.push = PushDispatcher(service.state, service.user_id, push_sender, stop=service.stop,

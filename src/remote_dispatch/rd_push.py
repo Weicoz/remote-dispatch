@@ -26,13 +26,15 @@ class PushDispatcher:
         self.stop = stop if stop is not None else threading.Event()
         self.is_active = is_active
         # 回执推送先延后 hold 秒，等同轮汇报（report.delivered）合并；超时仍推，不丢。
-        self.hold = hold
+        # 下限 0：配置派生的负值或非数值不得让回执被立刻推送或永不推送。
+        self.hold = hold if isinstance(hold, (int, float)) and hold == hold and hold >= 0 else 30.0
 
     def dispatch(self, rows, devices, *, now):
         """Consume ordered events and tick persisted incident timers, without APNs I/O of our own.
 
-        Transport failures raise; the caller may retry. Delivery is at least once
-        across a crash between a successful send and its local checkpoint.
+        Transport failures raise; the caller may retry. Delivery is at least once:
+        a crash between a successful send and its local checkpoint may repeat one push
+        (or, after a partial multi-device send, resend to all devices), never drops it.
         """
         try:
             checkpoint = json.loads(events.physical(self.path).read_text(encoding="utf-8"))
@@ -63,11 +65,12 @@ class PushDispatcher:
                     # 汇报的 app 通道：只发计数推送，负载不含汇报正文与执行方文字。
                     if "app" in (data.get("channels") or []):
                         rounds = [key for key in (data.get("rounds") or []) if isinstance(key, str)]
-                        for key in rounds:
-                            held.pop(key, None)
                         # 汇报覆盖的轮次都已单独推过时不再重复；无轮次信息的旧事件照常推送。
                         if not rounds or any(key not in pushed for key in rounds):
                             self.deliver("report_ready", devices)
+                        # 发送成功后，pop 与 remember 在同一次落盘（下方）完成；落盘前崩溃最多重复一次，不丢。
+                        for key in rounds:
+                            held.pop(key, None)
                         self.remember(pushed, rounds)
                 elif row["type"] in ("job.state_changed", "host.changed"):
                     key = job_key or "host:" + str(data.get("host"))
@@ -89,12 +92,15 @@ class PushDispatcher:
                 self.deliver("receipt_ready", devices)
                 held.pop(key)
                 self.remember(pushed, [key])
-                changed = True
+                # 每项发送后立即落盘：慢设备或后续失败不影响已发项的记录。
+                messages.atomic_json(self.path, checkpoint, limit=None)
+                changed = False
         for incident in incidents.values():
             if not incident["sent"] and now - incident["since"] > 300:
                 self.deliver(incident["state"], devices)
                 incident["sent"] = True
-                changed = True
+                messages.atomic_json(self.path, checkpoint, limit=None)
+                changed = False
         if changed:
             messages.atomic_json(self.path, checkpoint, limit=None)
         return checkpoint["cursor"]

@@ -186,6 +186,100 @@ class ReportDeliveryTests(unittest.TestCase):
         for forbidden in ('title-marker', 'env_file', 'private_key'):
             self.assertNotIn(forbidden, json.dumps(body))
 
+    def test_queued_report_is_delivered_once_after_restart(self):
+        self.config.write_text('[monitor]\nnotify=herdr\n')
+        self.receipt(self.job())
+        service = self.service()
+        calls = []
+        sender = lambda svc, row: (calls.append(row['id']), dict(channel='herdr', ok=True, reason=None))[1]
+        with patch.dict(rd_notify.SENDERS, {'herdr': sender}):
+            with patch.object(type(service.reports), 'deliver', lambda self, row: None):
+                self.tick_report(service)
+            self.assertEqual(self.stored()['reports'][0]['delivery']['status'], 'queued')
+            service.close()
+            service = self.service()
+            service.reports.tick(now=60)
+            self.assertEqual(self.stored()['reports'][0]['delivery']['status'], 'notified')
+            service.reports.tick(now=120)
+            service.close()
+            service = self.service()
+            service.reports.tick(now=180)
+        self.assertEqual(len(calls), 1)
+        delivered = [e for e in events.read_after(str(self.state), 0) if e['type'] == 'report.delivered']
+        self.assertEqual(len(delivered), 1)
+        # 终态汇报的 rounds 必须经事件投影保留，推送端才能按轮次去重。
+        self.assertEqual(delivered[0]['data']['rounds'], ['fixture-job:1'])
+        service.close()
+
+    def test_task_cancelled_at_shutdown_is_redelivered_after_restart(self):
+        from remote_dispatch import rd_reports
+        self.config.write_text('[monitor]\nnotify=herdr\n')
+        self.receipt(self.job())
+        service = self.service()
+        release = threading.Event()
+        calls = []
+
+        def sender(svc, row):
+            calls.append(threading.current_thread().name)
+            if threading.current_thread().name.startswith('rd-notify'):
+                release.wait(10)
+            return dict(channel='herdr', ok=True, reason=None)
+        with patch.dict(rd_notify.SENDERS, {'herdr': sender}), \
+                patch.object(rd_reports, 'wait_futures', lambda *a, **k: None):
+            service.reports.tick(now=0, background=True)
+            service.reports.tick(now=5, background=True)
+            self.eventually(lambda: len(calls), lambda n: n >= 1)
+            service.close()
+            self.assertEqual(self.stored()['reports'][0]['delivery']['status'], 'queued')
+            service = self.service()
+            service.reports.tick(now=60)
+            self.assertEqual(self.stored()['reports'][0]['delivery']['status'], 'notified')
+            release.set()
+        service.close()
+
+    def test_failed_delivery_writeback_is_retried_not_dropped(self):
+        self.config.write_text('[monitor]\nnotify=herdr\n')
+        self.receipt(self.job())
+        service = self.service()
+        sender = lambda svc, row: dict(channel='herdr', ok=True, reason=None)
+        real_emit = events.emit
+        failures = [1]
+
+        def flaky(state, kind, data):
+            if kind == 'report.delivered' and failures:
+                failures.pop()
+                raise OSError('模拟回写失败')
+            return real_emit(state, kind, data)
+        with patch.dict(rd_notify.SENDERS, {'herdr': sender}), patch.object(events, 'emit', flaky):
+            self.tick_report(service)
+            self.assertEqual(self.stored()['reports'][0]['delivery']['status'], 'queued')
+            service.reports.tick(now=100)
+        self.assertEqual(self.stored()['reports'][0]['delivery']['status'], 'notified')
+        delivered = [e for e in events.read_after(str(self.state), 0) if e['type'] == 'report.delivered']
+        self.assertEqual(len(delivered), 1)
+        service.close()
+
+    def test_summary_report_delivered_event_carries_no_rounds(self):
+        from remote_dispatch import cli
+        self.config.write_text('[monitor]\ndigest_interval_seconds=10\nnotify=herdr\nnotify_digest=true\n')
+        self.job('digestjob')
+        cli.messages.atomic_json(self.state / 'serve-snapshots' / 'digestjob.json', dict(
+            user_id='fixture', generation=[1, 'target', None],
+            snapshot=dict(state='running', round='1', snapshot_at=cli.messages.utc_now()),
+            progress=dict(summary='进度', phase='build')))
+        service = self.service()
+        sender = lambda svc, row: dict(channel='herdr', ok=True, reason=None)
+        with patch.dict(rd_notify.SENDERS, {'herdr': sender}):
+            service.reports.tick(now=0)
+            service.reports.tick(now=15)
+        summaries = {r['id'] for r in self.stored()['reports'] if r.get('kind') == 'digest'}
+        delivered = [e['data'] for e in events.read_after(str(self.state), 0) if e['type'] == 'report.delivered']
+        mine = [d for d in delivered if d['report_id'] in summaries]
+        self.assertTrue(mine)
+        for data in mine:
+            self.assertEqual(data['rounds'], [])
+        service.close()
+
     def test_user_terminal_input_still_reaches_the_pane(self):
         service = self.service()
         status = service.sessions.write_input('w1:p1', 'user-input', {'text': '用户消息'}, None)[0]

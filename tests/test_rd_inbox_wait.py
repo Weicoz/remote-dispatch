@@ -159,6 +159,19 @@ class InboxWaitTests(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertIn("fixture-job 第1轮 已完成", text)
 
+    def test_report_woken_online_does_not_wake_again_after_serve_goes_offline(self):
+        def step(n):
+            if n == 1:
+                self.state.update(state="done", exit="0")
+                self.add_report()
+        code, text = self.wait("--timeout", "5", during=step)
+        self.assertEqual(code, 0)
+        self.assertEqual(text.count("第1轮"), 1)
+        # 在线唤醒后重挂：同轮已在基线；换到离线也不得再唤醒。
+        self.online = False
+        code, _ = self.wait("--timeout", "0.05")
+        self.assertEqual(code, 2)
+
     def test_missing_initiator_session_exits_four(self):
         with patch.dict(os.environ, {"RD_INITIATOR_SESSION": ""}), \
                 patch.object(rd.initiators, "session", return_value=None):

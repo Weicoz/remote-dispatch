@@ -116,6 +116,11 @@ def dispatch(service, row):
         if sender is None:
             channels.append(dict(channel=name, ok=False, reason="not_implemented"))
         else:
-            channels.append(sender(service, row))
+            try:
+                channels.append(sender(service, row))
+            except Exception as error:
+                # 通道异常不得中断其他通道；只记通道名与异常类型，不含汇报正文。
+                print("rdispatch: 提醒通道 %s 失败（%s）。" % (name, type(error).__name__), file=sys.stderr)
+                channels.append(dict(channel=name, ok=False, reason="error:" + type(error).__name__))
     status = "notified" if any(c["ok"] for c in channels) else "inbox_only"
     return dict(status=status, channels=channels)

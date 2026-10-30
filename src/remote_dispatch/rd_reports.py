@@ -46,6 +46,9 @@ class Reports:
         self.lock = threading.RLock()
         self.pool = None
         self.futures = []
+        self.inflight = set()
+        self.retry_at = {}
+        self.clock = 0.0
         self.started_at = messages.utc_now()
         try:
             self.window = service.config.cp.getfloat("monitor", "report_merge_window_seconds", fallback=5)
@@ -84,6 +87,7 @@ class Reports:
 
     def step(self, now, background):
         now = time.time() if now is None else now
+        self.clock = now
         saved = messages.read_json(events.physical(self.path), limit=None)
         records = {rec["job"]: rec for rec in self.service.records()}
         if saved is None:
@@ -140,11 +144,9 @@ class Reports:
             created.append(dict(report_id=report_id, user_id=self.service.user_id,
                                 initiator_session=owner, job_count=len(row["entries"])))
             del saved["pending"][owner]
-        fresh = []
         for row in saved["reports"][known:]:
             # 先持久化「排队中」的 delivery，再通知；事件写入失败后的重试不会对同一汇报重复通知。
             row.setdefault("delivery", dict(status="queued", channels=[]))
-            fresh.append(copy.deepcopy(row))
         if saved != before:
             with events.write_transaction([self.path]):
                 messages.atomic_json(self.path, saved, limit=None)
@@ -153,7 +155,13 @@ class Reports:
         # Retain the batch on failure, so an in-process retry cannot lose events
         # already consumed by the incremental cursor.
         self.batch = None
+        # 至少一次：凡落盘为 queued 的汇报（含重启前未通知、关闭时被取消、回写失败的）都重新投递。
+        # 旧版（带 pane_id、无 channels）遗留的 queued 记录原样保留，不重投。
+        fresh = [copy.deepcopy(row) for row in saved["reports"]
+                 if (row.get("delivery") or {}).get("status") == "queued" and "channels" in row["delivery"]
+                 and row["id"] not in self.inflight and self.retry_at.get(row["id"], 0) <= now]
         for row in fresh:
+            self.inflight.add(row["id"])
             if background:
                 if self.pool is None:
                     self.pool = ThreadPoolExecutor(max_workers=4, thread_name_prefix="rd-notify")
@@ -166,8 +174,17 @@ class Reports:
         """调用提醒通道（可能较慢，不持锁），再把结果回写 delivery 并发布 report.delivered。"""
         try:
             result = self.notify(None, row)
-        except Exception:
-            result = dict(status="inbox_only", channels=[])
+        except Exception as error:
+            # 只记异常类型，不含汇报正文。
+            print("rdispatch: 汇报提醒失败（%s）。" % type(error).__name__, file=sys.stderr)
+            result = dict(status="inbox_only", channels=[dict(channel="*", ok=False,
+                                                              reason="error:" + type(error).__name__)])
+        try:
+            self.record(row, result)
+        finally:
+            self.inflight.discard(row["id"])
+
+    def record(self, row, result):
         with self.lock:
             saved = messages.read_json(events.physical(self.path), limit=None)
             if not saved:
@@ -183,11 +200,15 @@ class Reports:
                         events.emit(self.service.state, "report.delivered", dict(
                             user_id=self.service.user_id, report_id=row["id"],
                             initiator_session=row["initiator_session"],
-                            rounds=["%s:%s" % (e["job"], e["round"]) for e in row["entries"]],
+                            # 摘要汇报是运行中进度，不带 rounds：不得抵消同轮之后的终态回执推送。
+                            rounds=[] if row.get("kind") == "digest"
+                            else ["%s:%s" % (e["job"], e["round"]) for e in row["entries"]],
                             channels=[c["channel"] for c in result["channels"] if c["ok"]],
                             delivered_at=messages.utc_now()))
             except (OSError, ValueError):
-                print("rdispatch: 无法记录汇报送达结果。", file=sys.stderr)
+                # 保持 queued，稍后重试（至少一次）；退避避免磁盘持续失败时反复提醒。
+                self.retry_at[row["id"]] = self.clock + 30
+                print("rdispatch: 无法记录汇报送达结果；稍后重试。", file=sys.stderr)
 
     def initialize(self, records, now):
         """首次启用只记录当前状态；历史事件和终态不变成新汇报。"""
