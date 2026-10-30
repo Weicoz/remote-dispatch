@@ -291,6 +291,13 @@ class ReviewTests(unittest.TestCase):
         code, out, err = self.review("--accept")
         self.assertEqual(code, 0, err)
 
+    def test_unreachable_host_keeps_history_round_error(self):
+        rd.save_job(dict(self.rec, rounds=2))
+        self.fail_operation = "state"
+        code, out, err = self.review("--accept")
+        self.assertNotIn("receipt_host_unavailable", err)
+        self.assertIn("历史轮次", err)
+
     def test_resume_cannot_change_harness(self):
         prompt = self.root / "prompt.md"
         prompt.write_text("继续")

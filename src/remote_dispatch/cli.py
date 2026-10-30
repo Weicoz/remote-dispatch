@@ -1468,7 +1468,8 @@ def live_receipt(cfg, rec, number):
     snapshot = None
     if messages.read_json(result_path(rec, number)) is None:
         snapshot = job_states(cfg, [rec]).get(rec["job"], {})
-        if snapshot.get("state") == "unreachable":
+        # 历史轮次保留原报错：无本地回执即无法重建，与目标机是否在线无关。
+        if snapshot.get("state") == "unreachable" and messages.round_id(number) == rec["rounds"]:
             die(f"receipt_host_unavailable: {rec['host']} 暂时连不上，回执未取得；稍后重试。", 4)
     return queries(cfg).result(rec, number, snapshot)
 
