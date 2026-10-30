@@ -1277,37 +1277,45 @@ def cmd_inbox_wait(a, cfg):
     uid = require_user()
     deadline = time.monotonic() + a.timeout if a.timeout else None
 
+    def acked(rec, number):
+        # 签收判定沿用 inbox 的回执与签收文件；回执尚未收取到本地时视为未签收。
+        if rec is None:
+            return False
+        receipt = messages.read_json(result_path(rec, number))
+        return bool(receipt and receipt.get("receipt_id") and queries(cfg).acknowledgement(rec, receipt))
+
+    def own_jobs():
+        return {r["job"]: r for r in all_jobs() if r.get("user_id") == uid and r.get("initiator_session") == owner}
+
     def stored():
-        # 摘要汇报（kind=digest）是运行中进度，不唤醒；去重键含汇报 id，同一轮后续的终态汇报仍算新汇报。
+        # 摘要汇报（kind=digest）是运行中进度，不唤醒；已签收轮次的汇报不算新汇报。
+        jobs = own_jobs()
         return {(row["id"], e["job"], e["round"]): e["state"]
                 for row in read_reports(STATE, uid, owner) if row.get("kind") != "digest"
-                for e in row["entries"]}
+                for e in row["entries"] if not acked(jobs.get(e["job"]), e["round"])}
 
     def terminal():
-        recs = [r for r in all_jobs() if r.get("user_id") == uid and r.get("initiator_session") == owner]
+        jobs = own_jobs()
+        recs = list(jobs.values())
         if not recs:
             return {}
         states = job_states(cfg, recs)
         return {(rec["job"], int(states[rec["job"]].get("round") or rec["rounds"])): states[rec["job"]]
-                for rec in recs if states.get(rec["job"], {}).get("state") in ("done", "dead", "missing")}
+                for rec in recs if states.get(rec["job"], {}).get("state") in ("done", "dead", "missing")
+                and not acked(rec, int(states[rec["job"]].get("round") or rec["rounds"]))}
 
-    # 两路基线都在命令开始时取：在线期间结束、汇报仍在合并窗口内的派单，serve 离线后仍会唤醒。
-    seen_reports = set(stored())
-    seen_states = set(terminal())
+    # 基线是「已签收」：本会话未签收的汇报或终态轮次一律算新，命令开始前已存在的也立即唤醒。
     while True:
-        found = []
         if serve_online():
-            found = [(key, state) for key, state in stored().items() if key not in seen_reports]
-            seen_reports.update(key for key, _ in found)
+            found = list(stored().items())
         else:
-            current = terminal()
-            found = [(key, wait_state_name(snap)) for key, snap in current.items() if key not in seen_states]
-            seen_states = set(current) | seen_states
+            found = [(key, wait_state_name(snap)) for key, snap in terminal().items()]
         if found:
             rows = [dict(job=key[-2], round=key[-1], state=state,
                          state_text={"completed": "已完成", "blocked": "卡住", "offline": "离线",
                                      "failed": "失败"}.get(state, state),
-                         view=f"rdispatch result {key[-2]}") for key, state in sorted(found)]
+                         view=f"rdispatch result {key[-2]}")
+                    for key, state in sorted({(key[-2:], state): (key, state) for key, state in found}.values())]
             if a.json:
                 print(json.dumps(dict(initiator_session=owner, reports=rows), ensure_ascii=False, indent=2))
             else:
