@@ -24,7 +24,24 @@ class JobLock:
         self.path = Path(state).resolve() / "locks" / (self.job + ".lock")
         self._stream = None
 
-    def acquire(self, *, blocking=False):
+    def acquire(self, *, blocking=False, wait=0, on_wait=None):
+        """wait>0 时按 0.2 秒间隔重试非阻塞加锁，超时仍抛 JobBusy；on_wait 在首次遇忙时调用一次。"""
+        if blocking or not wait or wait <= 0:
+            return self._acquire_once(blocking=blocking)
+        deadline = time.monotonic() + wait
+        notified = False
+        while True:
+            try:
+                return self._acquire_once(blocking=False)
+            except JobBusy:
+                if time.monotonic() >= deadline:
+                    raise
+            if on_wait and not notified:
+                notified = True
+                on_wait()
+            time.sleep(min(0.2, max(0.0, deadline - time.monotonic())))
+
+    def _acquire_once(self, *, blocking=False):
         if self._stream is not None:
             raise RuntimeError("job lock already acquired")
         if any(p.is_symlink() for p in (self.path, *self.path.parents)):
