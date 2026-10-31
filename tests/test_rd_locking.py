@@ -229,6 +229,16 @@ class JobLockingTests(unittest.TestCase):
         self.assertEqual(json.loads(self.run_command("status").stdout)[0]["rounds"], 2)
 
 
+class WaitSettingTests(unittest.TestCase):
+    def test_invalid_values_fall_back_to_the_default(self):
+        from unittest.mock import patch
+        from remote_dispatch import cli
+        for raw, expected in (("nan", 60.0), ("inf", 60.0), ("-1", 60.0), ("abc", 60.0), ("", 60.0),
+                              ("0", 0.0), ("2.5", 2.5)):
+            with self.subTest(raw=raw), patch.dict(os.environ, {"RD_LOCK_WAIT_SECONDS": raw}):
+                self.assertEqual(cli.lock_wait_seconds(), expected)
+
+
 class BoundedWaitTests(unittest.TestCase):
     def setUp(self):
         temporary = tempfile.TemporaryDirectory()

@@ -120,6 +120,21 @@ class ServeWriteTests(unittest.TestCase):
         self.assertEqual((status, body["error"]["reason"]), (409, "round_in_progress"))
         self.assert_contract("write-round-in-progress", (status, body))
 
+    def test_serve_child_never_waits_for_a_held_job_lock(self):
+        import time
+        self.agent_seed()
+        self.ready()
+        held = JobLock(self.state, "fixture-job").acquire(blocking=True)
+        self.addCleanup(held.release)
+        # 父环境给 30 秒等待上限；serve 子进程经 execute_cli 必须仍立即返回 409。
+        with patch.dict(os.environ, {"RD_LOCK_WAIT_SECONDS": "30"}):
+            started = time.monotonic()
+            status, body = self.post("/v1/jobs/fixture-job/rounds/1/review",
+                                     dict(review_state="accepted", reviewed_by="App"), "nowait")
+            elapsed = time.monotonic() - started
+        self.assertEqual((status, body["error"]["reason"]), (409, "round_in_progress"), body)
+        self.assertLess(elapsed, 5)
+
     def test_failed_outcome_cannot_be_accepted_and_empty_rejection_is_a_conflict(self):
         self.agent_seed(outcome="failed")
         for state in ("accepted", "rejected"):

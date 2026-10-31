@@ -2,6 +2,7 @@
 import argparse
 import contextlib
 import io
+import os
 import unittest
 from unittest.mock import patch
 
@@ -342,10 +343,29 @@ class LineTests(unittest.TestCase):
     def test_a_busy_job_lock_rejects_without_creating_a_job(self):
         record, _ = self.accepted_first()
         count = len(rd.all_jobs())
-        with JobLock(rd.STATE, record["job"]), self.assertRaises(SystemExit) as caught:
+        with patch.dict(os.environ, {"RD_LOCK_WAIT_SECONDS": "0"}), JobLock(rd.STATE, record["job"]), \
+                self.assertRaises(SystemExit) as caught:
             self.run_item("b")
         self.assertEqual(caught.exception.code, 4)
         self.assertEqual(len(rd.all_jobs()), count)
+
+    def test_line_wire_waits_for_a_lock_released_in_time_and_times_out_otherwise(self):
+        import threading
+        record, _ = self.accepted_first()
+        count = len(rd.all_jobs())
+        with patch.dict(os.environ, {"RD_LOCK_WAIT_SECONDS": "1"}):
+            with JobLock(rd.STATE, record["job"]), self.assertRaises(SystemExit) as caught:
+                self.run_item("b")
+            self.assertEqual(caught.exception.code, 4)
+            self.assertEqual(len(rd.all_jobs()), count)
+        with patch.dict(os.environ, {"RD_LOCK_WAIT_SECONDS": "10"}):
+            held = JobLock(rd.STATE, record["job"]).acquire()
+            self.addCleanup(held.release)
+            threading.Timer(0.6, held.release).start()
+            added, output = self.run_item("b")
+        self.assertEqual(added, [])
+        self.assertEqual(rd.load_job(record["job"])["rounds"], 2)
+        self.assertEqual(rd.workline.parse_wired_marker(output), (record["job"], "a"))
 
     def fetch(self, record):
         bare = self.worker / record["bare"]
