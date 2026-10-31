@@ -1071,11 +1071,41 @@ def git_ssh_env(host):
 
 # ---------------------------------------------------------------- job records
 
+def lock_wait_seconds():
+    """CLI 直接调用时等待 job 锁的上限秒数；RD_LOCK_WAIT_SECONDS 覆盖，0 表示不等。serve 子进程固定为 0。"""
+    try:
+        return max(0.0, float(os.environ.get("RD_LOCK_WAIT_SECONDS", "60")))
+    except ValueError:
+        return 60.0
+
+
+@contextlib.contextmanager
+def wait_job_lock(job):
+    """有界等待取得 job 锁；等待超过约 2 秒时向 stderr 提示一次。超时抛 JobBusy。"""
+    total = lock_wait_seconds()
+    lock = JobLock(STATE, job)
+    if total <= 0:
+        lock.acquire()
+    else:
+        started = time.monotonic()
+        try:
+            lock.acquire(wait=min(total, 2.0))
+        except JobBusy:
+            if total <= 2.0:
+                raise
+            print("派单正被其他操作占用，等待中…", file=sys.stderr, flush=True)
+            lock.acquire(wait=max(0.0, total - (time.monotonic() - started)))
+    try:
+        yield lock
+    finally:
+        lock.release()
+
+
 def locked_job(command):
     @functools.wraps(command)
     def run_locked(a, cfg):
         try:
-            with JobLock(STATE, a.job):
+            with wait_job_lock(a.job):
                 return command(a, cfg)
         except JobBusy:
             die("round_in_progress: round in progress; another operation holds the job lock; retry after it finishes", 4)
@@ -2070,7 +2100,7 @@ def line_wire(a, cfg, uid, owner, plan_store, item, after, include_paths, prompt
         print(f"工作线未接线：{reason}；按默认方式派出。")
         return False
     try:
-        with JobLock(STATE, previous):
+        with wait_job_lock(previous):
             rec = load_job(previous)
             ok, reason, base = line_wiring(cfg, a, uid, owner, rec, item, include_paths)
             if not ok:

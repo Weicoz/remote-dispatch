@@ -172,6 +172,7 @@ def forward(args, argv):
 def execute_cli():
     """Child owned by serve: isolate cwd, stdio and initiator context per command."""
     request = json.load(sys.stdin)
+    os.environ["RD_LOCK_WAIT_SECONDS"] = "0"  # serve 写接口必须立即返回 409，不得阻塞写锁
     import io
     sys.stdin = io.StringIO(request.get("stdin", ""))
     cli.main(request["argv"], forwarded=request)

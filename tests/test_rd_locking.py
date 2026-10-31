@@ -66,7 +66,8 @@ class JobLockingTests(unittest.TestCase):
         config = self.root / "config.ini"
         config.write_text("[host:fixture]\nssh=fixture.invalid\nplatform=windows\nworkdir=C:/fixture\n")
         self.env = dict(os.environ, RD_CONFIG=str(config), RD_STATE=str(self.state), RD_USER_ID="fixture",
-                        RD_INITIATOR_SESSION="sender", FIXTURE_ROOT=str(self.root))
+                        RD_INITIATOR_SESSION="sender", FIXTURE_ROOT=str(self.root),
+                        RD_LOCK_WAIT_SECONDS="0")
 
     def command(self, name, **env):
         args = [name] if name == "inbox" else [name, "fixture-job"]
@@ -195,6 +196,27 @@ class JobLockingTests(unittest.TestCase):
             resumed = self.run_command("resume")
         self.assertEqual(resumed.returncode, 0, resumed.stderr)
 
+    def test_cli_waits_for_a_lock_released_within_the_bounded_wait(self):
+        from remote_dispatch.rd_lock import JobLock
+        held = JobLock(self.state, "fixture-job").acquire()
+        self.addCleanup(held.release)
+        process = self.command("stop", RD_LOCK_WAIT_SECONDS="20")
+        time.sleep(2.6)
+        held.release()
+        stdout, stderr = process.communicate(timeout=10)
+        self.assertEqual(process.returncode, 0, stdout + stderr)
+        self.assertEqual(stderr.count("派单正被其他操作占用，等待中…"), 1, stderr)
+
+    def test_cli_wait_times_out_with_round_in_progress(self):
+        from remote_dispatch.rd_lock import JobLock
+        with JobLock(self.state, "fixture-job"):
+            timed_out = self.run_command("stop", RD_LOCK_WAIT_SECONDS="0.5")
+            immediate = self.run_command("stop", RD_LOCK_WAIT_SECONDS="0")
+        for result in (timed_out, immediate):
+            self.assertEqual(result.returncode, 4, result.stdout + result.stderr)
+            self.assertIn("round_in_progress", result.stderr)
+            self.assertNotIn("等待中", result.stderr)
+
     def test_inbox_collecting_an_old_result_cannot_rewind_a_resumed_job(self):
         self.record.pop("receiver_session")
         messages.atomic_json(self.state / "jobs/fixture-job.json", self.record)
@@ -205,6 +227,33 @@ class JobLockingTests(unittest.TestCase):
         _, stderr = inbox.communicate("release\n", timeout=10)
         self.assertEqual(inbox.returncode, 0, stderr)
         self.assertEqual(json.loads(self.run_command("status").stdout)[0]["rounds"], 2)
+
+
+class BoundedWaitTests(unittest.TestCase):
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.state = Path(temporary.name)
+
+    def test_wait_succeeds_when_lock_is_released_in_time(self):
+        import threading
+        from remote_dispatch.rd_lock import JobLock
+        held = JobLock(self.state, "j").acquire()
+        threading.Timer(0.5, held.release).start()
+        notes = []
+        second = JobLock(self.state, "j").acquire(wait=5, on_wait=lambda: notes.append(1))
+        second.release()
+        self.assertEqual(notes, [1])
+
+    def test_wait_times_out_with_job_busy(self):
+        from remote_dispatch.rd_lock import JobBusy, JobLock
+        with JobLock(self.state, "j"):
+            started = time.monotonic()
+            with self.assertRaises(JobBusy):
+                JobLock(self.state, "j").acquire(wait=0.5)
+            self.assertGreaterEqual(time.monotonic() - started, 0.5)
+            with self.assertRaises(JobBusy):
+                JobLock(self.state, "j").acquire()
 
 
 if __name__ == "__main__":
