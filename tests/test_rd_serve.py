@@ -340,7 +340,8 @@ class ServeTests(unittest.TestCase):
         service.close()
         self.assertFalse(self.path.exists())
         with JobLock(self.state, "fixture-job"):
-            result = self.command(*argv)
+            # 本地回退走 CLI 有界等锁；关掉等待以断言立即报 round_in_progress。
+            result = self.command(*argv, RD_LOCK_WAIT_SECONDS="0")
         self.assertEqual(result.returncode, 4)
         result = self.command(*argv, RD_INITIATOR_SESSION="cli-session")
         self.assertEqual(result.returncode, 0, result.stderr)
