@@ -68,7 +68,7 @@ def human_size(count):
 
 def artifact_lines(results):
     """把取回结果列成输出与回执共用的中文行。"""
-    names = {"fetched": "已拉回", "missing": "缺失", "error": "失败", "unsupported": "不支持"}
+    names = {"fetched": "已拉回", "missing": "缺失", "error": "失败", "skipped": "已跳过"}
     lines = []
     for item in results:
         text = f"  {names.get(item['status'], item['status'])}  {item['path']}"
@@ -81,12 +81,30 @@ def artifact_lines(results):
 
 
 def artifacts_pending(rec):
-    """声明了产物但还有路径没成功处理（未尝试或失败）；远端确认缺失的不算待拉。"""
+    """声明了产物但还有路径没成功处理（未尝试或失败）；远端确认缺失、本地保护跳过的是终态，不算待拉。"""
     if not rec.get("artifact_paths"):
         return False
     state = rec.get("artifacts_state") or {}
-    done = {item["path"] for item in state.get("results", []) if item["status"] in ("fetched", "missing")}
+    done = {item["path"] for item in state.get("results", []) if item["status"] in ("fetched", "missing", "skipped")}
     return any(path not in done for path in rec["artifact_paths"])
+
+
+def tracked_conflicts(tracked, path):
+    """artifact 路径与已跟踪文件冲突的清单。tracked 是仓库已跟踪文件（posix 相对路径）可迭代对象。
+    冲突：路径本身是已跟踪文件、目录内含已跟踪文件、或某个上级目录位置上是已跟踪文件。"""
+    hits = []
+    prefix = path + "/"
+    parents = {path.rsplit("/", i)[0] for i in range(1, path.count("/") + 1)}
+    for name in tracked:
+        if name == path or name.startswith(prefix) or name in parents:
+            hits.append(name)
+    return hits
+
+
+def safe_member(name):
+    """worker 回传的 tar 成员名必须是相对、无 .. 的路径。"""
+    path = name.replace("\\", "/")
+    return bool(name) and not path.startswith("/") and not re.match(r"[A-Za-z]:", path) and ".." not in path.split("/")
 
 
 def trim(text):

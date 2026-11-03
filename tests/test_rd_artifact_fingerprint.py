@@ -316,7 +316,7 @@ class FingerprintTests(Fixture):
 
 
 class WindowsBranchTests(Fixture):
-    """Windows 目标不经 sh：指纹走 PowerShell（win_ps），产物取回明确报不支持。"""
+    """Windows 目标不经 sh：指纹走 PowerShell（win_ps），产物经原生 worker 取回。"""
     def win_host(self):
         return dict(self.t.cfg.host("fixture"), platform="windows", workdir="C:/rd", python="python", path="")
 
@@ -341,16 +341,169 @@ class WindowsBranchTests(Fixture):
             rd.check_fingerprint(self.win_host(), rec, "node -v", "v20\n", 30, 30)
         self.assertIn("+v18", mismatch.exception.attempt["diff"])
 
-    def test_windows_artifacts_report_unsupported_without_rsync(self):
-        record = self.t.dispatch(artifact=["out.txt"])
-        rec = dict(rd.load_job(record["job"]))
-        with patch.object(rd, "job_host", return_value=self.win_host()), \
-             patch.object(rd.subprocess, "run") as run:
-            results = rd.pull_artifacts(self.t.cfg, rec)
-        run.assert_not_called()
-        self.assertEqual(results[0]["status"], "unsupported")
+
+class WindowsRunTests(Fixture):
+    """cmd_run 在 Windows 目标上的端到端：worker 用本机临时实现，ssh/PowerShell 用 win_ps 桩模拟。"""
+    def setUp(self):
+        super().setUp()
+        text = Path(rd.CONFIG).read_text()
+        Path(rd.CONFIG).write_text(text.replace("sync=direct\n", "sync=direct\nplatform=windows\n", 1))
+        self.t.cfg = rd.Config()
+        self.scripts = []
+        self.remote_output = "base\n"
+
+    def fake_win_ps(self, host, script, timeout):
+        self.scripts.append(script)
+        out = self.remote_output if "-EncodedCommand" in script else ""
+        return subprocess.CompletedProcess([], 0, out, "")
+
+    def run_windows(self, **kwargs):
+        with patch.object(rd, "win_ps", side_effect=self.fake_win_ps):
+            return self.t.dispatch(**kwargs)
+
+    def test_windows_fingerprint_match_runs_powershell_in_task_worktree(self):
+        self.t.configure_project(fingerprint="cat tracked.txt", fingerprint_windows="Get-Content tracked.txt")
+        record = self.run_windows(project="app")
+        self.assertEqual(record["dispatch_state"], "started")
+        self.assertTrue(record["fingerprint"]["match"])
+        self.assertEqual(record["fingerprint"]["command"], "Get-Content tracked.txt")
+        probe = self.scripts[-1]
+        self.assertIn("powershell.exe", probe)
+        self.assertIn("wt/" + record["job"], probe)
+
+    def test_windows_fingerprint_mismatch_rejects_before_launch(self):
+        self.t.configure_project(fingerprint="cat tracked.txt")
+        self.remote_output = "other\n"
+        errors = io.StringIO()
+        with patch.object(rd, "win_ps", side_effect=self.fake_win_ps), contextlib.redirect_stderr(errors), \
+             self.assertRaises(SystemExit) as stop:
+            self.t.dispatch(project="app")
+        self.assertEqual(stop.exception.code, 5)
+        self.assertIn("+other", errors.getvalue())
+        record = rd.all_jobs()[0]
+        self.assertEqual(record["dispatch_state"], "fingerprint_rejected")
+        self.assertFalse(record["fingerprint"]["match"])
+
+    def test_windows_candidates_are_not_filtered_for_auto(self):
+        self.t.configure_project(fingerprint="cat tracked.txt")
+        with patch.object(rd, "pick_hosts", return_value=[self.t.cfg.host("fixture")]) as pick:
+            self.run_windows(project="app", host="auto", force_host=False)
+        pick.assert_called_once()
+
+    def test_windows_artifacts_are_pulled_through_worker_and_rerunnable(self):
+        record = self.run_windows(artifact=["out dir/a b.txt", "dist"])
+        wt = self.worker / "wt" / record["job"]
+        (wt / "out dir").mkdir()
+        (wt / "out dir" / "a b.txt").write_text("hello")
+        (wt / "dist" / "deep").mkdir(parents=True)
+        (wt / "dist" / "deep" / "b.bin").write_bytes(b"y" * 5)
+        self.t.capture(rd.cmd_fetch, self.fetch_args(record))
+        self.assertEqual((self.repo / "out dir" / "a b.txt").read_text(), "hello")
+        self.assertEqual((self.repo / "dist" / "deep" / "b.bin").read_bytes(), b"y" * 5)
+        self.assertFalse(artifacts.artifacts_pending(rd.load_job(record["job"])))
+
+    def test_windows_failure_stays_pending_missing_is_terminal(self):
+        record = self.run_windows(artifact=["out.txt", "gone.txt"])
+        (self.worker / "wt" / record["job"] / "out.txt").write_text("1")
+        real = rd.native.request
+
+        def request(host, operation, *args, **kwargs):
+            if operation == "fetch-artifact":
+                raise ValueError("ssh 断开")
+            return real(host, operation, *args, **kwargs)
+        with patch.object(rd.native, "request", side_effect=request), self.assertRaises(SystemExit) as stop:
+            self.t.capture(rd.cmd_fetch, self.fetch_args(record))
+        self.assertEqual(stop.exception.code, 1)
+        saved = {i["path"]: i["status"] for i in rd.load_job(record["job"])["artifacts_state"]["results"]}
+        self.assertEqual(saved, {"out.txt": "error", "gone.txt": "missing"})
         self.assertTrue(artifacts.artifacts_pending(rd.load_job(record["job"])))
+        self.t.capture(rd.cmd_fetch, self.fetch_args(record))  # 重试成功
+        self.assertFalse(artifacts.artifacts_pending(rd.load_job(record["job"])))
+
+    def test_windows_worker_refuses_symlink_artifacts(self):
+        record = self.run_windows(artifact=["link"])
+        os.symlink(self.root, self.worker / "wt" / record["job"] / "link")
+        with self.assertRaises(SystemExit):
+            self.t.capture(rd.cmd_fetch, self.fetch_args(record))
+        self.assertIn("符号链接", rd.load_job(record["job"])["artifacts_state"]["results"][0]["error"])
 
 
-if __name__ == "__main__":
-    unittest.main()
+class TrackedAndQuotingTests(Fixture):
+    def test_run_rejects_artifact_pointing_at_tracked_file_or_directory_with_tracked_files(self):
+        (self.repo / "src").mkdir()
+        (self.repo / "src" / "app.py").write_text("x")
+        self.t.git("add", "src/app.py")
+        self.t.git("commit", "-qm", "src")
+        for path in ("tracked.txt", "src", "src/app.py", "tracked.txt/child"):
+            with self.subTest(path=path):
+                errors = io.StringIO()
+                with patch.object(rd, "ssh") as ssh, contextlib.redirect_stderr(errors), \
+                     self.assertRaises(SystemExit) as stop:
+                    self.t.dispatch(artifact=[path])
+                self.assertEqual(stop.exception.code, 4)
+                self.assertIn("Git 跟踪", errors.getvalue())
+                ssh.assert_not_called()
+        self.assertEqual(rd.all_jobs(), [])
+
+    def test_fetch_skips_target_that_became_tracked_after_dispatch(self):
+        record = self.t.dispatch(artifact=["late.txt", "ok.txt"])
+        (self.worktree(record) / "late.txt").write_text("remote")
+        (self.worktree(record) / "ok.txt").write_text("fine")
+        (self.repo / "late.txt").write_text("source")
+        self.t.git("add", "late.txt")
+        output = self.t.capture(rd.cmd_fetch, self.fetch_args(record))
+        self.assertEqual((self.repo / "late.txt").read_text(), "source")
+        self.assertEqual((self.repo / "ok.txt").read_text(), "fine")
+        self.assertIn("已跳过  late.txt", output)
+        self.assertFalse(artifacts.artifacts_pending(rd.load_job(record["job"])))
+
+    def run_pull(self, supports, path):
+        record = self.t.dispatch(artifact=[path])
+        (self.worktree(record) / Path(path).parent).mkdir(parents=True, exist_ok=True)
+        (self.worktree(record) / path).write_text("v")
+        seen = []
+        real = rd.subprocess.run
+
+        def run(cmd, **kwargs):
+            if cmd[0] == "rsync" and "--help" not in cmd:
+                seen.append(cmd)
+            return real(cmd, **kwargs) if cmd[0] != "rsync" or "--help" in cmd else subprocess.CompletedProcess(cmd, 0, "", "")
+        with patch.object(rd, "rsync_supports_protect_args", return_value=supports), \
+             patch.object(rd, "scp_path", side_effect=lambda h, rel: "fixture.invalid:/r/" + rel), \
+             patch.object(rd.subprocess, "run", side_effect=run):
+            rd.pull_artifacts(self.t.cfg, rd.load_job(record["job"]))
+        return seen[0]
+
+    def test_rsync_protects_args_or_quotes_remote_path_with_spaces(self):
+        command = self.run_pull(True, "my dir/a b.txt")
+        self.assertIn("-s", command)
+        self.assertIn("fixture.invalid:/r/wt/", " ".join(command))
+        self.assertNotIn("'", " ".join(command))
+        command = self.run_pull(False, "my dir/a b.txt")
+        self.assertNotIn("-s", command)
+        self.assertTrue(any(arg.endswith("'") and arg.startswith("fixture.invalid:'") for arg in command))
+
+    def test_space_path_really_transfers(self):
+        record = self.t.dispatch(artifact=["my dir/a b.txt"])
+        (self.worktree(record) / "my dir").mkdir()
+        (self.worktree(record) / "my dir" / "a b.txt").write_text("sp")
+        self.t.capture(rd.cmd_fetch, self.fetch_args(record))
+        self.assertEqual((self.repo / "my dir" / "a b.txt").read_text(), "sp")
+
+
+class DoctorLocalFailureTests(Fixture):
+    def test_local_fingerprint_failure_prints_missing_and_returns_one(self):
+        self.t.cfg.cp.add_section("project:repo---")
+        self.t.cfg.cp.set("project:repo---", "fingerprint", "exit 3")
+        output = io.StringIO()
+        args = argparse.Namespace(host="fixture", agent=None, dir=str(self.repo))
+        with patch.object(rd, "probe", return_value=dict(reachable=False, error="x")), \
+             patch.object(rd, "assess", return_value=[]), patch.object(rd, "fmt_probe", return_value="PROBE"), \
+             contextlib.redirect_stdout(output), contextlib.redirect_stderr(io.StringIO()), \
+             self.assertRaises(SystemExit) as stop:
+            rd.cmd_doctor(args, self.t.cfg)
+        self.assertIn("MISSING", output.getvalue())
+        self.assertIn("PROBE", output.getvalue())  # doctor 没被打断，后续探针照常输出
+        self.assertEqual(stop.exception.code, 1)
+
+

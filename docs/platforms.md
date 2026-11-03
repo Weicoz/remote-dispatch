@@ -44,6 +44,8 @@ setup_windows = npm ci
 test_windows = npm test
 ```
 
+环境指纹与非 Git 产物：macOS、Linux、Windows 目标都支持 `[project] fingerprint` 与 `run --artifact`。Windows 目标优先用 `fingerprint_windows`（PowerShell，经 SSH 在任务 worktree 内执行），`--host auto` 对 Windows 候选同样逐台核对。Windows 产物经原生 worker 的 Base64 通道取回 tar（与 `direct` 的 bundle 回传同一通道），本地校验成员后落地；失败保持待拉，可 `fetch JOB --artifacts` 重试。详见 [worker-setup](worker-setup.md)。
+
 ## Transport and Lifecycle
 
 Windows 的元数据使用 JSON，配置和二进制包按 Base64 分块经 SSH stdin 发送与回传，避免 PowerShell 5.1 对原始二进制流的文本转换。启动命令只包含短 PowerShell `EncodedCommand`。不把大配置包放进命令行，不用 POSIX `sh`、`nohup`、`pgrep` 或 `/proc`。`direct` 使用 Git bundle 回传，保留任务分支与员工目录规则。

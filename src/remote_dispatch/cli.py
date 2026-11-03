@@ -22,6 +22,7 @@ import posixpath
 import re
 import secrets
 import shlex
+import shutil
 import socket
 import subprocess
 import sys
@@ -2557,33 +2558,70 @@ def reject_fingerprint(host, rec, command, local, tried):
 
 # ---------------------------------------------------------------- 非 Git 产物
 
+def tracked_files(repo, path):
+    """仓库里与 path 相关的已跟踪文件：path 本身、其下全部文件，以及各级上级路径上的已跟踪文件。"""
+    specs = [path] + [path.rsplit("/", i)[0] for i in range(1, path.count("/") + 1)]
+    p = git(["ls-files", "-z", "--", *[":(literal)" + spec for spec in specs]], repo, check=False)
+    return [name for name in p.stdout.split("\0") if name] if p.returncode == 0 else []
+
+
+def local_artifact_guard(repo, path, is_dir):
+    """拉回前的本地保护；返回 (状态, 说明)，None 表示可写。跟踪冲突跳过，符号链接/创建目录失败为错误。"""
+    hits = artifacts.tracked_conflicts(tracked_files(repo, path), path)
+    if hits:
+        return "skipped", f"本地目标已被 Git 跟踪（{hits[0]}），为免覆盖源码已跳过"
+    dest = os.path.join(repo, *path.split("/"))
+    existing = dest
+    while not os.path.lexists(existing):
+        existing = os.path.dirname(existing)
+    if os.path.commonpath([repo, os.path.realpath(existing)]) != repo or (os.path.islink(dest) and is_dir):
+        return "error", "本地目标路径经符号链接指向仓库外，已拒绝"
+    try:
+        os.makedirs(os.path.dirname(dest), exist_ok=True)
+    except OSError as error:
+        return "error", str(error)
+    return None
+
+
 def pull_artifacts(cfg, rec):
-    """rsync 把远端 worktree 里声明的产物拉回本地仓库同一相对路径；缺失单独报告，不算整体失败。
-    结果写进 rec["artifacts_state"]，返回结果列表。"""
+    """把远端 worktree 里声明的产物拉回本地仓库同一相对路径；缺失单独报告，不算整体失败。
+    POSIX 用 rsync；Windows 经原生 worker 的 base64 通道取 tar（与 fetch-bundle 同一通道，不依赖 scp 路径转换）。
+    状态：fetched/missing/skipped 是终态，error 保持待拉可重试。结果写进 rec["artifacts_state"]。"""
     paths = rec.get("artifact_paths") or []
     host = job_host(cfg, rec)
     job, repo = rec["job"], os.path.realpath(rec["repo"])
     results = []
-    if host["platform"] == "windows":
-        results = [dict(path=p, status="unsupported", error="Windows 目标机暂不支持产物取回") for p in paths]
-    else:
-        probe = "".join(f'if [ -d {shlex.quote(p)} ]; then echo "d {p}"; elif [ -e {shlex.quote(p)} ]; then echo "f {p}"; '
-                        f'else echo "m {p}"; fi\n' for p in paths)
-        r = ssh(host, f'cd "$ROOT/wt/{job}" 2>/dev/null || {{ echo W; exit 0; }}\n{probe}', check=False, timeout=60)
+    kinds = {}
+    try:
+        if host["platform"] == "windows":
+            kinds = native.request(host, "artifact-kinds", {"job": job, "paths": paths}) or {}
+        else:
+            probe = "".join(f'if [ -d {shlex.quote(p)} ]; then echo "d {p}"; elif [ -e {shlex.quote(p)} ]; then echo "f {p}"; '
+                            f'else echo "m {p}"; fi\n' for p in paths)
+            r = ssh(host, f'cd "$ROOT/wt/{job}" 2>/dev/null || {{ echo W; exit 0; }}\n{probe}', check=False, timeout=60)
+            if r is not None and r.returncode == 0:
+                for line in r.stdout.splitlines():
+                    if line == "W":
+                        kinds = {p: "w" for p in paths}
+                        break
+                    kind, _, path = line.partition(" ")
+                    kinds[path] = kind
+    except (OSError, ValueError, SystemExit, subprocess.SubprocessError):
         kinds = {}
-        if r is not None and r.returncode == 0:
-            for line in r.stdout.splitlines():
-                if line == "W":
-                    kinds = {p: "w" for p in paths}
-                    break
-                kind, _, path = line.partition(" ")
-                kinds[path] = kind
-        for path in paths:
-            kind = kinds.get(path)
-            if kind is None:
-                results.append(dict(path=path, status="error", error="无法连接目标机核对路径"))
-            elif kind in ("m", "w"):
-                results.append(dict(path=path, status="missing", error="目标机 worktree 里没有该路径"))
+    for path in paths:
+        kind = kinds.get(path)
+        if kind is None:
+            results.append(dict(path=path, status="error", error="无法连接目标机核对路径"))
+        elif kind == "x":
+            results.append(dict(path=path, status="error", error="目标机路径含符号链接或越界，已拒绝"))
+        elif kind in ("m", "w"):
+            results.append(dict(path=path, status="missing", error="目标机 worktree 里没有该路径"))
+        else:
+            guard = local_artifact_guard(repo, path, kind == "d")
+            if guard:
+                results.append(dict(path=path, status=guard[0], error=guard[1]))
+            elif host["platform"] == "windows":
+                results.append(native_artifact(host, job, repo, path, kind == "d"))
             else:
                 results.append(rsync_artifact(host, job, repo, path, kind == "d"))
     rec["artifacts_state"] = dict(results=results, at=time.strftime("%Y-%m-%d %H:%M:%S"))
@@ -2591,22 +2629,52 @@ def pull_artifacts(cfg, rec):
     return results
 
 
+def native_artifact(host, job, repo, path, is_dir):
+    """Windows：worker 打 tar，本地校验成员后解到临时目录再替换；失败记 error，保持可重试。"""
+    dest = os.path.join(repo, *path.split("/"))
+    try:
+        with tempfile.TemporaryDirectory(dir=os.path.dirname(dest)) as temporary:
+            bundle = Path(temporary) / "artifact.tar"
+            with bundle.open("wb") as stream:
+                native.request(host, "fetch-artifact", {"job": job, "relative": path}, output=stream, timeout=1800)
+            staged = Path(temporary) / "staged"
+            staged.mkdir()
+            with tarfile.open(bundle) as archive:
+                for member in archive.getmembers():
+                    if not (member.isfile() or member.isdir()) or not artifacts.safe_member(member.name):
+                        return dict(path=path, status="error", error=f"目标机回传了不安全的条目：{member.name}")
+                archive.extractall(staged, filter="data") if sys.version_info >= (3, 12) else archive.extractall(staged)
+            if is_dir:
+                os.makedirs(dest, exist_ok=True)
+                shutil.copytree(staged, dest, dirs_exist_ok=True)
+            else:
+                shutil.copy2(staged / os.path.basename(dest), dest)
+    except (OSError, ValueError, tarfile.TarError, SystemExit, subprocess.SubprocessError) as error:
+        return dict(path=path, status="error", error=f"Windows 产物取回失败：{error}"[:300])
+    files, size = artifacts.local_size(dest)
+    return dict(path=path, status="fetched", type="dir" if is_dir else "file", files=files, bytes=size)
+
+
+def rsync_supports_protect_args():
+    try:
+        p = subprocess.run(["rsync", "--help"], capture_output=True, text=True, timeout=10)
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return "--protect-args" in (p.stdout or "") + (p.stderr or "")
+
+
 def rsync_artifact(host, job, repo, path, is_dir):
     dest = os.path.join(repo, *path.split("/"))
-    # 最深的已存在祖先若经符号链接指向仓库外，拒绝写入。
-    existing = dest
-    while not os.path.lexists(existing):
-        existing = os.path.dirname(existing)
-    if os.path.commonpath([repo, os.path.realpath(existing)]) != repo or (os.path.islink(dest) and is_dir):
-        return dict(path=path, status="error", error="本地目标路径经符号链接指向仓库外，已拒绝")
-    try:
-        os.makedirs(os.path.dirname(dest), exist_ok=True)
-    except OSError as error:
-        return dict(path=path, status="error", error=str(error))
     source = scp_path(host, f"wt/{job}/{path}")
     command = ["rsync", "-a", "--safe-links"]
     if not is_local(host):
         command += ["-e", "ssh " + host["ssh_opts"]]
+        prefix = host["ssh"] + ":"
+        if rsync_supports_protect_args():
+            command.append("-s")  # --protect-args：远端路径不经 shell 拆词
+        elif source.startswith(prefix):
+            # openrsync/旧 rsync 把远端路径交给远端 shell，手工加引号防空格拆词。
+            source = prefix + shlex.quote(source[len(prefix):])
     command += ["--", source + "/", dest + "/"] if is_dir else ["--", source, dest]
     try:
         p = subprocess.run(command, capture_output=True, text=True, timeout=1800)
@@ -2675,6 +2743,11 @@ def cmd_run(a, cfg):
         artifact_paths = artifacts.parse_artifacts(getattr(a, "artifact", None))
     except ValueError as error:
         die(str(error), 4)
+    for artifact_path in artifact_paths:
+        hits = artifacts.tracked_conflicts(tracked_files(repo, artifact_path), artifact_path)
+        if hits:
+            die(f"--artifact 不得指向已被 Git 跟踪的路径（会覆盖本地源码）：{artifact_path}（含 {hits[0]}）。"
+                "已跟踪文件的改动走分支取回。", 4)
     line, no_line, line_hint = getattr(a, "line", None), getattr(a, "no_line", False), None
     if line and no_line:
         die("--line 与 --no-line 不能同时使用。", 4)
@@ -2744,11 +2817,6 @@ def cmd_run(a, cfg):
             candidates = pick_hosts(cfg, a.host, a.tag)
         else:
             candidates = [pick_host(cfg, a.host, a.tag)]
-        if fp_command and not skip_fp:
-            posix = [h for h in candidates if h["platform"] != "windows"]
-            if not posix:
-                die("指纹核对暂不支持 Windows 目标机；改用 POSIX 目标机，或显式 --skip-fingerprint。", 4)
-            candidates = posix
         remaining = candidates[1:]
 
         def bind_host(chosen):
@@ -3460,7 +3528,7 @@ def cmd_fetch(a, cfg):
             die("该派单没有声明 --artifact 产物。", 4)
         results = pull_artifacts(cfg, rec)
         print("\n".join(["产物取回："] + artifacts.artifact_lines(results)))
-        if any(item["status"] in ("error", "unsupported") for item in results):
+        if any(item["status"] == "error" for item in results):
             sys.exit(1)
         return
     fetch_job_branch(cfg, rec)
@@ -4156,7 +4224,11 @@ def doctor_fingerprint(cfg, host, a):
     command, timeout = fingerprint_settings(cfg.project(project))
     if not command:
         return 0
-    local = run_local_fingerprint(command, repo, timeout)
+    try:
+        local = run_local_fingerprint(command, repo, timeout)
+    except SystemExit:
+        print("  MISSING  环境指纹：本机指纹命令失败或超时，无法比较（见上方错误）")
+        return 1
     remote, error = run_remote_fingerprint(host, host_fingerprint_command(cfg.project(project), host, command),
                                            timeout, '"$ROOT" 2>/dev/null || cd "$HOME"')
     diff = "" if error else compare_fingerprint(local, remote, host["name"])

@@ -497,6 +497,55 @@ def run_job(spec_file):
         (directory / "exit_code").write_text(str(rc), encoding="utf-8")
 
 
+def artifact_target(root, job, relative):
+    """任务 worktree 内的产物路径；不得越出 worktree，符号链接一律拒绝。返回 (worktree, 目标路径)。"""
+    base = checked_path(root, "wt/" + messages.job_id(job))
+    if not base.is_dir():
+        return None, None
+    relative = relative.replace("\\", "/")
+    if relative.startswith("/") or ".." in relative.split("/") or ":" in relative.split("/")[0]:
+        raise ValueError("产物路径越界。")
+    target = base / relative
+    for parent in [target, *target.parents]:
+        if parent == base:
+            break
+        if parent.is_symlink():
+            raise ValueError("产物路径含符号链接，已拒绝。")
+    return base, target
+
+
+def artifact_kinds(root, job, paths):
+    """每个产物路径的类型：d 目录、f 文件、m 缺失、w 任务 worktree 不存在、x 不可取回。"""
+    kinds = {}
+    for relative in paths:
+        try:
+            base, target = artifact_target(root, job, relative)
+        except ValueError:
+            kinds[relative] = "x"
+            continue
+        kinds[relative] = "w" if base is None else "d" if target.is_dir() else "f" if target.is_file() else "m"
+    return kinds
+
+
+def write_artifact_tar(root, job, relative, bundle):
+    """把产物打成 tar：文件用其文件名，目录用 "." 为根；只收普通文件和目录，跳过符号链接。"""
+    base, target = artifact_target(root, job, relative)
+    if base is None or not target.exists():
+        raise ValueError("产物不存在。")
+    with tarfile.open(bundle, "w") as archive:
+        if target.is_file():
+            archive.add(target, arcname=target.name, recursive=False)
+            return
+        archive.add(target, arcname=".", recursive=False)
+        for folder, dirs, names in os.walk(target):
+            dirs[:] = [d for d in dirs if not (Path(folder) / d).is_symlink()]
+            for name in dirs + names:
+                path = Path(folder) / name
+                if path.is_symlink() or not (path.is_dir() or path.is_file()):
+                    continue
+                archive.add(path, arcname=path.relative_to(target).as_posix(), recursive=False)
+
+
 def handle(q, incoming):
     root = Path(os.path.expandvars(os.path.expanduser(q["workdir"]))).resolve()
     shared = Path(os.path.expandvars(os.path.expanduser(q["shared_workdir"]))).resolve()
@@ -578,6 +627,8 @@ def handle(q, incoming):
             return manifest
         finally:
             lock.rmdir()
+    if op == "artifact-kinds":
+        return artifact_kinds(root, q["job"], q["paths"])
     if op == "upload":
         destination = checked_path(root, q["relative"])
         if q.get("archive"):
@@ -713,12 +764,14 @@ def handle(q, incoming):
 
 def serve(q):
     try:
-        if q["operation"] in ("fetch-bundle", "reports-bundle", "resume-export"):
+        if q["operation"] in ("fetch-bundle", "reports-bundle", "resume-export", "fetch-artifact"):
             root = Path(os.path.expandvars(os.path.expanduser(q["workdir"]))).resolve()
             with tempfile.TemporaryDirectory() as temporary:
                 bundle = Path(temporary) / "result.bundle"
                 if q["operation"] == "fetch-bundle":
                     git(checked_path(root, q["bare"]), "bundle", "create", bundle, "refs/heads/" + q["branch"])
+                elif q["operation"] == "fetch-artifact":
+                    write_artifact_tar(root, q["job"], q["relative"], bundle)
                 elif q["operation"] == "resume-export":
                     export_resume(root, q["job"], bundle)
                 else:

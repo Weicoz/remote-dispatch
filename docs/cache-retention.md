@@ -47,7 +47,7 @@ rdispatch clean --expired              # 只回收过期且安全的 worktree
 | `uncommitted` | 有未提交内容（不含已声明的可再生未跟踪路径；批量时另排除 `--include` 路径） |
 | `pinned` | 已被 `rdispatch keep` 钉住（仅 `--expired`） |
 | `retention_not_expired` | 未到保留期（仅 `--expired`） |
-| `artifacts_pending` | `run --artifact` 声明的产物还没成功拉回；`fetch JOB --artifacts` 后再回收，单个 clean 可 `--force` 放弃 |
+| `artifacts_pending` | `run --artifact` 声明的产物还没成功拉回（缺失、已跳过属终态，不算待拉）；`fetch JOB --artifacts` 后再回收，单个 clean 可 `--force` 放弃 |
 | `plan_referenced` | 待派登记里后续工作项仍引用该派单（见下节）；单个 clean 可用 `--force` 跳过 |
 
 ## 待派登记 `rdispatch plan`
