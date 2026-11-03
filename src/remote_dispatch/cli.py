@@ -2491,6 +2491,8 @@ def compare_fingerprint(local, remote, host_name):
 def check_fingerprint(host, rec, command, local, timeout, setup_timeout):
     """同步完成后先在目标机跑 setup（落 setup.done，启动脚本随后跳过），再执行指纹并与本机比较。"""
     job = rec["job"]
+    # host["timeout"] 来自 config.ini，是字符串；ssh/win_ps 需要数值
+    setup_timeout = int(setup_timeout) if setup_timeout not in (None, "") else None
     if host["platform"] == "windows":
         setup = (f"$d=Join-Path $root {native.ps_quote('jobs/' + job)}; $w=Join-Path $root {native.ps_quote('wt/' + job)}; "
                  "if((Test-Path (Join-Path $d 'setup.ps1')) -and -not (Test-Path (Join-Path $d 'setup.done'))){ "

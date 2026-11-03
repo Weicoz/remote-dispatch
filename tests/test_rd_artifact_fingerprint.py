@@ -507,3 +507,20 @@ class DoctorLocalFailureTests(Fixture):
         self.assertEqual(stop.exception.code, 1)
 
 
+
+
+class FingerprintTimeoutTypeTests(unittest.TestCase):
+    def test_string_setup_timeout_from_config_is_coerced_to_int(self):
+        from unittest import mock
+        import remote_dispatch.cli as c
+        seen = {}
+
+        def fake_ssh(host, script, check=True, timeout=None, **kw):
+            seen["timeout"] = timeout
+            return mock.Mock(returncode=0, stdout="", stderr="")
+
+        with mock.patch.object(c, "ssh", fake_ssh), \
+                mock.patch.object(c, "run_remote_fingerprint", return_value=("fp", None)):
+            c.check_fingerprint({"platform": "posix", "name": "h"}, {"job": "j"}, "cmd", "fp", 120, "3600")
+        self.assertEqual(seen["timeout"], 3600)
+        self.assertIsInstance(seen["timeout"], int)
