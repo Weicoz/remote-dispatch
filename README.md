@@ -56,7 +56,12 @@ rdispatch run --agent codex --prompt-file task.md --ref HEAD
 rdispatch status <job>
 rdispatch result <job>          # 结构化回执（含实际模型与 token 用量；模型没传记「默认」，用量取不到记「未记录」）；--summary 只要摘要
 rdispatch fetch <job>           # 把提交取回为 rd/<branch>
+rdispatch fetch <job> --artifacts   # 重新拉取 run --artifact 声明的非 Git 产物
 ```
+
+非 Git 产物（报告、构建产物等不入库的文件）：`rdispatch run ... --artifact out/report.html --artifact dist`（仓库内相对路径，文件或目录，可重复；绝对路径和含 `..` 的路径退出码 4）。任务结束后 `wait`、`result`、`inbox` 收取回执时自动用 rsync 拉回本地仓库同一相对路径一次，输出与回执 `artifacts` 字段列出已拉回的文件数与大小；远端缺失的路径报告为「缺失」，不算整体失败。拉取失败时产物保持「待拉回」，`clean --expired` 不回收该任务，用 `fetch --artifacts` 重试。
+
+项目可配 `fingerprint` 在派单前核对本机与目标机环境是否一致，`run --skip-fingerprint` 跳过，见 [docs/worker-setup.md](docs/worker-setup.md)。
 
 5. 续跑一轮：
 

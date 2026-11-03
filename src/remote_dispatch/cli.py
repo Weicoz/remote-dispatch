@@ -36,6 +36,7 @@ from . import rd_native as native
 from . import rd_messages as messages
 from . import rd_notify as notifier
 from . import rd_slim as slim
+from . import rd_artifacts as artifacts
 from . import rd_timings as timings
 from . import rd_health as health
 from . import rd_agents as agents
@@ -1006,6 +1007,11 @@ def fmt_probe(host, info, why):
 
 
 def pick_host(cfg, name, tags):
+    return pick_hosts(cfg, name, tags)[0]
+
+
+def pick_hosts(cfg, name, tags):
+    """按优先顺序返回可接单的目标机候选；显式目标机只返回它自己。"""
     if name and name != "auto":
         host = cfg.host(name)
         info = probe(host)
@@ -1013,7 +1019,7 @@ def pick_host(cfg, name, tags):
         print(fmt_probe(host, info, why))
         if why:
             die(f"目标机 {name} 离线或暂时无法接单（{'; '.join(why)}）；未派出，请检查目标机状态。", 3)
-        return host
+        return [host]
     matching = [h for h in cfg.hosts() if set(tags) <= {t.strip() for t in h["tags"].split(",") if t.strip()}]
     hosts = [h for h in matching if not is_local(h)]
     if not hosts:
@@ -1031,7 +1037,7 @@ def pick_host(cfg, name, tags):
             free.append((per_core, int(num(info.get("running")) or 0), host["name"], host))
     if not free:
         die("no host can take the job right now; nothing was dispatched.", 3)
-    return sorted(free, key=lambda t: t[:3])[0][3]
+    return [item[3] for item in sorted(free, key=lambda t: t[:3])]
 
 
 # ---------------------------------------------------------------- local git
@@ -1216,7 +1222,23 @@ def collect_result(cfg, rec, snapshot):
     number = int(snapshot.get("round") or 0) or rec["rounds"]
     receipt = queries(cfg).result(rec, number, snapshot)
     if receipt is not None and messages.read_json(result_path(rec, number)) is None:
+        receipt = add_receipt_extras(cfg, rec, snapshot, receipt)
         persist_receipt(rec, receipt)
+    return receipt
+
+
+def add_receipt_extras(cfg, rec, snapshot, receipt):
+    """首次落盘回执时附上产物取回结果与环境指纹记录，并重算回执 ID。"""
+    results = auto_pull_artifacts(cfg, rec, snapshot)
+    extras = {}
+    if results is not None:
+        extras["artifacts"] = dict(paths=rec["artifact_paths"], results=results)
+    if rec.get("fingerprint"):
+        extras["fingerprint"] = rec["fingerprint"]
+    if not extras:
+        return receipt
+    receipt = dict(receipt, **extras)
+    receipt["receipt_id"] = query.receipt_id(receipt)
     return receipt
 
 
@@ -1250,6 +1272,11 @@ def cmd_result(a, cfg):
         die("结果尚未取得；用 rdispatch status 查看运行或连接状态。", 2)
     result = dict(dict(receipt, **queries(cfg).review(rec, receipt["round"])), delivery_state=delivery(rec, receipt),
                   acknowledgement=queries(cfg).acknowledgement(rec, receipt))
+    if rec.get("artifact_paths") and "artifacts" not in result:
+        pulled = auto_pull_artifacts(cfg, rec, {"state": "done"})
+        if pulled is not None:
+            result["artifacts"] = dict(paths=rec["artifact_paths"], results=pulled)
+            print("\n".join(["产物取回："] + artifacts.artifact_lines(pulled)), file=sys.stderr)
     if getattr(a, "summary", False):
         result = messages.result_summary(result)
         result["receipt_path"] = str(result_path(rec, receipt["round"]))
@@ -2382,6 +2409,228 @@ def include_list(a, repo):
     return include_paths
 
 
+# ---------------------------------------------------------------- 环境指纹
+
+class FingerprintMismatch(Exception):
+    """目标机环境指纹与本机不一致，或指纹/setup 步骤失败；attempt 记录本台的结果。"""
+    def __init__(self, attempt):
+        super().__init__(attempt.get("error") or "环境指纹不一致")
+        self.attempt = attempt
+
+
+def fingerprint_settings(proj):
+    """返回 (指纹命令或 None, 超时秒数)；超时配置不合法直接退出 4。"""
+    command = (proj.get("fingerprint") or "").strip() or None
+    raw = (proj.get("fingerprint_timeout") or "").strip()
+    try:
+        timeout = int(raw) if raw else artifacts.DEFAULT_FINGERPRINT_TIMEOUT
+    except ValueError:
+        die(f"fingerprint_timeout 必须是正整数秒：{raw}", 4)
+    if timeout <= 0:
+        die(f"fingerprint_timeout 必须是正整数秒：{raw}", 4)
+    return command, timeout
+
+
+def host_fingerprint_command(proj, host, command):
+    """Windows 目标优先用 fingerprint_windows（PowerShell 语法）；未配置时沿用 fingerprint。"""
+    if command and host["platform"] == "windows":
+        return (proj.get("fingerprint_windows") or "").strip() or command
+    return command
+
+
+def win_ps(host, script, timeout):
+    """经 SSH 在 Windows 目标机跑 PowerShell 脚本（EncodedCommand，无 shell 插值）；超时返回 None。
+    脚本里 $root 是展开后的工作根目录。"""
+    prefix = "$root=[Environment]::ExpandEnvironmentVariables(" + native.ps_quote(host["workdir"]) + ").Replace('~',$env:USERPROFILE); "
+    if host["path"]:
+        prefix += "$env:PATH=[Environment]::ExpandEnvironmentVariables(" + native.ps_quote(host["path"]) + ")+';'+$env:PATH; "
+    cmd = ["ssh", *shlex.split(host["ssh_opts"]), host["ssh"], " ".join(native.powershell(prefix + script))]
+    try:
+        p = subprocess.run(cmd, capture_output=True, text=True, stdin=subprocess.DEVNULL, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        return None
+    return p
+
+
+def run_local_fingerprint(command, cwd, timeout):
+    """本机仓库目录执行指纹命令，返回 stdout；失败或超时在派单前退出 4。"""
+    try:
+        p = subprocess.run(["sh", "-c", command], cwd=cwd, capture_output=True, text=True, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        die(f"本机指纹命令超过 {timeout} 秒，未派单（可调 fingerprint_timeout）。", 4)
+    except OSError as error:
+        die(f"本机指纹命令无法执行：{error}", 4)
+    if p.returncode:
+        die(f"本机指纹命令失败（退出码 {p.returncode}），未派单：{(p.stderr or '').strip()[:300]}", 4)
+    return p.stdout
+
+
+def run_remote_fingerprint(host, command, timeout, cwd='"$ROOT"', job=None):
+    """目标机上执行指纹命令；返回 (stdout, 错误说明或 None)。"""
+    if host["platform"] == "windows":
+        where = f"Join-Path $root {native.ps_quote('wt/' + job)}" if job else "$root"
+        inner = native.powershell(command)[-1]
+        script = (f"$w={where}; if(-not (Test-Path $w)){{ $w=$HOME }}; Set-Location $w; $env:RD_WT=(Get-Location).Path; "
+                  f"& powershell.exe -NoProfile -NonInteractive -EncodedCommand {inner}; exit $LASTEXITCODE")
+        r = win_ps(host, script, timeout)
+    else:
+        script = f'cd {cwd} || exit 96\nexport RD_WT="$PWD"\nsh -c {shlex.quote(command)}'
+        r = ssh(host, script, check=False, timeout=timeout)
+    if r is None:
+        return "", f"指纹命令超过 {timeout} 秒"
+    if r.returncode:
+        return r.stdout or "", f"指纹命令退出码 {r.returncode}：{(r.stderr or '').strip()[:300]}"
+    return r.stdout, None
+
+
+def compare_fingerprint(local, remote, host_name):
+    return artifacts.fingerprint_diff(local.rstrip(), remote.rstrip(), host_name)
+
+
+def check_fingerprint(host, rec, command, local, timeout, setup_timeout):
+    """同步完成后先在目标机跑 setup（落 setup.done，启动脚本随后跳过），再执行指纹并与本机比较。"""
+    job = rec["job"]
+    if host["platform"] == "windows":
+        setup = (f"$d=Join-Path $root {native.ps_quote('jobs/' + job)}; $w=Join-Path $root {native.ps_quote('wt/' + job)}; "
+                 "if((Test-Path (Join-Path $d 'setup.ps1')) -and -not (Test-Path (Join-Path $d 'setup.done'))){ "
+                 "Set-Location $w; $env:RD_JOB=" + native.ps_quote(job) + "; $env:RD_WT=$w; $env:RD_JOB_DIR=$d; "
+                 "$s=Get-Content -Raw (Join-Path $d 'setup.ps1'); "
+                 "& powershell.exe -NoProfile -NonInteractive -Command $s *> (Join-Path $d 'setup.log'); "
+                 "if($LASTEXITCODE -ne 0){ exit $LASTEXITCODE }; New-Item -ItemType File (Join-Path $d 'setup.done') -Force | Out-Null }")
+        r = win_ps(host, setup, setup_timeout)
+    else:
+        setup = (f'D="$ROOT/jobs/{job}"; [ -f "$D/setup.sh" ] || exit 0; [ -f "$D/setup.done" ] && exit 0\n'
+                 f'cd "$ROOT/wt/{job}" || exit 96\n'
+                 f'export RD_JOB={shlex.quote(job)} RD_WT="$PWD" RD_JOB_DIR="$D"\n'
+                 f'sh "$D/setup.sh" > "$D/setup.log" 2>&1 && touch "$D/setup.done"')
+        r = ssh(host, setup, check=False, timeout=setup_timeout)
+    if r is None or r.returncode:
+        reason = "setup 超时" if r is None else f"setup 失败（退出码 {r.returncode}，见 setup.log）"
+        raise FingerprintMismatch(dict(host=host["name"], remote="", diff="", error=reason + "，未能核对环境指纹"))
+    remote, error = run_remote_fingerprint(host, command, timeout, f'"$ROOT/wt/{job}"', job=job)
+    diff = "" if error else compare_fingerprint(local, remote, host["name"])
+    if error or diff:
+        raise FingerprintMismatch(dict(host=host["name"], remote=artifacts.trim(remote), diff=diff, error=error))
+    rec["fingerprint"] = dict(command=command, match=True, host=host["name"], local=artifacts.trim(local),
+                              remote=artifacts.trim(remote), digest=artifacts.fingerprint_digest(local))
+
+
+def drop_attempt(host, rec):
+    """换机前删掉本台已建的 worktree 与任务目录（尽力而为）。"""
+    job, bare = rec["job"], rec["bare"]
+    if host["platform"] == "windows":
+        win_ps(host, f"$w=Join-Path $root {native.ps_quote('wt/' + job)}; $b=Join-Path $root {native.ps_quote(bare)}; "
+                     f"git -C $b worktree remove --force $w 2>$null; if(Test-Path $w){{ Remove-Item -Recurse -Force $w }}; "
+                     f"git -C $b worktree prune 2>$null; Remove-Item -Recurse -Force (Join-Path $root {native.ps_quote('jobs/' + job)}) -ErrorAction SilentlyContinue", 300)
+        return
+    wt = f'"$ROOT/wt/{job}"'
+    ssh(host, f'git -C "$ROOT/{bare}" worktree remove --force {wt} 2>/dev/null || rm -rf {wt}; '
+              f'git -C "$ROOT/{bare}" worktree prune 2>/dev/null; rm -rf "$ROOT/jobs/{job}"', check=False)
+
+
+def reject_fingerprint(host, rec, command, local, tried):
+    """全部候选都不一致：任务不执行主体，目标机落退出码 95，回执记两边指纹，打印逐行差异后退出 5。"""
+    last = tried[-1]
+    lines = []
+    for item in tried:
+        lines.append(f"[{item['host']}] " + (item["error"] or "环境指纹不一致"))
+        if item["diff"]:
+            lines.append(item["diff"])
+    text = "\n".join(lines)
+    rec["fingerprint"] = dict(command=command, match=False, host=last["host"], local=artifacts.trim(local),
+                              remote=last["remote"], diff=last["diff"], error=last["error"],
+                              digest=artifacts.fingerprint_digest(local),
+                              tried=[dict(host=i["host"], remote=i["remote"], diff=i["diff"], error=i["error"]) for i in tried])
+    rec["dispatch_state"] = "fingerprint_rejected"
+    save_job(rec)
+    job = rec["job"]
+    if host["platform"] == "windows":
+        win_ps(host, f"$d=Join-Path $root {native.ps_quote('jobs/' + job)}; New-Item -ItemType Directory -Force $d | Out-Null; "
+                     f"[IO.File]::WriteAllText((Join-Path $d 'stdout.r1.log'), {native.ps_quote(text + chr(10))}); "
+                     "'' | Set-Content (Join-Path $d 'stderr.r1.log'); '95' | Set-Content (Join-Path $d 'exit_code')", 60)
+    else:
+        ssh(host, f'D="$ROOT/jobs/{job}"; mkdir -p "$D"; printf %s {shlex.quote(text + chr(10))} > "$D/stdout.r1.log"; '
+                  f': > "$D/stderr.r1.log"; : > "$D/run.r1.sh"; echo 95 > "$D/exit_code"', check=False)
+    print(text, file=sys.stderr)
+    die(f"环境指纹核对未通过，任务 {job} 未执行主体（退出码 95）。修复目标机环境，或显式 --skip-fingerprint。", 5)
+
+
+# ---------------------------------------------------------------- 非 Git 产物
+
+def pull_artifacts(cfg, rec):
+    """rsync 把远端 worktree 里声明的产物拉回本地仓库同一相对路径；缺失单独报告，不算整体失败。
+    结果写进 rec["artifacts_state"]，返回结果列表。"""
+    paths = rec.get("artifact_paths") or []
+    host = job_host(cfg, rec)
+    job, repo = rec["job"], os.path.realpath(rec["repo"])
+    results = []
+    if host["platform"] == "windows":
+        results = [dict(path=p, status="unsupported", error="Windows 目标机暂不支持产物取回") for p in paths]
+    else:
+        probe = "".join(f'if [ -d {shlex.quote(p)} ]; then echo "d {p}"; elif [ -e {shlex.quote(p)} ]; then echo "f {p}"; '
+                        f'else echo "m {p}"; fi\n' for p in paths)
+        r = ssh(host, f'cd "$ROOT/wt/{job}" 2>/dev/null || {{ echo W; exit 0; }}\n{probe}', check=False, timeout=60)
+        kinds = {}
+        if r is not None and r.returncode == 0:
+            for line in r.stdout.splitlines():
+                if line == "W":
+                    kinds = {p: "w" for p in paths}
+                    break
+                kind, _, path = line.partition(" ")
+                kinds[path] = kind
+        for path in paths:
+            kind = kinds.get(path)
+            if kind is None:
+                results.append(dict(path=path, status="error", error="无法连接目标机核对路径"))
+            elif kind in ("m", "w"):
+                results.append(dict(path=path, status="missing", error="目标机 worktree 里没有该路径"))
+            else:
+                results.append(rsync_artifact(host, job, repo, path, kind == "d"))
+    rec["artifacts_state"] = dict(results=results, at=time.strftime("%Y-%m-%d %H:%M:%S"))
+    save_job(rec)
+    return results
+
+
+def rsync_artifact(host, job, repo, path, is_dir):
+    dest = os.path.join(repo, *path.split("/"))
+    # 最深的已存在祖先若经符号链接指向仓库外，拒绝写入。
+    existing = dest
+    while not os.path.lexists(existing):
+        existing = os.path.dirname(existing)
+    if os.path.commonpath([repo, os.path.realpath(existing)]) != repo or (os.path.islink(dest) and is_dir):
+        return dict(path=path, status="error", error="本地目标路径经符号链接指向仓库外，已拒绝")
+    try:
+        os.makedirs(os.path.dirname(dest), exist_ok=True)
+    except OSError as error:
+        return dict(path=path, status="error", error=str(error))
+    source = scp_path(host, f"wt/{job}/{path}")
+    command = ["rsync", "-a", "--safe-links"]
+    if not is_local(host):
+        command += ["-e", "ssh " + host["ssh_opts"]]
+    command += ["--", source + "/", dest + "/"] if is_dir else ["--", source, dest]
+    try:
+        p = subprocess.run(command, capture_output=True, text=True, timeout=1800)
+    except (OSError, subprocess.TimeoutExpired) as error:
+        return dict(path=path, status="error", error=f"rsync 无法完成：{error}")
+    if p.returncode:
+        return dict(path=path, status="error", error=f"rsync 退出码 {p.returncode}：{(p.stderr or '').strip()[:200]}")
+    files, size = artifacts.local_size(dest)
+    return dict(path=path, status="fetched", type="dir" if is_dir else "file", files=files, bytes=size)
+
+
+def auto_pull_artifacts(cfg, rec, snapshot):
+    """任务已结束且尚未成功拉回时自动拉取一次；返回结果列表，无产物或不适用返回 None。"""
+    if not rec.get("artifact_paths") or snapshot.get("state") not in ("done", "dead"):
+        return None
+    if artifacts.artifacts_pending(rec) or not (rec.get("artifacts_state") or {}).get("results"):
+        try:
+            return pull_artifacts(cfg, rec)
+        except (OSError, SystemExit, subprocess.SubprocessError) as error:
+            print(f"产物拉回未完成：{error}；稍后用 rdispatch fetch {rec['job']} --artifacts 重试。", file=sys.stderr)
+            return None
+    return rec["artifacts_state"]["results"]
+
+
 def cmd_run(a, cfg):
     scope = run_scope(a, cfg)
     uid, forwarded_origin, origin_harness, owner = scope.uid, scope.forwarded_origin, scope.origin_harness, scope.owner
@@ -2422,6 +2671,10 @@ def cmd_run(a, cfg):
         prompt = context_pack(cfg, uid, a.context_from) + "\n" + prompt
 
     include_paths = include_list(a, repo)
+    try:
+        artifact_paths = artifacts.parse_artifacts(getattr(a, "artifact", None))
+    except ValueError as error:
+        die(str(error), 4)
     line, no_line, line_hint = getattr(a, "line", None), getattr(a, "no_line", False), None
     if line and no_line:
         die("--line 与 --no-line 不能同时使用。", 4)
@@ -2466,6 +2719,13 @@ def cmd_run(a, cfg):
     job = f"{uid}-{project}-{name}-{stamp}"
     branch = a.branch or f"rd/{uid}/{name}-{stamp}"
     git(["check-ref-format", "--branch", branch], repo)
+    fp_command, fp_timeout = fingerprint_settings(proj)
+    skip_fp = bool(getattr(a, "skip_fingerprint", False))
+    local_fp = None
+    if fp_command and skip_fp:
+        print("警告：已用 --skip-fingerprint 跳过环境指纹核对；本机与目标机环境可能不一致。", file=sys.stderr)
+    elif fp_command:
+        local_fp = run_local_fingerprint(fp_command, repo, fp_timeout)
 
     with contextlib.ExitStack() as stack:
         included = None
@@ -2477,36 +2737,60 @@ def cmd_run(a, cfg):
             if packed.returncode:
                 die("--include 打包失败，未派单：\n" + packed.stderr.decode(errors="replace"))
             included.seek(0)
-        host = cfg.host(a.host) if a.force_host and a.host not in (None, "auto") else pick_host(cfg, a.host, a.tag)
-        host = scoped_host(host, uid)
-        if getattr(a, "workdir", None):
-            custom_root = a.workdir.rstrip("/\\")
-            host["workdir"] = custom_root + ("/users/" + uid if uid else "")
-            host["shared_workdir"] = custom_root
-            if is_local(host) and not custom_root.startswith(("/", "~", "$HOME")):
-                die("本机目标的 --workdir 必须是绝对路径或 ~ 开头。", 4)
-            try:
-                parse_cache_dirs(host.get("cache_dirs", ""), custom_root)
-            except ValueError as error:
-                die(f"[host:{host['name']}] cache_dirs {error}", 4)
-        check_controller(host, uid)
-        if host["platform"] == "windows" and (a.test or test_full):
-            a.cmd = proj.get("test_windows", a.cmd)
-        profile = None
-        if a.agent:
-            profile = agent_preflight(host, uid, a.agent, agent)
-        rec = {"job": job, "host": host["name"], "project": project, "origin": origin_url, "repo": repo, "branch": branch,
+        explicit = a.force_host and a.host not in (None, "auto")
+        if explicit:
+            candidates = [cfg.host(a.host)]
+        elif fp_command and not skip_fp and a.host in (None, "auto"):
+            candidates = pick_hosts(cfg, a.host, a.tag)
+        else:
+            candidates = [pick_host(cfg, a.host, a.tag)]
+        if fp_command and not skip_fp:
+            posix = [h for h in candidates if h["platform"] != "windows"]
+            if not posix:
+                die("指纹核对暂不支持 Windows 目标机；改用 POSIX 目标机，或显式 --skip-fingerprint。", 4)
+            candidates = posix
+        remaining = candidates[1:]
+
+        def bind_host(chosen):
+            """目标机作用域、控制端检查与员工配置预检；首选与换机共用。"""
+            chosen = scoped_host(chosen, uid)
+            if getattr(a, "workdir", None):
+                custom_root = a.workdir.rstrip("/\\")
+                chosen["workdir"] = custom_root + ("/users/" + uid if uid else "")
+                chosen["shared_workdir"] = custom_root
+                if is_local(chosen) and not custom_root.startswith(("/", "~", "$HOME")):
+                    die("本机目标的 --workdir 必须是绝对路径或 ~ 开头。", 4)
+                try:
+                    parse_cache_dirs(chosen.get("cache_dirs", ""), custom_root)
+                except ValueError as error:
+                    die(f"[host:{chosen['name']}] cache_dirs {error}", 4)
+            check_controller(chosen, uid)
+            if chosen["platform"] == "windows" and (a.test or test_full):
+                a.cmd = proj.get("test_windows", a.cmd)
+            return chosen, agent_preflight(chosen, uid, a.agent, agent) if a.agent else None
+
+        def host_fields(chosen, chosen_profile):
+            return {"host": chosen["name"], "sync": chosen["sync"], "worker_root": chosen["workdir"],
+                    "shared_root": chosen["shared_workdir"], "profile": chosen_profile,
+                    "auth_file": chosen[spec["auth_key"]] if a.agent else chosen["codex_auth_file"],
+                    "worker_platform": chosen["platform"], "worker_python": chosen["python"]}
+
+        host, profile = bind_host(candidates[0])
+        rec = {"job": job, "project": project, "origin": origin_url, "repo": repo, "branch": branch,
                "base": sha, "source_branch": source_branch, "include_paths": include_paths,
-               "sync": host["sync"], "agent": a.agent, "cmd": a.cmd, "rounds": 1,
+               "agent": a.agent, "cmd": a.cmd, "rounds": 1,
                "created": time.strftime("%Y-%m-%d %H:%M:%S"), "user_id": uid,
-               "worker_root": host["workdir"], "shared_root": host["shared_workdir"], "profile": profile,
                "model": a.model, "effort": a.effort, "agent_config": agent if a.agent else None,
                "agent_kind": a.agent, "isolated": bool(a.agent), "permission_mode": permission,
-               "auth_file": host[spec["auth_key"]] if a.agent else host["codex_auth_file"],
-               "worker_platform": host["platform"], "worker_python": host["python"], "heavy": a.heavy,
+               "heavy": a.heavy,
                "handoff_version": 1, "initiator_session": owner, "test": bool(a.test or test_full),
                "test_tier": ("full" if test_full or not proj.get("test_quick") else "quick") if (a.test or test_full) else None,
                "regenerable_paths": slim.parse_paths(proj.get("regenerable_paths", ""))}
+        rec.update(host_fields(host, profile))
+        if artifact_paths:
+            rec["artifact_paths"] = artifact_paths
+        if fp_command and skip_fp:
+            rec["fingerprint"] = {"command": fp_command, "skipped": True}
         if getattr(a, "gate", None):
             rec["gate"] = a.gate
         if plan_item:
@@ -2527,77 +2811,109 @@ def cmd_run(a, cfg):
         projects.ProjectIndex(STATE, uid).register(rec)
         if plan_item:
             plan_store.attach_job(plan_item, job, after)
-        try:
-            if host["platform"] == "windows":
-                native_init(host, rec, repo, sha, proj.get("origin_url") or origin_url)
+        tried = []
+        while True:
+            try:
+                if host["platform"] == "windows":
+                    native_init(host, rec, repo, sha, proj.get("origin_url") or origin_url)
+                    if a.include:
+                        native.request(host, "upload", {"relative": "wt/" + job, "archive": True}, payload=included)
+                    if wip:
+                        native.request(host, "apply-wip", {"job": job}, payload=wip)
+                    setup = proj.get("setup_windows", proj.get("setup"))
+                    if setup:
+                        put_file(host, f"jobs/{job}/setup.ps1", setup)
+                    if fp_command and not skip_fp:
+                        check_fingerprint(host, rec, host_fingerprint_command(proj, host, fp_command), local_fp,
+                                          fp_timeout, a.timeout or host["timeout"])
+                    rec["dispatch_state"] = "launching"
+                    save_job(rec)
+                    launch(host, rec, 1, "", prompt, a.timeout or host["timeout"])
+                    rec["dispatch_state"] = "started"
+                    save_job(rec)
+                    record_decline(a, scope)
+                    print(f"started. job id: {job}")
+                    return
+                if host["sync"] == "origin":
+                    worker_url = proj.get("origin_url") or origin_url or die("this repository has no 'origin' remote")
+                    if not rec.get("owns_origin_branch"):
+                        push_task_branch(repo, "origin", branch, sha)
+                        rec["owns_origin_branch"] = True
+                        save_job(rec)
+                    prep = (f'if [ -d "$ROOT/{bare}" ]; then\n'
+                            f'  if git -C "$ROOT/{bare}" show-ref --verify --quiet {shlex.quote("refs/heads/" + branch)}; then '
+                            f'echo "task branch already exists; use another --branch" >&2; exit 91; fi\n'
+                            f'else GIT_TERMINAL_PROMPT=0 git clone --bare {shlex.quote(worker_url)} "$ROOT/{bare}" || exit 90; fi\n'
+                            f'GIT_TERMINAL_PROMPT=0 git -C "$ROOT/{bare}" fetch origin '
+                            f'{shlex.quote("refs/heads/" + branch + ":refs/heads/" + branch)} || exit 91\n'
+                            f'touch "$ROOT/jobs/{job}/branch-created" || exit 91\n')
+                elif host["sync"] == "direct":
+                    ssh(host, f'mkdir -p "$ROOT/repos" && {{ [ -d "$ROOT/{bare}" ] || git init -q --bare "$ROOT/{bare}"; }}')
+                    push_task_branch(repo, scp_path(host, bare), branch, sha, env=git_ssh_env(host))
+                    rec["owns_worker_branch"] = True
+                    save_job(rec)
+                    prep = ""
+                else:
+                    die(f"[host:{host['name']}] sync must be origin or direct")
+                ssh(host, f'mkdir -p "$ROOT/jobs/{job}" "$ROOT/repos" "$ROOT/wt" "$SHARED_ROOT/locks" "$ROOT/bin"\n{prep}'
+                          f'git -C "$ROOT/{bare}" worktree add -q "$ROOT/wt/{job}" {shlex.quote(branch)} || exit 92')
+
                 if a.include:
-                    native.request(host, "upload", {"relative": "wt/" + job, "archive": True}, payload=included)
+                    ssh(host, f'tar -xf - -C "$ROOT/wt/{job}"', stdin=included)
                 if wip:
-                    native.request(host, "apply-wip", {"job": job}, payload=wip)
-                setup = proj.get("setup_windows", proj.get("setup"))
-                if setup:
-                    put_file(host, f"jobs/{job}/setup.ps1", setup)
+                    with tempfile.TemporaryFile() as patch_file:
+                        patch_file.write(wip)
+                        patch_file.seek(0)
+                        ssh(host, f'git -C "$ROOT/wt/{job}" apply --index --binary -', stdin=patch_file)
+                if proj.get("setup"):
+                    put_file(host, f"jobs/{job}/setup.sh", proj["setup"] + "\n")
+                if fp_command and not skip_fp:
+                    check_fingerprint(host, rec, fp_command, local_fp, fp_timeout, a.timeout or host["timeout"])
+
+                if a.agent:
+                    cmd_text = agent_command(agent, a.model, a.effort, permission=permission)
+                else:
+                    cmd_text = ("rd-heavy sh -c " + shlex.quote(a.cmd)) if a.heavy else a.cmd
                 rec["dispatch_state"] = "launching"
                 save_job(rec)
-                launch(host, rec, 1, "", prompt, a.timeout or host["timeout"])
+                launch(host, rec, 1, cmd_text, prompt, a.timeout or host["timeout"])
                 rec["dispatch_state"] = "started"
                 save_job(rec)
                 record_decline(a, scope)
                 print(f"started. job id: {job}")
-                return
-            if host["sync"] == "origin":
-                worker_url = proj.get("origin_url") or origin_url or die("this repository has no 'origin' remote")
-                push_task_branch(repo, "origin", branch, sha)
-                rec["owns_origin_branch"] = True
+                print(f"  rdispatch status {job}    rdispatch logs {job}    rdispatch wait {job}    rdispatch fetch {job}")
+                break
+            except FingerprintMismatch as mismatch:
+                tried.append(mismatch.attempt)
+                if not remaining:
+                    reject_fingerprint(host, rec, fp_command, local_fp, tried)
+                print(f"{host['name']} 环境指纹不一致，换下一台候选。", file=sys.stderr)
+                drop_attempt(host, rec)
+                host = remaining.pop(0)
+                try:
+                    host, profile = bind_host(host)
+                except SystemExit:
+                    rec["dispatch_state"] = "preparation_failed"
+                    save_job(rec)
+                    raise
+                rec.update(host_fields(host, profile))
+                rec["dispatch_state"] = "preparing"
                 save_job(rec)
-                prep = (f'if [ -d "$ROOT/{bare}" ]; then\n'
-                        f'  if git -C "$ROOT/{bare}" show-ref --verify --quiet {shlex.quote("refs/heads/" + branch)}; then '
-                        f'echo "task branch already exists; use another --branch" >&2; exit 91; fi\n'
-                        f'else GIT_TERMINAL_PROMPT=0 git clone --bare {shlex.quote(worker_url)} "$ROOT/{bare}" || exit 90; fi\n'
-                        f'GIT_TERMINAL_PROMPT=0 git -C "$ROOT/{bare}" fetch origin '
-                        f'{shlex.quote("refs/heads/" + branch + ":refs/heads/" + branch)} || exit 91\n'
-                        f'touch "$ROOT/jobs/{job}/branch-created" || exit 91\n')
-            elif host["sync"] == "direct":
-                ssh(host, f'mkdir -p "$ROOT/repos" && {{ [ -d "$ROOT/{bare}" ] || git init -q --bare "$ROOT/{bare}"; }}')
-                push_task_branch(repo, scp_path(host, bare), branch, sha, env=git_ssh_env(host))
-                rec["owns_worker_branch"] = True
-                save_job(rec)
-                prep = ""
-            else:
-                die(f"[host:{host['name']}] sync must be origin or direct")
-            ssh(host, f'mkdir -p "$ROOT/jobs/{job}" "$ROOT/repos" "$ROOT/wt" "$SHARED_ROOT/locks" "$ROOT/bin"\n{prep}'
-                      f'git -C "$ROOT/{bare}" worktree add -q "$ROOT/wt/{job}" {shlex.quote(branch)} || exit 92')
+                print(f"dispatching {job} -> {host['name']} (branch {branch}, base {sha[:10]}, sync {host['sync']})")
+                if included is not None:
+                    included.seek(0)
+                continue
+            except (SystemExit, Exception, KeyboardInterrupt):
+                if rec["dispatch_state"] == "fingerprint_rejected":
+                    raise
+                if rec["dispatch_state"] == "preparing":
+                    rec["dispatch_state"] = "preparation_failed"
+                    save_job(rec)
+                    print(f"rdispatch: 准备失败，job 已登记：{job}；核对后用 rdispatch clean {job} --force --delete-branch 清理本任务。", file=sys.stderr)
+                else:
+                    print(f"rdispatch: 启动结果待核实，job 已登记：{job}；先用 rdispatch status {job} 检查。", file=sys.stderr)
+                raise
 
-            if a.include:
-                ssh(host, f'tar -xf - -C "$ROOT/wt/{job}"', stdin=included)
-            if wip:
-                with tempfile.TemporaryFile() as patch_file:
-                    patch_file.write(wip)
-                    patch_file.seek(0)
-                    ssh(host, f'git -C "$ROOT/wt/{job}" apply --index --binary -', stdin=patch_file)
-            if proj.get("setup"):
-                put_file(host, f"jobs/{job}/setup.sh", proj["setup"] + "\n")
-
-            if a.agent:
-                cmd_text = agent_command(agent, a.model, a.effort, permission=permission)
-            else:
-                cmd_text = ("rd-heavy sh -c " + shlex.quote(a.cmd)) if a.heavy else a.cmd
-            rec["dispatch_state"] = "launching"
-            save_job(rec)
-            launch(host, rec, 1, cmd_text, prompt, a.timeout or host["timeout"])
-            rec["dispatch_state"] = "started"
-            save_job(rec)
-            record_decline(a, scope)
-            print(f"started. job id: {job}")
-            print(f"  rdispatch status {job}    rdispatch logs {job}    rdispatch wait {job}    rdispatch fetch {job}")
-        except (SystemExit, Exception, KeyboardInterrupt):
-            if rec["dispatch_state"] == "preparing":
-                rec["dispatch_state"] = "preparation_failed"
-                save_job(rec)
-                print(f"rdispatch: 准备失败，job 已登记：{job}；核对后用 rdispatch clean {job} --force --delete-branch 清理本任务。", file=sys.stderr)
-            else:
-                print(f"rdispatch: 启动结果待核实，job 已登记：{job}；先用 rdispatch status {job} 检查。", file=sys.stderr)
-            raise
 
 
 def remote_state(host, jobs):
@@ -2674,10 +2990,12 @@ def describe(rec, st):
         bits.append("preparation failed; registered for rdispatch clean")
     if s == "done":
         code = st.get("exit")
-        label = {"0": "ok", "124": "timed out", "97": "setup failed", "98": "profile/auth setup failed", "96": "worktree missing", "143": "stopped"}.get(code, "failed")
+        label = {"0": "ok", "124": "timed out", "97": "setup failed", "95": "environment fingerprint mismatch", "98": "profile/auth setup failed", "96": "worktree missing", "143": "stopped"}.get(code, "failed")
         bits.append(f"exit {code} ({label})")
         if rec.get("handoff_version"):
             bits.append("等待发起方收取与判断；检查状态以结果回执为准")
+    if rec.get("artifact_paths"):
+        bits.append("产物 " + ("待拉回" if artifacts.artifacts_pending(rec) else "已处理") + f"（{len(rec['artifact_paths'])} 项）")
     if st.get("setup") == "pending" and s == "running":
         bits.append("running setup")
     if st.get("head"):
@@ -2802,6 +3120,9 @@ def cmd_wait(a, cfg):
         st = job_states(cfg, [rec]).get(rec["job"], {})
         if st.get("state") in ("done", "dead", "missing"):
             print(describe(rec, st))
+            pulled = auto_pull_artifacts(cfg, rec, st)
+            if pulled is not None:
+                print("\n".join(["产物取回："] + artifacts.artifact_lines(pulled)))
             sys.exit(0 if st.get("exit") == "0" else 1)
         if deadline and time.time() > deadline:
             print(describe(rec, st))
@@ -3134,6 +3455,14 @@ def migrate_job(rec, source, target):
 
 def cmd_fetch(a, cfg):
     rec = load_job(a.job)
+    if getattr(a, "artifacts", False):
+        if not rec.get("artifact_paths"):
+            die("该派单没有声明 --artifact 产物。", 4)
+        results = pull_artifacts(cfg, rec)
+        print("\n".join(["产物取回："] + artifacts.artifact_lines(results)))
+        if any(item["status"] in ("error", "unsupported") for item in results):
+            sys.exit(1)
+        return
     fetch_job_branch(cfg, rec)
     repo, b = rec["repo"], rec["branch"]
     log = git(["log", "--oneline", f"{rec['base']}..rd/{b}"], repo).stdout.strip()
@@ -3323,6 +3652,7 @@ BLOCK_DIRTY = "uncommitted"
 BLOCK_PINNED = "pinned"
 BLOCK_RETENTION = "retention_not_expired"
 BLOCK_PLAN_REFERENCED = "plan_referenced"
+BLOCK_ARTIFACTS_PENDING = "artifacts_pending"
 RECLAIM_OK = "ok"
 
 
@@ -3383,6 +3713,8 @@ def reclaim_check(cfg, rec, snapshot, host, *, single=False, force=False, a=None
             referrers = []
         if referrers:
             return BLOCK_PLAN_REFERENCED, "待派登记中后续工作项仍引用该派单：" + "、".join(referrers), None, []
+    if state in ("done", "dead") and artifacts.artifacts_pending(rec) and not unlaunched and not (single and force):
+        return BLOCK_ARTIFACTS_PENDING, "有声明的产物尚未拉回；先 rdispatch fetch JOB --artifacts（--force 可放弃）", None, []
     if single:
         if state == "running" or (state == "starting" and not unlaunched):
             return BLOCK_RUNNING, "the job is still running; rdispatch stop it first", None, []
@@ -3804,9 +4136,38 @@ def cmd_doctor(a, cfg):
     if r is None:
         die("timed out")
     sys.stdout.write(r.stdout or r.stderr)
+    failed = r.returncode
+    failed = doctor_fingerprint(cfg, host, a) or failed
     info = probe(host)
     print(fmt_probe(host, info, assess(host, info)))
-    sys.exit(r.returncode)
+    sys.exit(failed)
+
+
+def doctor_fingerprint(cfg, host, a):
+    """项目配置了 fingerprint 时，在本机仓库目录与目标机工作根目录各跑一次并比较；返回非零表示不一致。
+    doctor 没有任务 worktree，目标机侧在工作根目录执行：依赖仓库文件的命令以派单时的核对为准。"""
+    target_dir = get_dir(a)
+    cmd = ["git", "-C", target_dir, "rev-parse", "--show-toplevel"] if target_dir else ["git", "rev-parse", "--show-toplevel"]
+    p = run(cmd, check=False)
+    if p.returncode != 0:
+        return 0
+    repo = p.stdout.strip()
+    project, _ = project_name(repo)
+    command, timeout = fingerprint_settings(cfg.project(project))
+    if not command:
+        return 0
+    local = run_local_fingerprint(command, repo, timeout)
+    remote, error = run_remote_fingerprint(host, host_fingerprint_command(cfg.project(project), host, command),
+                                           timeout, '"$ROOT" 2>/dev/null || cd "$HOME"')
+    diff = "" if error else compare_fingerprint(local, remote, host["name"])
+    if error:
+        print(f"  MISSING  环境指纹：{error}")
+        return 1
+    if diff:
+        print("  MISSING  环境指纹与本机不一致：\n" + diff)
+        return 1
+    print(f"  ok    环境指纹一致（{artifacts.fingerprint_digest(local)}）")
+    return 0
 
 
 def serve_admin(method, path, body=None, *, action, write=False, uncertain_hint=""):
@@ -4162,6 +4523,9 @@ def main(argv=None, *, forwarded=None):
         p.add_argument("--project", help="project name (default: name of the origin repository)")
         p.add_argument("--workdir", help="临时覆盖目标机的工作根目录（默认读取 host 配置的 workdir）")
         p.add_argument("--include", action="append", default=[], help="extra path inside repository to copy, relative to repository root (repeatable)")
+        p.add_argument("--artifact", action="append", default=[], metavar="PATH",
+                       help="任务结束后用 rsync 拉回的仓库内相对路径（文件或目录，可重复）；不得是绝对路径或含 ..")
+        p.add_argument("--skip-fingerprint", action="store_true", help="跳过 [project] fingerprint 环境指纹核对（打印警告）")
         p.add_argument("--context-from", action="append", default=[], metavar="JOB",
                        help="把前序派单的上下文包放在提示词前面（可重复；须是本用户 ID 且已有回执）")
         p.add_argument("--model")
@@ -4345,6 +4709,7 @@ def main(argv=None, *, forwarded=None):
 
     p = sub.add_parser("fetch", help="bring the job's commits back as rd/<branch>")
     p.add_argument("job")
+    p.add_argument("--artifacts", action="store_true", help="只重新拉取 run --artifact 声明的非 Git 产物")
     p.set_defaults(fn=cmd_fetch)
 
     p = sub.add_parser("stop", help="kill a running job")

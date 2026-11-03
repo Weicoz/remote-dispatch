@@ -2,6 +2,8 @@
 
 ## 未发布
 
+- **非 Git 产物取回 `run --artifact`**：声明仓库内相对路径（文件或目录，可重复；绝对路径、含 `..`、`.git`、通配符退出码 4），任务结束后 `wait`／`result`／回执收取时用 rsync 拉回本地同一路径一次，输出与回执 `artifacts` 列出文件数和大小，远端缺失单独报告、不算失败。新增 `rdispatch fetch JOB --artifacts` 手动重拉。产物未成功拉回时回收判定返回 `artifacts_pending`（`clean --expired` 与定时回收不回收，单个 clean 可 `--force`）。Windows 目标机暂不支持。
+- **派单前环境指纹核对**（Windows 目标可用 `fingerprint_windows`）：`[project:<名>] fingerprint = <shell 命令>` 设置后，`run` 在目标机同步并 setup 之后比较本机与目标机 stdout；不一致则任务不执行主体，退出码 95，`run` 退出 5，输出 unified diff，派单记录与回执记两边指纹。`--host auto` 逐台尝试候选，全部不一致才失败。`--skip-fingerprint` 跳过并警告；`doctor` 在配置了指纹时也比较；`fingerprint_timeout` 默认 120 秒。配了指纹的派单在 `run` 阶段同步执行 setup。暂不支持 Windows 目标机。详见 `docs/worker-setup.md`。
 - **汇报与推送第二轮审查修复**：摘要汇报的 `report.delivered` 不带 `rounds`，不再抵消同轮终态回执推送；事件投影此前丢弃了 `rounds`，现保留（`job:round` 字符串列表），推送按轮次去重才真正生效；汇报投递改为至少一次（`queued` 在重启或下一次轮询重投，回写失败 30 秒后重试）；通道异常记 `error:<异常类型>` 并写 stderr（不含正文）；推送每个到期项发送后立即落盘，延后时间设下限。详见 `docs/reports.md`。
 - **汇报审查修复**：`inbox --wait` 在线时跳过摘要汇报，去重键改为汇报 id（先摘要后完成不再漏唤醒），两路基线都在命令开始时取（在线期间结束的派单在 serve 离线后仍唤醒）；提醒通道改在独立线程池调用，不阻塞汇报线程，新汇报先以 `delivery.status=queued` 落盘，通道返回后回写，事件写入失败重试不再重复通知；`inbox --json` 帮助与 Skill 补 `--wait`。详见 `docs/reports.md`。
 - **App 推送按派单与轮次去重**：同一轮的 `receipt.ready` 与 `report.delivered`（app 通道）只推一次，汇报优先（`report_ready`）；完成回执先延后「汇报合并窗口 + 30 秒」，超时无汇报仍推 `receipt_ready`；`blocked` 即时推送。`report.delivered` 新增 `rounds` 字段（`job:round`，不含正文），延后与已推送状态随推送检查点持久化。详见 `docs/reports.md`。

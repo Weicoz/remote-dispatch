@@ -107,6 +107,9 @@ test_full = <完整测试命令>
 - `origin_url` 只在远端访问仓库的地址和本机不同时才写。
 - `regenerable_paths` 声明 worktree 内可以再生成的子路径，多项用分号分隔，例如 `regenerable_paths = target; node_modules`。必须是相对 worktree 的具体子路径：不得指向 worktree 根、不得含 `..`、通配符，路径任一层不得叫 `evidence`、`reports` 或 `.git`；违反时加载配置报错。每轮结束时回执 `report.regenerable_kb` 记录各路径大小（KB，路径不存在记 0）。
   `rdispatch clean --slim [JOB] [--project P] [--dry-run] [--json]` 只删这些路径和 setup 完成标记，保留 worktree、代码、未声明的未跟踪文件与被忽略文件；下次 `resume` 会重新执行 `setup`。省略 JOB 时处理当前仓库内已结束的任务。运行中的任务、含已跟踪文件的声明路径、父目录越出 worktree 的路径一律跳过；符号链接只删链接本身。不使用 `git clean -x`。POSIX（含 SSH）与 Windows 原生目标机行为一致。
+- `fingerprint` 是 shell 命令，用来核对本机与目标机的环境是否一致（如 `node -v; cat package-lock.json | sha256sum`）。设置后 `run` 在目标机同步并跑完 `setup` 之后，分别在本机仓库目录和目标机任务 worktree 执行它，比较 stdout（忽略末尾空白）。一致才启动任务；不一致则任务不执行主体，状态为失败、退出码 95，`run` 退出码 5，stderr 输出逐行 unified diff，派单记录与回执的 `fingerprint` 字段记两边指纹。`--host auto` 时一台不一致就换下一台候选（清掉该台 worktree），全部不一致才失败。命令在目标机可使用环境变量 `RD_WT`（任务 worktree 路径）。`--skip-fingerprint` 显式跳过并打印警告。`fingerprint_timeout`（秒，默认 120）限制每次执行时间，本机命令失败或超时在派单前以退出码 4 拒绝。因为要先跑 `setup`，配了 `fingerprint` 的派单会在 `run` 阶段同步执行 `setup`（受任务 `--timeout` 限制），启动脚本随后跳过它，`setup` 耗时不再记入回执。暂不支持 Windows 目标机。
+- `fingerprint_windows` 可选：Windows 目标改用它（PowerShell 语法，在任务 worktree 内经 SSH 执行），本机仍跑 `fingerprint`，两边 stdout 须一致。Windows 目标不支持 `--artifact` 取回，回执标注“unsupported”。
+- `rdispatch doctor <机器>` 在项目配置了 `fingerprint` 时也比较一次；它没有任务 worktree，目标机侧在工作根目录执行，依赖仓库文件的命令以派单时的核对为准。
 
 ## 6. 体检
 
