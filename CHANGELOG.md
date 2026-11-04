@@ -1,6 +1,6 @@
 # 变更记录
 
-## 未发布
+## 0.4.0（2026-11-04）
 
 - **cli.py 按职责拆分**：命令实现拆到 `rd_cmd_run`、`rd_launch`、`rd_fingerprint`、`rd_artifact_transfer`、`rd_cmd_line`、`rd_status`、`rd_cmd_results`、`rd_cmd_resume`、`rd_cmd_clean`、`rd_cmd_admin`、`rd_cli_parser`，纯搬运，命令行为、输出与退出码不变；`cli` 继续导出所有名字，拆出去的代码引用 `cli` 里的名字一律写成 `cli.<名字>`，测试补丁继续有效。详见 `docs/code-layout.md`。
 - **续跑只严格校验目标主机**：`resume` 到另一台主机（`--host`）时只校验目标主机的配置，原主机配置写坏也能迁出续跑；原地续跑仍校验原主机。
