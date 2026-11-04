@@ -168,6 +168,40 @@ class DispatchTests(unittest.TestCase):
             self.dispatch(project="app", cmd=None, test_full=True)
         self.assertTrue(launch.call_args.args[3].startswith("rd-heavy sh -c"))
 
+    def test_test_dispatch_refuses_unsent_local_changes_with_exit_4(self):
+        self.configure_project(test_quick="echo quick")
+        (self.repo / "tracked.txt").write_text("edited\n")
+        before = len(rd.all_jobs())
+        with self.assertRaises(SystemExit) as caught:
+            self.dispatch(project="app", cmd=None, test=True)
+        self.assertEqual(caught.exception.code, 4)
+        self.assertEqual(len(rd.all_jobs()), before)
+
+    def test_test_dispatch_allows_dirty_with_flag_wip_or_covering_include(self):
+        self.configure_project(test_quick="echo quick")
+        (self.repo / "tracked.txt").write_text("edited\n")
+        (self.repo / "new.txt").write_text("new\n")
+        self.assertTrue(self.dispatch(project="app", cmd=None, test=True, allow_dirty=True)["test"])
+        self.assertTrue(self.dispatch(project="app", cmd=None, test=True, wip=True, include=["new.txt"])["test"])
+        with self.assertRaises(SystemExit):  # include 只覆盖 new.txt，tracked.txt 改动仍未发送
+            self.dispatch(project="app", cmd=None, test=True, include=["new.txt"])
+
+    def test_non_test_dispatch_with_dirty_only_warns(self):
+        (self.repo / "tracked.txt").write_text("edited\n")
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            rec = self.dispatch()
+        self.assertEqual(rec["cmd"], "true")
+        self.assertIn("警告", err.getvalue())
+
+    def test_test_job_run_script_exports_test_command_only_for_command_tests(self):
+        self.configure_project(test_quick="echo 'a b'")
+        host = self.cfg.host("fixture")
+        test = self.dispatch(project="app", cmd=None, test=True)
+        plain = self.dispatch()
+        self.assertIn("RD_TEST_COMMAND='echo '\"'\"'a b'\"'\"''", rd.build_run_script(host, test, 1, 10))
+        self.assertNotIn("RD_TEST_COMMAND", rd.build_run_script(host, plain, 1, 10))
+
     def test_posix_run_script_exports_baseline_for_command_and_agent_jobs(self):
         host = self.cfg.host("fixture")
         for kwargs in ({}, {"cmd": None, "agent": "codex", "prompt_file": str(self.root / "p.md")}):

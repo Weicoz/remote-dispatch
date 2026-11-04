@@ -169,6 +169,23 @@ class AgyFinishTests(unittest.TestCase):
         self.assertEqual((self.root / "last.r1.txt").read_text(encoding="utf-8"), "完成\n")
         self.assertEqual(data["summary"], "完成\n")
 
+    def test_test_command_maps_exit_code_to_checks_and_records_command(self):
+        for code, checks, outcome in ((0, "passed", "completed"), (1, "failed", "failed")):
+            data = messages.finish(self.root, "job-a", 1, code, test_command="make test")
+            self.assertEqual((data["checks"], data["outcome"], data["test_command"]), (checks, outcome, "make test"))
+            (self.root / "reports" / "result.r1.json").unlink()
+
+    def test_without_test_command_or_for_agents_checks_stay_not_reported(self):
+        self.assertEqual(messages.finish(self.root, "job-a", 1, 0)["checks"], "not_reported")
+        (self.root / "reports" / "result.r1.json").unlink()
+        data = messages.finish(self.root, "job-a", 1, 0, agent="codex", test_command="make test")
+        self.assertEqual(data["checks"], "not_reported")
+        self.assertNotIn("test_command", data)
+
+    def test_agent_reported_checks_are_not_overridden_by_test_command(self):
+        messages.report(self.root, "job-a", 1, "result", checks="partial")
+        self.assertEqual(messages.finish(self.root, "job-a", 1, 0, test_command="make test")["checks"], "partial")
+
     def test_denied_actions_downgrade_to_partial(self):
         self.stdout({"conversation_id": "c1", "status": "SUCCESS", "response": "", "num_turns": 1,
                      "denied_actions": [{"action": "command", "display_name": "RunCommand"}]})

@@ -1590,6 +1590,8 @@ def build_run_script(host, rec, round_no, timeout):
     report_env, report_finish = "", ":"
     if rec.get("handoff_version"):
         report_env = 'export RD_REPORTER="$RD_JOB_DIR/rd_messages.py" RD_AGENT=' + shlex.quote(rec.get("agent") or "")
+        if rec.get("test") and not rec.get("agent") and rec.get("cmd"):
+            report_env += " RD_TEST_COMMAND=" + shlex.quote(rec["cmd"])
         report_finish = ('printf "%s\\n" "$rc" > "$RD_JOB_DIR/exit.r$RD_ROUND"; '
                          'if command -v python3 >/dev/null 2>&1; then python3 "$RD_REPORTER" finish --exit "$rc" '
                          '>> "$RD_JOB_DIR/report.r$RD_ROUND.log" 2>&1; fi')
@@ -2393,6 +2395,18 @@ def run_scope(a, cfg):
                               after=after, plan_store=plan_store)
 
 
+def unsent_changes(porcelain, include_paths):
+    """git status --porcelain 的行里，去掉已被 --include 覆盖的路径，返回仍不会发送的条目。"""
+    rows = []
+    for line in porcelain.splitlines():
+        path = line[3:].split(" -> ")[-1].strip().strip('"')
+        covered = any(path == inc or path.startswith(inc.rstrip("/") + "/") or inc.startswith(path.rstrip("/") + "/")
+                      for inc in include_paths)
+        if path and not covered:
+            rows.append(line.strip())
+    return rows
+
+
 def include_list(a, repo):
     """--include 规范化成仓库内相对路径；缺失或越界直接退出 4。"""
     include_paths = []
@@ -2787,7 +2801,15 @@ def cmd_run(a, cfg):
         print(f"wip: sending tracked working-tree changes relative to {a.ref}; applied to remote index")
     dirty = git(["status", "--porcelain"], repo).stdout.strip()
     if dirty and not a.wip:
-        print("note: uncommitted local changes are NOT sent (commit them, or use --wip / --include).")
+        unsent = unsent_changes(dirty, include_paths)
+        if unsent and (a.test or test_full) and not getattr(a, "allow_dirty", False):
+            die("测试类派单（--test / --test-full）拒绝派出：本地有未发送的改动，远端会测到旧代码。\n  "
+                + "\n  ".join(unsent[:5]) + ("\n  ..." if len(unsent) > 5 else "")
+                + "\n先提交，或加 --wip（已跟踪文件改动）/ --include 路径（未跟踪文件）一并发送；"
+                "确认要测 HEAD 时用 --allow-dirty 跳过。未派单。", 4)
+        if unsent:
+            print("警告：本地未提交的改动不会发送，远端运行的是 " + a.ref + " 的已提交代码"
+                  "（先提交，或用 --wip / --include）。", file=sys.stderr)
 
     stamp = time.strftime("%Y%m%d-%H%M%S") + f"-{time.time_ns() % 1000000000:09d}"
     name = re.sub(r"[^A-Za-z0-9._-]+", "-", a.name or a.agent or "cmd").strip("-")
@@ -4592,6 +4614,7 @@ def main(argv=None, *, forwarded=None):
         p.add_argument("--tag", action="append", default=[], help="only machines with this tag (repeatable)")
         p.add_argument("--ref", default="HEAD", help="commit to send (default HEAD)")
         p.add_argument("--wip", action="store_true", help="apply tracked working-tree differences from --ref to the remote index; fail if empty")
+        p.add_argument("--allow-dirty", action="store_true", help="测试类派单也允许本地有未发送的改动（远端测的是已提交的 --ref）")
         p.add_argument("--branch", help="branch the job works on (default rd/<RD_USER_ID>/<name>-<time>)")
         p.add_argument("--name", help="short label used in the job id")
         p.add_argument("--project", help="project name (default: name of the origin repository)")
