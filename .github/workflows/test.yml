@@ -10,11 +10,25 @@ permissions:
 
 jobs:
   test:
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.os }}
+    # Windows 作业尚未在本地验证过（多数用例依赖 POSIX shell），首次运行允许失败，
+    # 根据结果补 skipUnless(os.name == "posix") 后再去掉 experimental。
+    continue-on-error: ${{ matrix.experimental }}
     strategy:
       fail-fast: false
       matrix:
+        os: [ubuntu-latest]
         python-version: ["3.11", "3.12", "3.13"]
+        experimental: [false]
+        include:
+          - os: macos-latest
+            python-version: "3.13"
+            experimental: false
+          - os: windows-latest
+            python-version: "3.13"
+            experimental: true
+    env:
+      PYTHONUTF8: "1"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
