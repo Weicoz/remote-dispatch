@@ -33,6 +33,8 @@ from . import rd_harness_stats
 from .rd_serve_sessions import Sessions
 from .rd_serve_logs import LogSnapshots
 from .rd_serve_progress import ProgressHistory
+from .rd_serve_poll import Collector
+from .rd_serve_readonly import CachedReads
 from .rd_serve_history import instant
 from .rd_host_metrics import host_metrics
 from .rd_reports import Reports, read_reports
@@ -44,6 +46,8 @@ from . import rd_reclaim_plan as reclaim_plan
 # 只允许 serve 子进程执行、不让 CLI 自动转发给 serve 的命令（suggest 仍由 CLI 直接运行）。
 FORWARD_ONLY = {"suggest"}
 RECLAIM_JOIN_SECONDS = 5
+# serve 在线且缓存可用时，直接由 serve 进程内生成输出的只读命令（见 rd_serve_readonly）。
+CACHED_READS = {"inbox", "status"}
 WRITE_COMMANDS = {"session-default", "run", "resume", "ack", "review", "stop", "project", "inbox", "keep", "clean", "plan"}
 SOCKET_NAME = "serve.sock"
 VERSION_ROUTE = "/v1/version"
@@ -54,6 +58,28 @@ CONTRACT_VERSION = 1
 CONFIG_RELOAD_INTERVAL = 1.0
 # 错误行可能很长；限制进入版本接口与 /v1/hosts 的文本长度。
 CONFIG_RELOAD_ERROR_LIMIT = 1000
+
+
+# 常见裸令牌（无 key=value 标签也要遮盖）：OpenAI/Anthropic 风格 sk-、GitHub ghp_/github_pat_、Bearer、Slack xox*-、AWS AKIA。
+# 强前缀令牌宁可多遮：只排除前一字符为 ASCII 字母数字或下划线（URL 用户名、路径、扩展名、中文紧邻都遮）；
+# 强前缀只排除前接字母数字（含 _ 不排除，KEY_sk-… 也遮）；sk-ant-/sk-proj- 另排除「字母数字+-」，避免命中派单 ID。通用 sk/pk/rk- 是弱形态：须含数字、≥20 位，前一字符还不得是 / . -。
+TOKEN_PATTERN = re.compile(
+    r"(?<![A-Za-z0-9])(?:gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|xox[abposr]-[A-Za-z0-9\-]{10,}|AKIA[0-9A-Z]{16}(?![0-9A-Z]))"
+    r"|(?<![A-Za-z0-9])(?<![A-Za-z0-9]-)sk-(?:ant-|proj-)[A-Za-z0-9_\-]{16,}"
+    r"|(?<![A-Za-z0-9_/.\-])(?:sk|pk|rk)-(?=[A-Za-z0-9_\-]*\d)[A-Za-z0-9_\-]{20,}"
+    r"|(?i:(?<![A-Za-z0-9_])Bearer\s+)[A-Za-z0-9._~+/=\-]{8,}")
+
+# 结构化标识键：值用于路由与关联（派单 ID、分支、主机、路径等），不做文本脱敏；列表元素继承该语义。
+# 路径（cwd、repo、worker_root）不在此列：可能含配置密钥路径，令牌规则不会命中路径片段。
+# 自由文本（last、summary、phase、text、reply、note、message、error、日志与终端帧等）不在此列。
+IDENTIFIER_KEYS = frozenset({
+    "job", "jobs", "last_job", "running_job_ids", "job_id", "job_ids", "branch", "source_branch", "shared_branch", "base", "head",
+    "upstream", "project", "project_id", "projects", "host", "hosts", "initiator_host", "user_id", "round", "rounds",
+    "last_round", "current_rounds", "receipt_id", "report_id", "message_id", "initiator_session", "receiver_session",
+    "session", "session_id", "pane_id", "workspace_id", "device_id", "id", "seq", "type", "kind", "state", "execution_state",
+    "review_state", "delivery_state", "status", "created", "created_at", "updated_at", "snapshot_at", "captured_at",
+    "started_at", "stopped_at", "finished", "reviewed_at", "received_at", "delivered_at", "channels", "previous", "line", "name", "unit"})
+MIN_SECRET_LENGTH = 8
 
 
 def file_changes(receipt):
@@ -169,6 +195,42 @@ def forward(args, argv):
         raise ValueError("cli_forward_failed: command may have run; check state before retrying") from error
 
 
+def cached_read_params(args):
+    """CLI 已解析的参数里，缓存路径能原样复现的子集；带筛选、--details、--wait 等返回 None。"""
+    if args.command == "inbox":
+        if getattr(args, "wait", False) or getattr(args, "orphans", False):
+            return None
+        owner = cli.initiator_session(args)
+        return dict(initiator_session=owner) if owner else None
+    if args.command == "status":
+        if (getattr(args, "unmerged", False) or getattr(args, "into", None) or getattr(args, "project", None)
+                or cli.get_dir(args) or getattr(args, "details", False)):
+            return None
+        return dict(job=args.job, json=bool(args.json))
+    return None
+
+
+def cached_read(args):
+    """serve 在线时由它用缓存生成只读命令输出；返回退出码，None 表示回退到原路径。
+
+    只读且无副作用，所以任何失败（离线、请求失败、缓存不足）都回退，不报错。
+    """
+    params = cached_read_params(args)
+    if params is None:
+        return None
+    try:
+        status, reply = serve_call("POST", "/_cli/v1/read", dict(
+            command=args.command, params=params, user_id=cli.require_user(),
+            config=str(Path(cli.CONFIG).resolve())), timeout=5)
+    except (ServeUnavailable, ServeFailed, OSError, ValueError):
+        return None
+    if status != 200 or not isinstance(reply, dict) or not reply.get("handled"):
+        return None
+    sys.stdout.write(reply["stdout"])
+    sys.stderr.write(reply["stderr"])
+    return reply["exit_code"]
+
+
 def execute_cli():
     """Child owned by serve: isolate cwd, stdio and initiator context per command."""
     request = json.load(sys.stdin)
@@ -256,7 +318,7 @@ class Handler(BaseHTTPRequestHandler):
             if (self.server.service.project_routes.post(self)
                     or self.server.service.sessions.handle_post(self)):
                 return
-            if self.path != "/_cli/v1":
+            if self.path not in ("/_cli/v1", "/_cli/v1/read"):
                 return self.server.service.writes.handle(self)
             if self.headers.get("Transfer-Encoding") or self.headers.get_content_type() != "application/json":
                 raise ValueError("invalid_request")
@@ -264,6 +326,9 @@ class Handler(BaseHTTPRequestHandler):
             if not 0 < length <= MAX_REQUEST_BYTES:
                 raise ValueError("invalid_request")
             request = json.loads(self.rfile.read(length))
+            if self.path == "/_cli/v1/read":
+                # 只读命令：用进程内缓存直接生成输出，不起子进程、不碰目标机。
+                return self.json(200, self.server.service.cached_reads.handle(request))
             self.json(200, self.server.service.execute(request))
         except (ValueError, TypeError, KeyError, UnicodeError):
             self.json(400, {"error": {"reason": "invalid_cli_request"}})
@@ -285,6 +350,11 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.close_connection = True
         self.wfile.write(b": connected\n\n")
+        oldest = events.EventLog(service.state).oldest_seq()
+        if cursor and oldest > cursor + 1:
+            # 游标早于仍保留的最早事件（历史已按上限清理）：注释行不是事件，旧客户端忽略；
+            # 新客户端应据此重新拉取快照，再从 oldest_seq 继续。
+            self.wfile.write(f": cursor_expired oldest_seq={oldest}\n\n".encode())
         self.wfile.flush()
         heartbeat = time.monotonic()
         reader = events.EventCursor(service.state)
@@ -359,6 +429,9 @@ class Service:
         self.snapshots = {}
         self.generations = {}
         self.progress = {}
+        self.raw_rounds = {}
+        self.restored_jobs = set()  # 来自磁盘、缺 last／network_sample 的快照，实采后移出
+        self.complete_snapshots = set()  # 带完整采集字段（可供只读缓存逐字复现 CLI 输出）的快照
         self.restore_snapshots()
         self.host_last_seen = self.restore_host_last_seen()
         initial_hosts = self.config.hosts()
@@ -376,6 +449,8 @@ class Service:
         self.sensitive = set()
         self.sessions = Sessions(self)
         self.reports = Reports(self)
+        self.collector = Collector(self)
+        self.cached_reads = CachedReads(self)
         self.log_snapshots = LogSnapshots(self)
         for host in self.config.hosts():
             for key, value in host.items():
@@ -459,6 +534,7 @@ class Service:
         if self.poller is not None:
             self.poller.join()
             self.poller = None
+        self.collector.close()
         if self.reclaim_poller is not None:
             # 回收线程可能卡在 ssh/du；它是守护线程，超时后放弃等待。
             self.reclaim_poller.join(timeout=RECLAIM_JOIN_SECONDS)
@@ -508,18 +584,29 @@ class Service:
     def is_sensitive_field(key):
         return bool(re.search(r"(?i)(?:env_?file|auth_?file|ssh|password|secret|token|private_?key|api_?key|credential|authorization)", key))
 
+    @staticmethod
+    def secret_values(sensitive):
+        """Configured secrets long enough to replace without damaging ordinary text (shared by HTTP and terminal paths)."""
+        return tuple(sorted((item for item in sensitive if len(item) >= MIN_SECRET_LENGTH), key=len, reverse=True))
+
     def redact(self, value, *, sensitive=None):
-        """Project nested display data and scrub configured secrets in free text."""
+        """Project nested display data; scrub configured secrets and tokens in free text only."""
         if sensitive is None:
             sensitive = self.sensitive
+        secrets = self.secret_values(sensitive)
+        pattern = re.compile("|".join(map(re.escape, secrets))) if secrets else None
+        return self.redact_value(value, pattern, False)
+
+    def redact_value(self, value, pattern, identifier):
         if isinstance(value, dict):
-            return {key: self.redact(item, sensitive=sensitive) for key, item in value.items()
+            return {key: self.redact_value(item, pattern, key in IDENTIFIER_KEYS) for key, item in value.items()
                     if not self.is_sensitive_field(key)}
         if isinstance(value, list):
-            return [self.redact(item, sensitive=sensitive) for item in value]
-        if isinstance(value, str):
-            for secret in sorted(sensitive, key=len, reverse=True):
-                value = value.replace(secret, "[redacted]")
+            return [self.redact_value(item, pattern, identifier) for item in value]
+        if isinstance(value, str) and not identifier:
+            if pattern is not None:
+                value = pattern.sub("[redacted]", value)
+            value = TOKEN_PATTERN.sub("[redacted]", value)
             value = re.sub(r"-----BEGIN [^-]*PRIVATE KEY-----.*?-----END [^-]*PRIVATE KEY-----",
                            "[redacted]", value, flags=re.S)
             value = re.sub(r"(?i)(?<![\w-])[\w-]*(?:auth_file|env_file|ssh(?:_opts)?|password|secret|token|api_key|private_?key)"
@@ -564,6 +651,12 @@ class Service:
                     continue
                 self.snapshots[path.stem] = snapshot
                 self.generations[path.stem] = tuple(generation)
+                if "raw_round" in saved:
+                    self.raw_rounds[path.stem] = saved["raw_round"]
+                    self.restored_jobs.add(path.stem)  # 落盘时去掉了 last 与 network_sample
+                    if snapshot["state"] not in ("done", "dead", "missing"):
+                        self.complete_snapshots.add(path.stem)
+                    # 终态快照缺 last／network_sample：不记为完整，按旧格式补采一次（连不上时保留原快照）。
                 if progress:
                     self.progress[(path.stem, generation[0])] = progress
             except (OSError, ValueError, TypeError, KeyError):
@@ -605,7 +698,9 @@ class Service:
 
     def job_refresh_complete(self, rec):
         with self.cache_lock:
+            # 老格式（升级前落盘）的快照没有完整采集字段：补采一次后才算完成，之后降频。
             if (self.generations.get(rec["job"]) != self.generation(rec)
+                    or rec["job"] not in self.complete_snapshots
                     or self.snapshots.get(rec["job"], {}).get("state") not in ("done", "dead", "missing")):
                 return False
         query = self.query()
@@ -755,140 +850,22 @@ class Service:
 
     def poll(self):
         log = events.EventLog(self.state)
+        try:
+            log.warm()
+        except (OSError, ValueError):
+            pass
         while not self.stop.is_set():
             self.wake.clear()
-            # One config generation per cycle: a reload mid-cycle must not
-            # publish a host list computed from the previous configuration.
-            config = self.config
-            hosts = []
-            available, attempted = set(), set()
-            enabled_hosts = config.hosts()
-            enabled_names = {host["name"] for host in enabled_hosts}
-            for host in enabled_hosts:
-                if self.stop.is_set():
-                    break
-                if not self.host_poll_due(host):
-                    hosts.extend(row for row in self.hosts if row["name"] == host["name"])
-                    continue
-                attempted.add(host["name"])
-                try:
-                    info = cli.probe(host)
-                    if info.get("reachable"):
-                        available.add(host["name"])
-                        self.host_last_seen[host["name"]] = messages.utc_now()
-                        try:
-                            messages.atomic_json(self.state / "serve-host-last-seen.json", self.host_last_seen)
-                        except (OSError, ValueError):
-                            print("rdispatch: 无法保存目标机最后在线时间。", file=sys.stderr)
-                    else:
-                        self.host_poll_failed(host["name"])
-                    full = bool(info.get("reachable") and cli.assess(host, info))
-                    log.observe_host(host, info, full=full)
-                    hosts.append(self.host_row(host, reachable=bool(info.get("reachable")), full=full,
-                                               probed=True, metrics=host_metrics(host, info),
-                                               **{key: info.get(key) for key in
-                                                  ("load1", "ncpu", "cpu_pct", "memfree", "disk",
-                                                   "disk_total", "running", "heavy")}))
-                except (ValueError, OSError, SystemExit, subprocess.SubprocessError):
-                    self.host_poll_failed(host["name"])
-                    hosts.append(self.host_row(host, probed=True))
-                    print("rdispatch: poll_unavailable: cannot probe a host", file=sys.stderr)
-            with self.cache_lock:
-                if self.config is config:
-                    self.hosts = hosts
             try:
-                records = [rec for rec in self.records() if not self.job_refresh_complete(rec)]
-            except (ValueError, OSError, SystemExit):
-                records = []
-                print("rdispatch: poll_unavailable: cannot read jobs", file=sys.stderr)
-            # Remote collection is batched, outside per-job locks. Validate the
-            # generation again under lock before publishing any returned data.
-            states = {}
-            by_host = {}
-            for rec in records:
-                by_host.setdefault(rec["host"], []).append(rec)
-            for name in available - by_host.keys():
-                self.host_poll_recovered(name)
-            for name, group in by_host.items():
-                if self.stop.is_set():
-                    break
-                if name in enabled_names and name not in available:
-                    if name in attempted:
-                        states.update({rec["job"]: {"state": "unreachable"} for rec in group})
-                    continue
-                try:
-                    # Disabling new dispatches must not freeze existing jobs.
-                    if (name not in enabled_names and config.cp.has_section("host:" + name)
-                            and not self.host_poll_due(config.host(name))):
-                        continue
-                    batch = cli.job_states(config, group)
-                    states.update({rec["job"]: batch.get(rec["job"], {"state": "unreachable"})
-                                   for rec in group})
-                    if any(batch.get(rec["job"], {}).get("state", "unreachable") == "unreachable" for rec in group):
-                        self.host_poll_failed(name)
-                    else:
-                        self.host_poll_recovered(name)
-                except (ValueError, OSError, SystemExit, subprocess.SubprocessError):
-                    self.host_poll_failed(name)
-                    states.update({rec["job"]: {"state": "unreachable"} for rec in group})
-                    print("rdispatch: poll_unavailable: cannot collect host jobs", file=sys.stderr)
-            for saved in records:
-                if saved["job"] not in states:
-                    continue
-                if self.stop.is_set():
-                    break
-                try:
-                    # Lock before reloading: a resume must not mix old and new round data.
-                    with self.job_guard(saved["job"]), JobLock(self.state, saved["job"]):
-                        rec = cli.load_job(saved["job"])
-                        if self.generation(rec) != self.generation(saved):
-                            continue
-                        snapshot = states.get(rec["job"], {"state": "unreachable"})
-                        number = int(snapshot.get("round") or 0) or rec["rounds"]
-                        if number != rec["rounds"]:
-                            # A delayed target may still expose the previous launch.
-                            continue
-                        snapshot = dict(snapshot, round=str(number), snapshot_at=messages.utc_now())
-                        progress = cli.remote_report(cli.job_host(config, rec), rec, number, "progress") if rec.get("handoff_version") and snapshot.get("state") in ("running", "done") else None
-                        log.observe_job(rec, snapshot)
-                        history = ProgressHistory(self)
-                        if progress is not None:
-                            history.collect(rec, number, progress)
-                        if rec.get("handoff_version") and snapshot.get("state") in ("running", "done"):
-                            for prior in range(1, number):
-                                saved_history = history.saved(rec, prior)
-                                if saved_history is None or not saved_history.get("final"):
-                                    source = dict(rec)
-                                    if saved_history:
-                                        _, source["host"], source["worker_root"] = saved_history["generation"]
-                                        if source["worker_root"] is None:
-                                            source.pop("worker_root")
-                                        if source["host"] != rec["host"]:
-                                            source.pop("worker_platform", None)
-                                            source.pop("worker_python", None)
-                                    history.collect(rec, prior, cli.remote_report(
-                                        cli.job_host(config, source), source, prior, "progress"), final=True)
-                        cli.collect_result(config, rec, snapshot)
-                        # Persist only display data, so restart can serve the last
-                        # observation while the first remote collection is pending.
-                        saved_snapshot = {key: snapshot[key] for key in
-                                          ("state", "round", "exit", "head", "dirty", "started_at", "snapshot_at")
-                                          if key in snapshot}
-                        saved_progress = {key: progress[key] for key in
-                                          ("schema", "job", "round", "kind", "phase", "summary", "artifacts", "updated_at")
-                                          if key in progress} if progress else None
-                        messages.atomic_json(self.state / "serve-snapshots" / (rec["job"] + ".json"),
-                            dict(user_id=self.user_id, generation=self.generation(rec),
-                                 snapshot=self.redact(saved_snapshot), progress=self.redact(saved_progress)))
-                        with self.cache_lock:
-                            self.snapshots[rec["job"]] = snapshot
-                            self.generations[rec["job"]] = self.generation(rec)
-                            self.progress[(rec["job"], number)] = progress
-                            self.snapshot_version += 1
-                except JobBusy:
-                    continue
-                except (ValueError, OSError, SystemExit, subprocess.SubprocessError):
-                    print("rdispatch: poll_unavailable: cannot collect a job", file=sys.stderr)
+                log.warm()  # 索引在写失败或历史清理后被重置，这里按需重建
+            except (OSError, ValueError):
+                pass
+            try:
+                # 按目标机分工作单元并发采集；阶段错误聚合记录，见 rd_serve_poll。
+                self.collector.cycle(log)
+                self.collector.errors.ok("poll", "cycle")
+            except Exception as error:  # 一轮的意外缺陷不得终止后台轮询
+                self.collector.errors.failed("poll", "cycle", error)
             try:
                 rd_harness_stats.observe(self)
                 self.project_routes.observe()
@@ -1006,9 +983,8 @@ class Service:
                 return self.log_snapshots.read(rec, number, stream, tail)
             rounds = []
             progress_events = {}
-            for event in events.read_after(self.state, 0):
-                if (event["type"] == "progress.updated" and event["data"].get("job") == job
-                        and self.visible(event)):
+            for event in events.EventLog(self.state).read_job(job):
+                if self.visible(event):
                     row = dict(event, data=events.display_data(event["type"], event["data"]))
                     progress_events.setdefault(row["data"].get("round"), []).append(row)
             for history in progress_events.values():

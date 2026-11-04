@@ -319,12 +319,12 @@ class DefaultsTests(unittest.TestCase):
         self.start(poll_interval=3600)
         path = '/v1/sessions/w1:p1/dispatch-defaults'
         headers = {'Content-Type':'application/json', 'Idempotency-Key':'rollback'}
-        replace = os.replace
-        def fail_events(source, destination):
-            if Path(destination) == self.state / 'events.jsonl':
+        write_active = rd_events.write_active
+        def fail_events(path, body):
+            if Path(path) == self.state / 'events.jsonl':
                 raise OSError('fixture disk full')
-            return replace(source, destination)
-        with patch.object(os, 'replace', side_effect=fail_events):
+            return write_active(path, body)
+        with patch.object(rd_events, 'write_active', side_effect=fail_events):
             self.assertEqual(self.request(path, 'PUT', '{"host":"target"}', headers)[0], 503)
         self.assertEqual(self.request(path)[1], dict(host=None, harness=None,
                          config=dict(host='auto', harness=None, dispatch_mode='suggest')))

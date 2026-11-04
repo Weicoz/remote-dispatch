@@ -55,7 +55,7 @@ for number in range(20):
 """
         processes = [subprocess.Popen([sys.executable, "-c", script, str(self.state), str(number)],
                                       stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                                      env=dict(os.environ, PYTHONPATH="src")) for number in range(2)]
+                                      env=dict(os.environ, PYTHONPATH="src", RD_EVENT_LOG_MAX_ARCHIVES="100")) for number in range(2)]
         try:
             cursor = 0
             deadline = time.monotonic() + 15
@@ -145,14 +145,15 @@ for number in range(20):
         log = events.EventLog(self.state, max_bytes=1)
         log.append("job.created", dict(job="fixture"))
         before = log.read_after(0)
-        replace = os.replace
-        def fail_publish(source, destination):
-            if Path(destination) == self.state / "events.jsonl":
+        write_active = events.write_active
+        def fail_publish(path, body):
+            if Path(path) == self.state / "events.jsonl":
                 raise OSError("fixture publish failed")
-            return replace(source, destination)
-        with patch.object(os, "replace", side_effect=fail_publish), self.assertRaisesRegex(ValueError, "event_write_failed"):
+            return write_active(path, body)
+        with patch.object(events, "write_active", side_effect=fail_publish), self.assertRaisesRegex(ValueError, "event_write_failed"):
             log.append_batch([("receipt.ready", dict(job="fixture"), False),
                               ("receipt.acked", dict(job="fixture"), False)])
         self.assertEqual(log.read_after(0), before)
         log.append("receipt.ready", dict(job="fixture"))
-        self.assertEqual([row["seq"] for row in log.read_after(0)], [1, 2])
+        # 失败批次的 seq 可能已被读者在 fsync 前读到，不复用：重试从高水位之后编号。
+        self.assertEqual([row["seq"] for row in log.read_after(0)], [1, 4])

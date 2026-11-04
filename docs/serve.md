@@ -6,7 +6,7 @@
 8000 字，无百分比。旧任务没有追加文件时回退到最新一条；没有进度时返回空数组。
 只读取当前用户可见派单，未知派单／轮次返回 404。查询不连接目标机、不写状态，
 首次采集前为空；采集后的历史存于控制端 `serve-progress/`，断线与重启仍可读。
-详情的 `progress_events` 补入轮询之间的全部进度，排序优先进度时间，重复采集不重发。
+详情的 `progress_events` 补入轮询之间的全部进度，排序优先进度时间，重复采集不重发；按派单从事件内存索引读取（最近 2000 条，且限于仍保留的历史段），不扫描全部事件。
 
 编排方合入后更新控制端包及后续轮次使用的 reporter，再按现有流程重启所管理的 serve。
 在隔离派单中连续执行两次 `progress`，间隔小于实际轮询周期，等待下一次采集后读取
@@ -22,6 +22,8 @@ RD_SERVE_SOCKET=/private/tmp/rdispatch.sock rdispatch ack JOB --round 1 --receip
 curl --unix-socket /private/tmp/rdispatch.sock http://localhost/v1/jobs
 curl -N --unix-socket /private/tmp/rdispatch.sock -H 'Last-Event-ID: 12' http://localhost/v1/events
 ```
+
+事件历史有总量上限（见 [events](events.md)）；`Last-Event-ID` 早于保留范围时，SSE 在连接后先发注释行 `: cursor_expired oldest_seq=N`，随后从最早保留事件继续。
 
 默认路径是 `$RD_SERVE_SOCKET`，否则 `$RD_STATE/serve.sock`。
 服务只绑定 AF_UNIX，不监听 TCP。socket 权限 0600，新建目录权限 0700。
@@ -297,6 +299,27 @@ PYTHONPATH=src python3 -m unittest discover -s tests -p 'test_*.py'
 运行签收／停止／验收并断开重连 SSE，再终止服务核对 socket 删除。
 真实 SSH 目标机的探测、报告收取与日志读取，以及 App 消费样例的集成由编排方端到端复测；
 实现会话不部署测试栈或重启现有服务。
+
+## 只读查询走 serve 缓存
+
+serve 在线时，`rdispatch inbox`（默认 JSON 形态）与 `rdispatch status`（文本和 `--json`）先问 serve：
+`POST /_cli/v1/read`，请求 `{command, params, user_id, config}`（`params`：inbox 为已解析的 `initiator_session`，status 为 `job`、`json`），
+响应 `{handled, exit_code, stdout, stderr}`。`handled=true` 时 CLI 原样写出 stdout/stderr 并以 `exit_code` 退出；
+输出格式与退出码和直跑一致（`tests/test_rd_serve_readonly.py` 逐项对照）。serve 用进程内已有的快照和本地回执文件在进程内生成输出，
+不起子进程、不同步 ssh、不碰目标机，响应通常在毫秒级。只做本机用户 ID 与配置路径校验，不需要写锁。
+
+选择：缓存缺失或过旧时**回退原路径**，不返回带「快照时间」的陈旧结果，保证输出始终等于直跑。回退条件：
+
+- 该 job 没有与当前 generation（轮次、目标机、worker_root）匹配的内存快照（刚登记，或 serve 刚重启、磁盘恢复的快照不算）；
+- 快照年龄超过 `2 × --poll-interval + 最近一轮采集耗时`，且该 job 不是「终态且回执已落盘」的降频 job（降频 job 的快照随终态不变，任意年龄都可信）；
+- `inbox` 涉及的终态 job 回执尚未落盘（CLI 直跑会在此收取，缓存路径不收取）。
+
+回退时 `inbox` 走原有 `/_cli/v1` 子进程执行，`status` 在 CLI 本地直跑。serve 不在线、请求失败或超时（5 秒）同样回退，因为只读命令没有副作用，可以放心重试。
+不走缓存的参数：`status` 带 `--details`、`--unmerged`、`--project`、`-C`，`inbox` 带 `--wait`、`--orphans`。
+重启后：`serve-snapshots/<job>.json` 现在落盘完整快照（经脱敏）和原始 `round`（`raw_round`），已签收的终态 job 不再轮询，靠它在重启后继续由缓存回答；
+落盘快照不含 `last`（目标机输出末行）与 `network_sample`：输出可能带令牌，脱敏规则覆盖不了所有形态。因此磁盘恢复、尚未重新采集的快照只回答不依赖它们的请求（`status` 文本且状态非 running、`inbox`）；`status --json`（行里含这两个字段）与 running 的 `last output` 行回退原路径，重新采集后恢复。通用脱敏另外覆盖 `sk-…`、`ghp_…`、`github_pat_…`、`Bearer …`、`xox*-…`、`AKIA…` 等裸令牌形态。
+老格式（只含显示子集、没有 `raw_round`）的快照只用于 HTTP 读接口，不作为 `inbox`/`status` 缓存依据，该 job 在升级后的首轮采集里补采一次（目标机连不上时保留原终态快照，不改写成离线），之后恢复降频；补采完成前回退原路径。
+快照里的采集时间不输出（直跑也没有）；`/v1/jobs`、`/v1/board` 等 HTTP 读接口仍通过 `snapshot_at` 暴露快照时间。
 
 ## 设备与配对 CLI（票 05）
 
@@ -913,6 +936,22 @@ SSH、结果／进度收取不会占用这个线程。本地写操作仍会唤�
 派单锁；收取前在锁内复核 `(rounds, host, worker_root)`。同一 generation 的终态快照
 配合本地终态回执和匹配的收取确认后，停止历史派单的状态／进度／回执远程探测；
 新轮次或执行位置改变后重新查询。未确认的回执继续刷新，保留现有收取语义。
+
+### 后台采集：并发、错误边界与日志
+
+- 每个目标机一个工作单元（探测、批量取状态、逐个 job 加锁提交），单元之间并发，上限 `[serve] poll_concurrency`（默认 4，无效值按默认）。
+  一台慢机只拖住自己；它的主机行在探测完成后立即发布，不等本机 job 采集。单机内 job 仍串行，与 CLI 写入共用同一把 job 锁。
+- 终态回执先收取落盘，再补采进度；进度与历史轮次补采失败只记日志，不阻断回执，也不阻止快照发布（沿用上一次的进度）。
+  回执收取失败则保留旧快照，下一轮重试。
+- 所有轮询路径上的远端调用都有超时：`remote_state` 30 秒、`remote_report` 与会话查找（`find_session`）30 秒（`cli.REMOTE_READ_TIMEOUT`）、
+  探测 25 秒；回执落盘时的自动产物拉取（rsync／Windows tar）300 秒（`cli.ARTIFACT_AUTO_TIMEOUT`），超时保持待拉，可用 `fetch --artifacts`（1800 秒）重试，不算失败。会话查找超时抛 `SessionLookupError`，记为 `session` 阶段错误，回执留到下一轮重试，不再无限等待并占住 job 锁。
+- 终态（`done/dead/missing`）且本轮回执已落盘的 job 降频：每 `max(8 × --poll-interval, 60)` 秒才重新探测一次；
+  未签收仍在 `inbox`、`/v1/jobs` 中可见。新轮次或执行位置改变（generation 变化）立即恢复正常频率。已签收的终态 job 仍按原规则不再探测。
+- 错误日志（`serve.err.log`）按 (对象, 阶段, 异常类型) 聚合：
+  `poll_error: job=<id>|host=<name> stage=<state|probe|progress|history|result|session|commit> error=<类名> reason=<简短原因>` 首次立即记一行；
+  同一键重复出错只计数，每 10 分钟记一行 `poll_error_repeated: … count=<N> over=<秒>s`；
+  同一对象与阶段恢复时记 `poll_recovered: … after=<N> failures`。原因经脱敏、单行、最长 120 字，超时只写时长，不含命令行、回执正文或凭据。
+  取代原先每次失败一行的 `poll_unavailable`。
 
 不可达的 host 不再逐条查询历史派单；探测或批量状态查询失败后，按现有 poll 周期的
 1、2、4、8、16 倍退避（上限 16 倍）。连续三次失败后处于熔断等待，期限到时允许探测；

@@ -115,6 +115,10 @@ notify_digest = false      # 默认 false；true 时进度摘要（kind: digest�
 - Herdr 不可用或调用超时（5 秒）记 `{channel: "herdr", ok: false, reason: "herdr_unavailable"}`，
   不重试；汇报照常存入 inbox。
 - 提醒在独立线程池里调用，不阻塞汇报线程：新汇报先以 `status=queued`、`channels=[]` 存入 inbox 并发布 `report.created`，通道返回后回写结果；事件写入失败的重试不会重复通知；serve 关闭时最多等待 10 秒。
+- 通道相互隔离：每个通道有自己的工作线程和待发队列，并行执行，慢通道（如 macOS `osascript` 最长 15 秒）只拖慢自己，其余通道结果照常写入。
+  单通道等待上限 25 秒，超时记 `reason: "timeout"`；仍在队列里没发出的项记 `reason: "queue_timeout"` 并撤销（不发送、不计入熔断）。连续失败 3 次后该通道熔断 300 秒：期间通道不发送；若没有任何通道成功且有通道没真正尝试（熔断、关闭、队列满、排队超时撤销 `queue_timeout`），汇报保持 `status=queued`，已有结果的通道（含超时的在途发送，视为可能已送达）连同 queued 一起保存，重投只发没尝试过的通道，不重复提醒；至少一个通道成功则立即记 `notified`，没尝试的通道不再补发（不记 `inbox_only`），每 30 秒重投检查，冷却结束后重发，serve 关闭时同理留待重启补投。
+  到期放行一次探测，成功即恢复；熔断与恢复各向 stderr 写一行（通道名、次数，不含正文）。`no_device`、`unsupported_platform`
+  是配置状态，不计入失败。每通道待发队列上限 50 条，超限丢弃最旧并记 `reason: "queue_overflow"`，丢弃累计数至多每 60 秒写一行日志。
 - 投递语义为至少一次：`status=queued` 的汇报在 serve 重启或下一次轮询时重新投递（含关闭时被取消的任务、
   回写失败的汇报，后者 30 秒后重试）；崩溃或重启窗口内同一汇报的提醒可能重复一次，不会丢失。
   通道抛异常时记 `{channel, ok: false, reason: "error:<异常类型>"}` 并向 stderr 写通道名与异常类型（不含正文）；

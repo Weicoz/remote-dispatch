@@ -259,13 +259,19 @@ class NetworkTests(unittest.TestCase):
         before = self.network_info()
         _, headers = self.pair(before)
         replace = os.replace
+        write_active = events.write_active
         disabled = {"listen_addresses": [dict(address="127.0.0.1", port=0, enabled=False)]}
         for target_name in ("devices.json", "events.jsonl"):
             def unavailable(source, target):
                 if Path(target).name == target_name:
                     raise OSError("fixture disk failure")
                 return replace(source, target)
-            with self.subTest(target=target_name), patch("os.replace", side_effect=unavailable):
+            def unavailable_append(path, body):
+                if Path(path).name == target_name:
+                    raise OSError("fixture disk failure")
+                return write_active(path, body)
+            with self.subTest(target=target_name), patch("os.replace", side_effect=unavailable), \
+                    patch.object(events, "write_active", side_effect=unavailable_append):
                 self.assertEqual(self.request("/v1/network", "POST", disabled, key="disk"),
                                  (503, {"error": {"reason": "network_unavailable"}}))
             self.assertEqual(self.network_info(), before)
@@ -476,11 +482,12 @@ class NetworkTests(unittest.TestCase):
         self.start()
         window = self.request("/v1/pairing-window", "POST", {}, key="window")[1]
         replace = os.replace
-        def unavailable(source, target):
-            if Path(target).name == "events.jsonl":
+        write_active = events.write_active
+        def unavailable(path, body):
+            if Path(path).name == "events.jsonl":
                 raise OSError("fixture event disk failure")
-            return replace(source, target)
-        with patch("os.replace", side_effect=unavailable):
+            return write_active(path, body)
+        with patch.object(events, "write_active", side_effect=unavailable):
             result = self.request("/v1/pair", "POST", {"code": window["code"]}, key="pair")
         self.assertEqual(result, (503, {"error": {"reason": "network_unavailable"}}))
         self.assertEqual(self.request("/v1/devices")[1], {"devices": []})

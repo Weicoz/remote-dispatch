@@ -153,6 +153,8 @@
   仅含汇报标识与送达元数据，不含正文；状态和原因键见 `docs/reports.md`。
 - 汇报提醒改版（票 01）：`reports.json` 的 `delivery` 改为 `status`（`notified`／`inbox_only`）与 `channels`；
   `report-delivered.json` 的 `data` 改为成功通道名列表 `channels`，仅在提醒成功后发布；
+  `delivery.status=queued` 且 `channels` 非空：已有部分通道给出结果（含超时或失败），其余通道尚未真正尝试（熔断、关闭、队列满或 `queue_timeout`），服务稍后只重投未尝试的通道；`channels=[]` 则尚未有任何结果。
+  脱敏范围：`/v1` 响应、SSE、落盘快照与汇报对 `src/remote_dispatch/rd_serve.py` 中 `IDENTIFIER_KEYS` 列出的标识键（派单 ID、分支、主机、轮次、状态、时间等）不做文本脱敏，嵌套对象按内层键重判；其余自由文本照常遮盖令牌与配置密钥。重启后的终态快照每机每轮至多补采 10 个（最近优先），离线机沿用现有离线退避。
   `reports-unsubmitted.json` 标为历史状态样例，老记录的旧状态与原因键原样返回。
 - 票 61：`reports-unsubmitted.json`（历史状态样例）展示文本已写入、回车失败的
   `delivery.status=text_delivered/reason=session_submit_failed`；保留写入时间，

@@ -74,7 +74,9 @@ class Reports:
             self.futures = []
         with self.lock:
             # 宽限期之后迟到的通知线程不得再写报告存储；汇报留在 queued，重启后补投。
+            # 必须先置 closed，再关通道：否则窗口内后续项拿到 channel_closed 会抢写结果。
             self.closed = True
+        notifier.close(self.service)
 
     def run(self):
         while not self.service.stop.is_set():
@@ -168,7 +170,7 @@ class Reports:
             self.inflight.add(row["id"])
             if background:
                 if self.pool is None:
-                    self.pool = ThreadPoolExecutor(max_workers=4, thread_name_prefix="rd-notify")
+                    self.pool = ThreadPoolExecutor(max_workers=8, thread_name_prefix="rd-notify")
                 self.futures = [f for f in self.futures if not f.done()]
                 self.futures.append(self.pool.submit(self.deliver, row))
             else:
@@ -184,7 +186,14 @@ class Reports:
             result = dict(status="inbox_only", channels=[dict(channel="*", ok=False,
                                                               reason="error:" + type(error).__name__)])
         try:
-            self.record(row, result)
+            if result.get("status") == "queued":
+                # 有通道没有真正尝试且无人成功：保持 queued，稍后重投（至少一次）；
+                # 已有结果的通道一并存下，重投不重发它们。
+                self.retry_at[row["id"]] = self.clock + 30
+                if result["channels"]:
+                    self.record(row, result)
+            else:
+                self.record(row, result)
         finally:
             self.inflight.discard(row["id"])
 

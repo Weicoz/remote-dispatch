@@ -1262,12 +1262,16 @@ def result_path(rec, number):
     return query.result_path(STATE, rec, number)
 
 
+REMOTE_READ_TIMEOUT = 30  # serve 轮询路径上的每次远端读取都必须有界，不得无限等待并占住派单锁
+
+
 def remote_report(host, rec, number, kind):
     relative = "reports/" + kind + ".r" + str(messages.round_id(number)) + ".json"
     if host["platform"] == "windows" or kind == "progress":
-        return native.request(host, "report-read", dict(job=rec["job"], round=number, kind=kind))
+        return native.request(host, "report-read", dict(job=rec["job"], round=number, kind=kind),
+                              timeout=REMOTE_READ_TIMEOUT)
     path = '"$ROOT/jobs/' + messages.job_id(rec["job"]) + '/' + relative + '"'
-    reply = ssh(host, f'if [ -L {path} ]; then exit 4; fi; if [ -f {path} ]; then head -c {messages.MAX_BYTES + 1} {path}; fi', check=False, timeout=30)
+    reply = ssh(host, f'if [ -L {path} ]; then exit 4; fi; if [ -f {path} ]; then head -c {messages.MAX_BYTES + 1} {path}; fi', check=False, timeout=REMOTE_READ_TIMEOUT)
     if reply is None or reply.returncode:
         raise ValueError("无法读取远端回执；连接错误不代表任务失败。")
     if not reply.stdout.strip():
@@ -2750,7 +2754,11 @@ def local_artifact_guard(repo, path, is_dir):
     return None
 
 
-def pull_artifacts(cfg, rec):
+ARTIFACT_FETCH_TIMEOUT = 1800  # 手动 fetch --artifacts
+ARTIFACT_AUTO_TIMEOUT = 300  # 自动拉取（serve 轮询、result、wait）：有界，超时保持待拉，可用 fetch --artifacts 重试
+
+
+def pull_artifacts(cfg, rec, timeout=ARTIFACT_FETCH_TIMEOUT):
     """把远端 worktree 里声明的产物拉回本地仓库同一相对路径；缺失单独报告，不算整体失败。
     POSIX 用 rsync；Windows 经原生 worker 的 base64 通道取 tar（与 fetch-bundle 同一通道，不依赖 scp 路径转换）。
     状态：fetched/missing/skipped 是终态，error 保持待拉可重试。结果写进 rec["artifacts_state"]。"""
@@ -2795,9 +2803,9 @@ def pull_artifacts(cfg, rec):
             if guard:
                 results.append(dict(path=path, status=guard[0], error=guard[1]))
             elif host["platform"] == "windows":
-                results.append(native_artifact(host, job, repo, path, kind == "d"))
+                results.append(native_artifact(host, job, repo, path, kind == "d", timeout))
             else:
-                results.append(rsync_artifact(host, job, repo, path, kind == "d", worktree=warm.job_worktree(rec)))
+                results.append(rsync_artifact(host, job, repo, path, kind == "d", timeout, worktree=warm.job_worktree(rec)))
     number = rec.get("rounds") or 1
     state = dict(round=number, paths=list(paths), results=results, at=time.strftime("%Y-%m-%d %H:%M:%S"))
     rec["artifacts_state"] = state  # 最近一次；按轮次的状态在 artifacts_rounds
@@ -2809,14 +2817,14 @@ def pull_artifacts(cfg, rec):
     return results
 
 
-def native_artifact(host, job, repo, path, is_dir):
+def native_artifact(host, job, repo, path, is_dir, timeout=ARTIFACT_FETCH_TIMEOUT):
     """Windows：worker 打 tar，本地校验成员后解到临时目录再替换；失败记 error，保持可重试。"""
     dest = os.path.join(repo, *path.split("/"))
     try:
         with tempfile.TemporaryDirectory(dir=os.path.dirname(dest)) as temporary:
             bundle = Path(temporary) / "artifact.tar"
             with bundle.open("wb") as stream:
-                native.request(host, "fetch-artifact", {"job": job, "relative": path}, output=stream, timeout=1800)
+                native.request(host, "fetch-artifact", {"job": job, "relative": path}, output=stream, timeout=timeout)
             staged = Path(temporary) / "staged"
             staged.mkdir()
             with tarfile.open(bundle) as archive:
@@ -2843,7 +2851,7 @@ def rsync_supports_protect_args():
     return "--protect-args" in (p.stdout or "") + (p.stderr or "")
 
 
-def rsync_artifact(host, job, repo, path, is_dir, worktree=None):
+def rsync_artifact(host, job, repo, path, is_dir, timeout=ARTIFACT_FETCH_TIMEOUT, worktree=None):
     dest = os.path.join(repo, *path.split("/"))
     source = scp_path(host, f"{worktree or 'wt/' + job}/{path}")
     command = ["rsync", "-a", "--safe-links"]
@@ -2857,8 +2865,10 @@ def rsync_artifact(host, job, repo, path, is_dir, worktree=None):
             source = prefix + shlex.quote(source[len(prefix):])
     command += ["--", source + "/", dest + "/"] if is_dir else ["--", source, dest]
     try:
-        p = subprocess.run(command, capture_output=True, text=True, timeout=1800)
-    except (OSError, subprocess.TimeoutExpired) as error:
+        p = subprocess.run(command, capture_output=True, text=True, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        return dict(path=path, status="error", error=f"rsync 超过 {timeout} 秒未完成，保持待拉；可用 fetch --artifacts 重试")
+    except OSError as error:
         return dict(path=path, status="error", error=f"rsync 无法完成：{error}")
     if p.returncode:
         return dict(path=path, status="error", error=f"rsync 退出码 {p.returncode}：{(p.stderr or '').strip()[:200]}")
@@ -2872,7 +2882,7 @@ def auto_pull_artifacts(cfg, rec, snapshot):
         return None
     if artifacts.artifacts_pending(rec) or not artifacts.round_state(rec).get("results"):
         try:
-            return pull_artifacts(cfg, rec)
+            return pull_artifacts(cfg, rec, ARTIFACT_AUTO_TIMEOUT)
         except (OSError, SystemExit, subprocess.SubprocessError) as error:
             print(f"产物拉回未完成：{error}；稍后用 rdispatch fetch {rec['job']} --artifacts 重试。", file=sys.stderr)
             return None
@@ -3549,13 +3559,24 @@ def cmd_logs(a, cfg):
     sys.stdout.write(r.stdout if r.returncode == 0 else f"(no {name} yet)\n")
 
 
+class SessionLookupError(ValueError):
+    """读取目标机会话日志超时或失败；调用方下一轮重试，不把它当作「没有会话」。"""
+
+
 def find_session(host, rec, agent):
     if host["platform"] == "windows":
-        output = native.request(host, "sessions", {"job": rec["job"], "round": rec.get("rounds", 1)})
+        try:
+            output = native.request(host, "sessions", {"job": rec["job"], "round": rec.get("rounds", 1)},
+                                    timeout=REMOTE_READ_TIMEOUT)
+        except subprocess.TimeoutExpired:
+            raise SessionLookupError("会话查找超时") from None
         matched = re.search(agent["session_regex"], output)
         return matched.group(1) if matched else None
     number = messages.round_id(rec.get("rounds", 1))
-    r = ssh(host, f'head -c 200000 "$ROOT/jobs/{rec["job"]}/stdout.r{number}.log" 2>/dev/null', check=False)
+    r = ssh(host, f'head -c 200000 "$ROOT/jobs/{rec["job"]}/stdout.r{number}.log" 2>/dev/null', check=False,
+            timeout=REMOTE_READ_TIMEOUT)
+    if r is None:
+        raise SessionLookupError("会话查找超时")
     m = re.search(agent["session_regex"], r.stdout or "")
     return m.group(1) if m else None
 
@@ -5134,6 +5155,8 @@ def main(argv=None, *, forwarded=None):
                 a.initiator_session = forwarded.get("initiator_session")
             if hasattr(a, "via"):
                 a.via = "serve"
+        elif a.command in rd_serve.CACHED_READS and (code := rd_serve.cached_read(a)) is not None:
+            raise SystemExit(code)
         elif a.command in rd_serve.WRITE_COMMANDS and not getattr(a, "wait", False):
             code = rd_serve.forward(a, list(sys.argv[1:] if argv is None else argv))
             if code is not None:
