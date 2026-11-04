@@ -10,6 +10,7 @@ from pathlib import Path
 from . import rd_line as workline
 from . import rd_messages as messages
 from . import rd_usage as usage
+from . import rd_warm as warm
 from .rd_projects import ProjectIndex, project_fields
 
 
@@ -99,6 +100,7 @@ class Query:
                        head=snapshot.get("head"), dirty=snapshot.get("dirty"),
                        needs_initiator_review=True)
         receipt.update({key: rec[key] for key in ("user_id", "project", "origin", "created", "agent", "model", "gate") if key in rec})
+        receipt.update(warm.receipt_fields(rec))
         receipt.update(self.measured(rec, number))
         receipt.update(self.credential(rec, number, receipt["executor_exit"]))
         residue = workline.residue_for(rec, number)

@@ -172,7 +172,7 @@ class LocalEndToEndTest(unittest.TestCase):
         self.config_path = self.root / "config.ini"
         self.config_path.write_text(
             f"[host:self]\nssh = local\nworkdir = {self.root / 'worker'}\nsync = direct\n"
-            f"path = {os.environ['PATH']}\ntimeout = 30\n", encoding="utf-8")
+            f"path = {os.environ['PATH']}\ntimeout = 30\n[features]\nwarm_worktree = false\n", encoding="utf-8")
         for mock in (
             patch.object(rd, "CONFIG", str(self.config_path)),
             patch.object(rd, "STATE", str(self.root / "state")),

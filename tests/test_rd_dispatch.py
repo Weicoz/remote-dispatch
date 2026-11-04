@@ -36,7 +36,7 @@ class DispatchTests(unittest.TestCase):
         self.git("branch", "baseline")
         self.worker = self.root / "worker" / "users" / "employee_a"
         config = self.root / "config.ini"
-        config.write_text(f"[host:fixture]\nssh=fixture.invalid\nworkdir={self.root / 'worker'}\nsync=direct\npath={os.environ['PATH']}\n")
+        config.write_text(f"[host:fixture]\nssh=fixture.invalid\nworkdir={self.root / 'worker'}\nsync=direct\npath={os.environ['PATH']}\n[features]\nwarm_worktree=false\n")
         self.real_launch = rd.launch
         for mock in (
             patch.object(rd, "CONFIG", str(config)),
