@@ -178,11 +178,20 @@ NETWORK_NEEDLES = ("workspace routing discovery failed", "tls handshake", "ssl h
                    "network is unreachable", "dns error", "failed to lookup address", "could not resolve host")
 
 
+PROGRESS_EVENTS = ("item.completed", "turn.completed")
+
+
 def final_failure(agent, text, skip=None):
-    """本轮输出里最后一条失败事件的小写文本（最后一条 turn.failed 或 error）；skip(文本) 为真的事件（如瞬时重连）不算。
-    没有 JSON 事件时，退回输出末尾 20 行里最后一条非空纯文本行。"""
+    """本轮输出里最后一条失败事件的小写文本（最后一条 turn.failed 或 error）；没有时返回 None。
+    skip(文本) 为真的事件（瞬时重连）不算；失败之后又出现 item.completed／turn.completed 等进展事件，
+    说明该错误已被重试掉，同样不算。纯文本输出不用于判定（宁可不标）：只有 DSH（输出格式未公开固定）
+    取末尾 20 行里最后一条以 error／fatal 开头的行。"""
     if agent == "dsh":
-        return text.lower()
+        for line in reversed(text.splitlines()[-20:]):
+            value = line.strip().lower()
+            if value.startswith(("error", "[error", "fatal")) and not (skip and skip(line)):
+                return value
+        return None
     last = None
     for line in text.splitlines():
         try:
@@ -198,14 +207,11 @@ def final_failure(agent, text, skip=None):
             message = str(row["error"].get("message", ""))
         elif row.get("event") == "result" and isinstance(row.get("result"), dict) and row["result"].get("error"):
             message = str(row["result"]["error"])
+        elif row.get("type") in PROGRESS_EVENTS:
+            last = None
         if message is not None and not (skip and skip(message)):
             last = message.lower()
-    if last is not None:
-        return last
-    for line in reversed(text.splitlines()[-20:]):
-        if line.strip() and not line.lstrip().startswith("{") and not (skip and skip(line)):
-            return line.lower()
-    return None
+    return last
 
 
 def failure_hint(agent, text, exit_code, skip=None):

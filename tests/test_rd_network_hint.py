@@ -75,8 +75,7 @@ class FailureHintTests(unittest.TestCase):
     def test_tls_and_connection_errors_in_turn_failed_are_network(self):
         text = json.dumps({"type": "turn.failed", "error": {"message": "TLS handshake failed"}})
         self.assertEqual(messages.failure_hint("codex", text, 1)[0], "network_unreachable")
-        self.assertEqual(messages.failure_hint("codex", "boot\nERROR: connection timed out\n", 1)[0],
-                         "network_unreachable")
+        self.assertIsNone(messages.failure_hint("codex", "boot\nERROR: connection timed out\n", 1))  # 纯文本不标
 
     def test_authentication_failure_wins_over_network_wording(self):
         text = row("error", "401 Unauthorized while sending request; error sending request")
@@ -105,6 +104,22 @@ class FailureHintTests(unittest.TestCase):
         text = row("error", "workspace routing discovery failed") + "\n" + \
             row("error", "Reconnecting... 2/5 (error sending request) waiting for network")
         self.assertEqual(query.Query.failure_hint_for("codex", text, 1)[0], "network_unreachable")
+
+    def test_error_followed_by_progress_events_is_ignored(self):
+        text = "\n".join([row("error", "Reconnecting... 1/5 (error sending request for url)"),
+                          json.dumps({"type": "item.completed", "item": {"type": "agent_message", "text": "ok"}})])
+        self.assertIsNone(query.Query.failure_hint_for("codex", text, 124))
+        text = row("error", "workspace routing discovery failed") + "\n" + json.dumps({"type": "turn.completed"})
+        self.assertIsNone(query.Query.failure_hint_for("codex", text, 1))
+
+    def test_reconnecting_n_of_m_wording_is_not_a_failure(self):
+        for message in ("Reconnecting... 1/5 (stream disconnected: error sending request)", "[x] Reconnecting… 2/5 (tls handshake)"):
+            self.assertIsNone(query.Query.failure_hint_for("codex", row("error", message), 1), message)
+
+    def test_plain_text_is_not_used_except_strong_dsh_error_lines(self):
+        self.assertIsNone(messages.failure_hint("agy", "connection refused on 5432\n", 1))
+        self.assertIsNone(messages.failure_hint("dsh", "talking about tls handshake in docs\n", 1))
+        self.assertEqual(messages.failure_hint("dsh", "start\nError: tls handshake failed\n", 1)[0], "network_unreachable")
 
     def test_credential_detection_is_unchanged(self):
         self.assertTrue(messages.credential_suspect("codex", row("error", "401 Unauthorized"), 1))

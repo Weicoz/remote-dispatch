@@ -5,6 +5,7 @@ No method creates directories, takes write locks, caches receipts or edits recor
 """
 import hashlib
 import json
+import re
 from pathlib import Path
 
 from . import rd_line as workline
@@ -22,6 +23,14 @@ def result_path(state, rec, number):
 def receipt_id(receipt):
     content = {k: v for k, v in receipt.items() if k not in ("receipt_id", "captured_at")}
     return hashlib.sha256(json.dumps(content, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
+
+
+# 「Reconnecting... 1/5 (…)」形式的重试提示（不带 waiting for network）也是瞬时重连。
+RECONNECT_COUNT = re.compile(r"^(?:\[[^\]\n]+\]\s*)?reconnecting\b[.…\s]*\d+\s*/\s*\d+", re.I)
+
+
+def is_reconnect(text):
+    return health.reconnect_line(text) or bool(RECONNECT_COUNT.match(text.strip()))
 
 
 class Query:
@@ -136,7 +145,7 @@ class Query:
     @staticmethod
     def failure_hint_for(agent, text, exit_code):
         """瞬时重连（Reconnecting… waiting for network）不算失败事件，复用 rd_health 的同一判定。"""
-        return messages.failure_hint(agent, text, exit_code, skip=health.reconnect_line)
+        return messages.failure_hint(agent, text, exit_code, skip=is_reconnect)
 
     def measured(self, rec, number):
         """从本轮 harness 输出取实际模型与用量；任何读取失败都记「未记录」。"""
