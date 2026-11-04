@@ -1123,6 +1123,9 @@ def lock_wait_seconds():
     return value if math.isfinite(value) and value >= 0 else 60.0
 
 
+HELD_JOBS = set()  # 本进程当前持有任务锁的 job；锁不可重入，持锁的调用链用它判断可以直接写
+
+
 @contextlib.contextmanager
 def wait_job_lock(job):
     """有界等待取得 job 锁；等待超过约 2 秒时向 stderr 提示一次。超时抛 JobBusy。"""
@@ -1141,9 +1144,11 @@ def wait_job_lock(job):
                 raise
             notify()
             lock.acquire(wait=max(0.0, total - (time.monotonic() - started)))
+    HELD_JOBS.add(job)
     try:
         yield lock
     finally:
+        HELD_JOBS.discard(job)
         lock.release()
 
 
@@ -1252,8 +1257,40 @@ def queries(cfg):
                                       if section.startswith("project:")] if cfg else ())
 
 
+def reconcile_dispatch_state(rec, snapshot):
+    """cmd_run 在 launching 阶段异常退出时，状态会永远停在 launching。按目标机现状校正（持任务锁写）：
+    已有启动痕迹（run.rN.sh、pid、退出码）-> started；确认没有任何痕迹 -> preparation_failed；
+    连不上、锁被占（派单可能仍在进行）时不动。就地更新 rec。"""
+    if rec.get("dispatch_state") != "launching":
+        return
+    state = snapshot.get("state")
+    if state in (None, "", "unreachable"):
+        return
+    try:
+        launched = state in ("running", "done", "dead") or int(snapshot.get("round") or 0) >= 1
+    except ValueError:
+        return
+    target = "started" if launched else "preparation_failed"
+    lock = None
+    if rec["job"] not in HELD_JOBS:
+        try:
+            lock = JobLock(STATE, rec["job"]).acquire()
+        except JobBusy:
+            return
+    try:
+        fresh = load_job(rec["job"])
+        if fresh.get("dispatch_state") == "launching":
+            fresh["dispatch_state"] = target
+            save_job(fresh)
+        rec["dispatch_state"] = fresh["dispatch_state"]
+    finally:
+        if lock is not None:
+            lock.release()
+
+
 def collect_result(cfg, rec, snapshot):
     """Explicit write path used by inbox, resume and cleanup, never by queries."""
+    reconcile_dispatch_state(rec, snapshot)
     events.EventLog(STATE).observe_job(rec, snapshot)
     number = int(snapshot.get("round") or 0) or rec["rounds"]
     receipt = queries(cfg).result(rec, number, snapshot)

@@ -50,6 +50,7 @@ receipt_id, captured_at`。旧缓存保留原 ID 和字段。未缓存历史轮�
 `result` 在派单记录 `dispatch_state` 为 `preparing` 时一律返回 `None`，为 `launching` 时除 `done`
 （`exit_code` 已写）外也返回 `None`：此时目标机上的 `missing`／`dead` 只是目录或脚本尚未就绪，
 不是终态，不得生成或缓存回执。`run` 从登记到 started 持有任务锁；`keep` 持锁读改写。
+`run` 在 launching 阶段异常退出会让状态卡在 `launching`；`collect_result`（inbox、clean、resume 等显式收取路径）会持任务锁校正：目标机已有启动痕迹（`run.rN.sh`、pid、退出码）改为 `started`，确认没有痕迹改为 `preparation_failed`，连不上或锁被占（派单可能仍在进行）时不动。
 产物取回状态按轮次保存在派单记录 `artifacts_rounds`（`{轮次: {round, paths, results, at}}`），
 续轮不继承上一轮的「已取回」。
 

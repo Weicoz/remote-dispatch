@@ -61,6 +61,46 @@ class FalseTerminalTests(Fixture):
         rd_lock.JobLock(rd.STATE, record["job"]).acquire().release()  # 派单结束后锁已释放
 
 
+class StuckLaunchingTests(Fixture):
+    def stuck(self):
+        record = self.t.dispatch()
+        record["dispatch_state"] = "launching"
+        rd.save_job(record)
+        return record
+
+    def collect(self, record, snapshot):
+        return rd.collect_result(self.t.cfg, record, dict(snapshot))
+
+    def test_remote_traces_of_a_launch_correct_the_state_to_started(self):
+        for snapshot in ({"state": "dead", "round": "1"}, {"state": "running", "round": "1"},
+                         {"state": "starting", "round": "1"}, {"state": "done", "round": "1", "exit": "0"}):
+            with self.subTest(snapshot=snapshot):
+                record = self.stuck()
+                self.collect(record, snapshot)
+                self.assertEqual(rd.load_job(record["job"])["dispatch_state"], "started")
+                self.assertEqual(record["dispatch_state"], "started")
+
+    def test_dead_after_correction_yields_a_receipt_so_reclaim_is_not_blocked_forever(self):
+        record = self.stuck()
+        receipt = self.collect(record, {"state": "dead", "round": "1", "exit": ""})
+        self.assertEqual(receipt["execution_state"], "dead")
+
+    def test_no_launch_traces_means_preparation_failed(self):
+        for snapshot in ({"state": "starting", "round": "0"}, {"state": "missing"}):
+            with self.subTest(snapshot=snapshot):
+                record = self.stuck()
+                self.collect(record, snapshot)
+                self.assertEqual(rd.load_job(record["job"])["dispatch_state"], "preparation_failed")
+
+    def test_unreachable_or_busy_job_is_left_alone(self):
+        record = self.stuck()
+        self.collect(record, {"state": "unreachable"})
+        self.assertEqual(rd.load_job(record["job"])["dispatch_state"], "launching")
+        with rd_lock.JobLock(rd.STATE, record["job"]):
+            self.collect(record, {"state": "dead", "round": "1"})
+        self.assertEqual(rd.load_job(record["job"])["dispatch_state"], "launching")
+
+
 class KeepLockTests(Fixture):
     def test_keep_waits_for_the_lock_and_keeps_concurrent_writes(self):
         record = self.t.dispatch()
