@@ -24,6 +24,7 @@ ERROR_LOG_INTERVAL = 600
 SETTLED_FACTOR = 8
 SETTLED_MIN_SECONDS = 60
 TERMINAL = ("done", "dead", "missing")
+LEGACY_PER_HOST = 10  # 每机每轮补采的重启前终态快照上限
 RECOVERABLE = (ValueError, OSError, SystemExit, subprocess.SubprocessError)
 REASON_LIMIT = 120
 
@@ -171,8 +172,8 @@ class Collector:
                                        {host["name"] for host in enabled_hosts} | {rec["host"] for rec in everything})
             for job in [job for job in self.settled if job not in {rec["job"] for rec in everything}]:
                 del self.settled[job]
-            records = [rec for rec in everything
-                       if not service.job_refresh_complete(rec) and not self.settled_recently(rec)]
+            records = self.limit_legacy([rec for rec in everything
+                                         if not service.job_refresh_complete(rec) and not self.settled_recently(rec)])
         except RECOVERABLE as error:
             records = []
             self.errors.failed("jobs", "read", error)
@@ -211,6 +212,17 @@ class Collector:
             return
         # 与 publish_host 一样合并现有行：某机单元失败时，已发布的主机行不得被删。
         self.publish_host(config, enabled_hosts, rows)
+
+    def limit_legacy(self, records):
+        """重启后的终态补采每机每轮至多 LEGACY_PER_HOST 个（最近优先），避免一波 ssh；其余留给后续轮次。"""
+        taken, kept = {}, []
+        for rec in sorted(records, key=lambda r: str(r.get("updated_at") or r.get("created_at") or ""), reverse=True):
+            if self.legacy_terminal(rec):
+                taken[rec["host"]] = taken.get(rec["host"], 0) + 1
+                if taken[rec["host"]] > LEGACY_PER_HOST:
+                    continue
+            kept.append(rec)
+        return kept
 
     def publish_host(self, config, enabled_hosts, rows):
         service = self.service

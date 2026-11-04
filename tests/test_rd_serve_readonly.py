@@ -286,6 +286,8 @@ class CachedReadTests(unittest.TestCase):
         self.assertEqual(out["jobs"], ids)
         for row, i in zip(out["rows"], ids):
             self.assertEqual((row["job"], row["branch"], row["source_branch"]), (i, "rd/" + i, i))
+            if "devserver" in i:  # 配置密钥按子串替换：自由文本里的 ID 含密钥时被遮，标识键不受影响
+                continue
             self.assertIn(i, row["summary"])
             self.assertEqual(row["last"], "ran " + i + " on [redacted]")
         self.assertEqual(out["worker_root"], "/srv/[redacted]/rd")  # 路径按自由文本处理
@@ -302,6 +304,38 @@ class CachedReadTests(unittest.TestCase):
             self.assertEqual(item["deep"]["text"], "x [redacted] y")
         self.assertEqual(service.redact("pk-arena-fix-login-20261104-1200 and weicoz-pk-arena-fix-login-20261104-1200"),
                          "[redacted] and weicoz-pk-arena-fix-login-20261104-1200")
+
+    def test_urls_paths_and_cjk_neighbours_do_not_hide_strong_tokens(self):
+        service = self.serve()
+        service.sensitive = {"Passw0rd12345"}
+        strong = ["ghp_" + "a" * 36, "github_pat_" + "B" * 30, "sk-proj-abcdefghijklmnopqr", "sk-ant-api03-abcdefghijklmnop"]
+        for token in strong:
+            for text in ("https://%s@github.com/u/r.git" % token, "https://api/v1/" + token, "file." + token,
+                         "密钥" + token, "令牌Bearer abcDEF123456"):
+                self.assertNotIn(token[4:], service.redact(text), text)
+                self.assertNotIn("abcDEF123456", service.redact(text), text)
+        for text in ("-pPassw0rd12345", "pw%3DPassw0rd12345", "x\\nPassw0rd12345", "KEY_Passw0rd12345"):
+            self.assertNotIn("Passw0rd12345", service.redact(text), text)
+        self.assertEqual(service.redact("weicoz-sk-proj-fix-login-20261104-1200 ok"),
+                         "weicoz-sk-proj-fix-login-20261104-1200 ok")
+
+    def test_terminal_stream_uses_the_shared_secret_threshold_and_token_rules(self):
+        from remote_dispatch.rd_terminal_redact import TerminalRedactor
+        service = self.serve()
+        service.sensitive = {"abc", "Passw0rd12345"}
+        redactor = TerminalRedactor(service)
+        out = redactor.feed(("abc Passw0rd12345 https://%s@h/r " % ("ghp_" + "a" * 36)).encode()).decode()
+        self.assertIn("abc", out)
+        self.assertNotIn("Passw0rd12345", out)
+        self.assertNotIn("ghp_", out)
+
+    def test_restart_recollect_of_terminal_snapshots_is_capped_per_host_cycle(self):
+        service = self.serve()
+        recs = [dict(job="j%d" % i, host="target", updated_at="2026-01-%02d" % (i + 1)) for i in range(15)]
+        service.collector.legacy_terminal = lambda rec: True
+        kept = service.collector.limit_legacy(recs)
+        self.assertEqual(len(kept), 10)
+        self.assertEqual(kept[0]["job"], "j14")
 
     def test_persisted_snapshot_keeps_token_like_job_branch(self):
         self.job("weicoz-pk-arena-fix-20261104-1200")

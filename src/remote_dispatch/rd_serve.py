@@ -61,12 +61,13 @@ CONFIG_RELOAD_ERROR_LIMIT = 1000
 
 
 # 常见裸令牌（无 key=value 标签也要遮盖）：OpenAI/Anthropic 风格 sk-、GitHub ghp_/github_pat_、Bearer、Slack xox*-、AWS AKIA。
-# 前置断言排除嵌在标识、路径、文件名里的片段（如 weicoz-pk-arena-…）；通用 sk/pk/rk- 须至少含一个数字且 ≥20 位。
-_EDGE = r"(?<![\w/.\-])"
+# 强前缀令牌宁可多遮：只排除前一字符为 ASCII 字母数字或下划线（URL 用户名、路径、扩展名、中文紧邻都遮）；
+# sk-ant-/sk-proj- 另排除前一字符为 -，避免命中派单 ID。通用 sk/pk/rk- 是弱形态：须含数字、≥20 位，前一字符还不得是 / . -。
 TOKEN_PATTERN = re.compile(
-    _EDGE + r"(?:sk-(?:ant-|proj-)[A-Za-z0-9_\-]{16,}|(?:sk|pk|rk)-(?=[A-Za-z0-9_\-]*\d)[A-Za-z0-9_\-]{20,}"
-    r"|gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|xox[abposr]-[A-Za-z0-9\-]{10,}|AKIA[0-9A-Z]{16}\b)"
-    r"|(?i:(?<![\w/.\-])Bearer\s+)[A-Za-z0-9._~+/=\-]{8,}")
+    r"(?<![A-Za-z0-9_])(?:gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|xox[abposr]-[A-Za-z0-9\-]{10,}|AKIA[0-9A-Z]{16}(?![0-9A-Z]))"
+    r"|(?<![A-Za-z0-9_\-])sk-(?:ant-|proj-)[A-Za-z0-9_\-]{16,}"
+    r"|(?<![A-Za-z0-9_/.\-])(?:sk|pk|rk)-(?=[A-Za-z0-9_\-]*\d)[A-Za-z0-9_\-]{20,}"
+    r"|(?i:(?<![A-Za-z0-9_])Bearer\s+)[A-Za-z0-9._~+/=\-]{8,}")
 
 # 结构化标识键：值用于路由与关联（派单 ID、分支、主机、路径等），不做文本脱敏；列表元素继承该语义。
 # 路径（cwd、repo、worker_root）不在此列：可能含配置密钥路径，令牌规则不会命中路径片段。
@@ -77,7 +78,7 @@ IDENTIFIER_KEYS = frozenset({
     "last_round", "current_rounds", "receipt_id", "report_id", "message_id", "initiator_session", "receiver_session",
     "session", "session_id", "pane_id", "workspace_id", "device_id", "id", "seq", "type", "kind", "state", "execution_state",
     "review_state", "delivery_state", "status", "created", "created_at", "updated_at", "snapshot_at", "captured_at",
-    "started_at", "stopped_at", "finished", "reviewed_at", "received_at", "delivered_at", "channels"})
+    "started_at", "stopped_at", "finished", "reviewed_at", "received_at", "delivered_at", "channels", "previous", "line", "name", "unit"})
 MIN_SECRET_LENGTH = 8
 
 
@@ -583,13 +584,17 @@ class Service:
     def is_sensitive_field(key):
         return bool(re.search(r"(?i)(?:env_?file|auth_?file|ssh|password|secret|token|private_?key|api_?key|credential|authorization)", key))
 
+    @staticmethod
+    def secret_values(sensitive):
+        """Configured secrets long enough to replace without damaging ordinary text (shared by HTTP and terminal paths)."""
+        return tuple(sorted((item for item in sensitive if len(item) >= MIN_SECRET_LENGTH), key=len, reverse=True))
+
     def redact(self, value, *, sensitive=None):
         """Project nested display data; scrub configured secrets and tokens in free text only."""
         if sensitive is None:
             sensitive = self.sensitive
-        secrets = sorted((item for item in sensitive if len(item) >= MIN_SECRET_LENGTH), key=len, reverse=True)
-        pattern = (re.compile(r"(?<![\w\-])(?:" + "|".join(map(re.escape, secrets)) + r")(?![\w\-])")
-                   if secrets else None)
+        secrets = self.secret_values(sensitive)
+        pattern = re.compile("|".join(map(re.escape, secrets))) if secrets else None
         return self.redact_value(value, pattern, False)
 
     def redact_value(self, value, pattern, identifier):

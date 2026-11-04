@@ -7,6 +7,9 @@ CREDENTIAL_LABEL = re.compile(r"(?i)(?:auth_file|env_file|ssh(?:_opts)?|password
 CREDENTIAL = re.compile(r"(?i)(?:auth_file|env_file|ssh(?:_opts)?|password|secret|token|api_key|private_?key)[\"']?\s*[:=]$")
 
 
+TOKEN_TAIL = 128  # 跨帧保留的可见文本长度，用于补全被拆开的令牌
+
+
 class TerminalRedactor:
     def __init__(self, service):
         self.service = service
@@ -23,15 +26,17 @@ class TerminalRedactor:
 
     def feed(self, data):
         output, visible, positions = [], [], []
-        secrets = tuple(secret for secret in self.service.sensitive if secret)
+        from .rd_serve import TOKEN_PATTERN  # 与 HTTP 路径共用同一套令牌规则与配置密钥长度门槛
+        secrets = self.service.secret_values(self.service.sensitive)
         text = self.decoder.decode(data)
-        if (not secrets and not self.escape and not self.string_escape and not self.value and not self.pem
+        if (not secrets and not TOKEN_PATTERN.search(self.secret_tail + text) and not self.escape and not self.string_escape and not self.value and not self.pem
                 and not any(char in text for char in "\x1b=:-")):
             if text and text.strip():
                 self.credential_label = bool(CREDENTIAL_LABEL.search((self.tail + text.rstrip())[-256:]))
             elif text:
                 self.credential_label = self.credential_label or bool(CREDENTIAL_LABEL.search(self.tail))
             self.tail = (self.tail + text)[-256:]
+            self.secret_tail = (self.secret_tail + text)[-TOKEN_TAIL:]
             return text.encode("utf-8")
         for char in text:
             if self.string_escape:
@@ -108,7 +113,11 @@ class TerminalRedactor:
                 if combined.endswith(secret[:length]):
                     left = max(0, len(combined) - length - previous)
                     masked[left:] = b"\x01" * (len(visible) - left)
-        keep = max([1] + [len(secret) for secret in secrets]) - 1
+        for match in TOKEN_PATTERN.finditer(combined):
+            left, right = max(0, match.start() - previous), match.end() - previous
+            if right > 0:
+                masked[left:right] = b"\x01" * (right - left)
+        keep = max([TOKEN_TAIL] + [len(secret) for secret in secrets]) - 1
         self.secret_tail = combined[-keep:] if keep else ""
         for index, hide in enumerate(masked):
             if hide:
