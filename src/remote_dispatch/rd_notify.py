@@ -120,6 +120,8 @@ WAIT_SECONDS = MACOS_TIMEOUT + 10  # 单个通道结果的最长等待，超过�
 LOG_INTERVAL = 60.0       # 丢弃计数日志的最短间隔
 # 配置性结果（未配置设备、平台不支持）不是通道故障，不计入熔断。
 NEUTRAL_REASONS = ("unsupported_platform", "no_device")
+# 通道没有真正尝试发送的原因：汇报不能据此记 inbox_only。
+REFUSED = ("circuit_open", "channel_closed")
 
 
 def say(message):
@@ -161,7 +163,7 @@ class Channel:
             self.queue.append((sender, service, row, future))
             while len(self.queue) > self.queue_limit:
                 _, _, _, oldest = self.queue.popleft()
-                oldest.set_result(dict(channel=self.name, ok=False, reason="queue_overflow"))
+                self.settle_queued(oldest, dict(channel=self.name, ok=False, reason="queue_overflow"))
                 self.dropped += 1
                 if self.logged_drop_at is None or now - self.logged_drop_at >= LOG_INTERVAL:
                     self.logged_drop_at = now
@@ -180,9 +182,11 @@ class Channel:
                     self.cv.wait()
                 if self.closed:
                     while self.queue:
-                        self.queue.popleft()[3].set_result(dict(channel=self.name, ok=False, reason="channel_closed"))
+                        self.settle_queued(self.queue.popleft()[3], dict(channel=self.name, ok=False, reason="channel_closed"))
                     return
                 sender, service, row, future = self.queue.popleft()
+            if not future.set_running_or_notify_cancel():
+                continue  # 调用方等待超时已撤销：不发送，也不计入熔断
             try:
                 result = sender(service, row)
             except Exception as error:
@@ -190,6 +194,11 @@ class Channel:
                 say("提醒通道 %s 失败（%s）。" % (self.name, type(error).__name__))
                 result = dict(channel=self.name, ok=False, reason="error:" + type(error).__name__)
             self.settle(result)
+            future.set_result(result)
+
+    @staticmethod
+    def settle_queued(future, result):
+        if future.set_running_or_notify_cancel():
             future.set_result(result)
 
     def settle(self, result):
@@ -205,9 +214,6 @@ class Channel:
                 self.open_until = self.clock() + self.cooldown
                 if self.failures == self.threshold:
                     say("提醒通道 %s 连续失败 %d 次，熔断 %d 秒。" % (self.name, self.failures, self.cooldown))
-
-    def timed_out(self):
-        self.settle(dict(ok=False, reason="timeout"))
 
     def close(self):
         with self.cv:
@@ -263,7 +269,11 @@ def dispatch(service, row):
         try:
             channels.append(outcome.result(timeout=max(0.0, deadline - time.monotonic())))
         except FutureTimeout:
-            runner.timed_out()
+            # 还在排队就撤销（不发送、不计熔断）；已在发送的由工作线程自己记结果。
+            outcome.cancel()
             channels.append(dict(channel=name, ok=False, reason="timeout"))
+    if not any(c["ok"] for c in channels) and any(c.get("reason") in REFUSED for c in channels):
+        # 通道被熔断或已关闭而没有真正尝试：保持 queued，由汇报投递路径稍后重投，不记 inbox_only。
+        return dict(status="queued", channels=[])
     status = "notified" if any(c["ok"] for c in channels) else "inbox_only"
     return dict(status=status, channels=channels)

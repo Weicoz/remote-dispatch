@@ -65,7 +65,7 @@ class ChannelIsolationTests(unittest.TestCase):
                 rd_notify.dispatch(svc, ROW)
             self.assertEqual(len(calls), 3)
             skipped = rd_notify.dispatch(svc, ROW)
-            self.assertEqual(skipped["channels"], [dict(channel="macos", ok=False, reason="circuit_open")])
+            self.assertEqual(skipped, dict(status="queued", channels=[]))
             self.assertEqual(len(calls), 3)
             now[0] = 101
             recovered = rd_notify.dispatch(svc, ROW)
@@ -110,6 +110,64 @@ class ChannelIsolationTests(unittest.TestCase):
         self.assertTrue(first.result(5)["ok"])
         self.assertTrue(queued[3].result(5)["ok"])
         channel.close()
+
+
+class CancellationAndRefusalTests(unittest.TestCase):
+    def test_wait_timeout_cancels_queued_item_so_it_is_not_sent_and_not_counted(self):
+        release = threading.Event()
+        sent = []
+
+        def sender(svc, row):
+            sent.append(row["id"])
+            release.wait(10)
+            return dict(channel="macos", ok=True, reason=None)
+        svc = service("macos")
+        channel = rd_notify.Channel("macos", threshold=1)
+        svc.notify_channels_state = {"macos": channel}
+        first = threading.Thread(target=rd_notify.dispatch, args=(svc, dict(ROW, id="one")))
+        with patch.dict(rd_notify.SENDERS, {"macos": sender}), patch.object(rd_notify, "WAIT_SECONDS", 0.3):
+            first.start()
+            deadline = time.monotonic() + 5
+            while not sent and time.monotonic() < deadline:
+                time.sleep(0.01)
+            second = rd_notify.dispatch(svc, dict(ROW, id="two"))
+            release.set()
+            first.join(5)
+            time.sleep(0.3)
+        rd_notify.close(svc)
+        self.assertEqual(second["channels"], [dict(channel="macos", ok=False, reason="timeout")])
+        self.assertEqual(sent, ["one"])
+        self.assertEqual(channel.failures, 0)
+
+    def test_open_breaker_leaves_report_queued_instead_of_inbox_only(self):
+        svc = service("macos")
+        channel = rd_notify.Channel("macos", threshold=1, cooldown=1000)
+        svc.notify_channels_state = {"macos": channel}
+        failing = lambda s, r: dict(channel="macos", ok=False, reason="notify_failed")
+        with patch.dict(rd_notify.SENDERS, {"macos": failing}), contextlib.redirect_stderr(io.StringIO()):
+            self.assertEqual(rd_notify.dispatch(svc, ROW)["status"], "inbox_only")
+            self.assertEqual(rd_notify.dispatch(svc, ROW), dict(status="queued", channels=[]))
+        rd_notify.close(svc)
+
+    def test_queued_result_is_not_recorded_and_is_retried_later(self):
+        from remote_dispatch.rd_reports import Reports
+        reports = Reports.__new__(Reports)
+        reports.inflight, reports.retry_at, reports.clock = {"r1"}, {}, 100.0
+        reports.notify = lambda saved, row: dict(status="queued", channels=[])
+        reports.record = lambda row, result: self.fail("队列中的汇报不得写结果")
+        reports.deliver(dict(id="r1"))
+        self.assertEqual(reports.retry_at, {"r1": 130.0})
+        self.assertEqual(reports.inflight, set())
+
+    def test_close_marks_reports_closed_before_closing_channels(self):
+        from remote_dispatch import rd_reports
+        reports = Reports = rd_reports.Reports.__new__(rd_reports.Reports)
+        reports.thread, reports.pool, reports.futures = None, None, []
+        reports.lock, reports.closed, reports.service = threading.RLock(), False, object()
+        seen = []
+        with patch.object(rd_reports.notifier, "close", lambda svc: seen.append(reports.closed)):
+            Reports.close()
+        self.assertEqual(seen, [True])
 
 
 if __name__ == "__main__":
