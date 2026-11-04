@@ -217,12 +217,12 @@ class DispatchTests(unittest.TestCase):
         self.assertEqual([row["data"]["dispatch_count"] for row in changes], [1, 2])
 
     def test_registration_event_failure_does_not_leave_a_manifest_that_blocks_retry(self):
-        replace = os.replace
-        def fail_events(source, destination):
-            if Path(destination) == Path(rd.STATE) / "events.jsonl":
+        write_active = events.write_active
+        def fail_events(path, body):
+            if Path(path) == Path(rd.STATE) / "events.jsonl":
                 raise OSError("fixture event disk full")
-            return replace(source, destination)
-        with patch.object(os, "replace", side_effect=fail_events), self.assertRaisesRegex(ValueError, "event_write_failed"):
+            return write_active(path, body)
+        with patch.object(events, "write_active", side_effect=fail_events), self.assertRaisesRegex(ValueError, "event_write_failed"):
             self.dispatch(project="app")
         self.assertEqual(rd.all_jobs(), [])
         self.assertEqual(list((Path(rd.STATE) / "results").glob("*/dispatch.json")), [])

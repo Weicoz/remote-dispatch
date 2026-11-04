@@ -40,7 +40,7 @@ class MessageTests(unittest.TestCase):
             messages.report(directory, "job-a", 1, "progress", str(index), "中" * 8000)
         query = dict(operation="report-read", workdir=str(self.root), shared_workdir=str(self.root),
                      job="job-a", round=1, kind="progress")
-        with patch.object(native, "request", side_effect=lambda host, op, data: native.handle(
+        with patch.object(native, "request", side_effect=lambda host, op, data, **kw: native.handle(
                 dict(query, **data), io.BytesIO())):
             report = rd.remote_report({"platform": "windows"}, dict(job="job-a"), 1, "progress")
         self.assertEqual([row["phase"] for row in report["history"]], ["0", "1", "2", "3", "4"])
