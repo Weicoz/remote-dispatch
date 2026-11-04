@@ -121,7 +121,7 @@ LOG_INTERVAL = 60.0       # 丢弃计数日志的最短间隔
 # 配置性结果（未配置设备、平台不支持）不是通道故障，不计入熔断。
 NEUTRAL_REASONS = ("unsupported_platform", "no_device")
 # 通道没有真正尝试发送的原因：汇报不能据此记 inbox_only。
-REFUSED = ("circuit_open", "channel_closed")
+REFUSED = ("circuit_open", "channel_closed", "queue_overflow", "queue_timeout")
 
 
 def say(message):
@@ -250,13 +250,18 @@ def dispatch(service, row):
         enabled = ()
     if row.get("kind") == "digest" and not digest_enabled(service.config.cp):
         enabled = ()
+    # 重投时只发还没有结果的通道：已有结果（成功、失败、或超时的在途发送——可能已送达）的通道沿用，不重发。
+    prior = {c["channel"]: c for c in (row.get("delivery") or {}).get("channels", [])
+             if isinstance(c, dict) and c.get("reason") not in REFUSED}
     pending = []
     with _fallback_lock:
         registry = channels_of(service)
         runners = {name: registry.setdefault(name, Channel(name)) for name in enabled}
     for name in enabled:
         sender = SENDERS.get(name)
-        if sender is None:
+        if name in prior:
+            pending.append((name, None, prior[name]))
+        elif sender is None:
             pending.append((name, None, dict(channel=name, ok=False, reason="not_implemented")))
         else:
             pending.append((name, runners[name], runners[name].submit(sender, service, row)))
@@ -270,10 +275,15 @@ def dispatch(service, row):
             channels.append(outcome.result(timeout=max(0.0, deadline - time.monotonic())))
         except FutureTimeout:
             # 还在排队就撤销（不发送、不计熔断）；已在发送的由工作线程自己记结果。
-            outcome.cancel()
-            channels.append(dict(channel=name, ok=False, reason="timeout"))
+            if outcome.cancel():
+                channels.append(dict(channel=name, ok=False, reason="queue_timeout"))  # 没发出去，可重投
+            elif outcome.done():
+                channels.append(outcome.result())
+            else:
+                channels.append(dict(channel=name, ok=False, reason="timeout"))  # 在途发送，可能已送达，不重投
     if not any(c["ok"] for c in channels) and any(c.get("reason") in REFUSED for c in channels):
-        # 通道被熔断或已关闭而没有真正尝试：保持 queued，由汇报投递路径稍后重投，不记 inbox_only。
-        return dict(status="queued", channels=[])
+        # 有通道没有真正尝试（熔断、关闭、队列满、排队超时）且没有任何成功：保持 queued，稍后重投。
+        # 已有结果的通道随 queued 一起保存，重投只针对没尝试过的通道。
+        return dict(status="queued", channels=[c for c in channels if c.get("reason") not in REFUSED])
     status = "notified" if any(c["ok"] for c in channels) else "inbox_only"
     return dict(status=status, channels=channels)

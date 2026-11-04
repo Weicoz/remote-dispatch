@@ -187,8 +187,11 @@ class Reports:
                                                               reason="error:" + type(error).__name__)])
         try:
             if result.get("status") == "queued":
-                # 通道熔断或关闭，没有真正通知：保持 queued，稍后重投（至少一次）。
+                # 有通道没有真正尝试且无人成功：保持 queued，稍后重投（至少一次）；
+                # 已有结果的通道一并存下，重投不重发它们。
                 self.retry_at[row["id"]] = self.clock + 30
+                if result["channels"]:
+                    self.record(row, result)
             else:
                 self.record(row, result)
         finally:

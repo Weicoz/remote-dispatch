@@ -135,7 +135,7 @@ class CancellationAndRefusalTests(unittest.TestCase):
             first.join(5)
             time.sleep(0.3)
         rd_notify.close(svc)
-        self.assertEqual(second["channels"], [dict(channel="macos", ok=False, reason="timeout")])
+        self.assertEqual(second, dict(status="queued", channels=[]))  # 排队超时：没发出去，留待重投
         self.assertEqual(sent, ["one"])
         self.assertEqual(channel.failures, 0)
 
@@ -148,6 +148,34 @@ class CancellationAndRefusalTests(unittest.TestCase):
             self.assertEqual(rd_notify.dispatch(svc, ROW)["status"], "inbox_only")
             self.assertEqual(rd_notify.dispatch(svc, ROW), dict(status="queued", channels=[]))
         rd_notify.close(svc)
+
+    def test_redelivery_resends_only_channels_that_were_not_attempted(self):
+        release = threading.Event()
+        calls = {"herdr": 0, "macos": 0}
+
+        def herdr(svc, row):
+            calls["herdr"] += 1
+            release.wait(10)
+            return dict(channel="herdr", ok=True, reason=None)
+
+        def macos(svc, row):
+            calls["macos"] += 1
+            return dict(channel="macos", ok=True, reason=None)
+        svc = service("herdr,macos")
+        svc.notify_channels_state = {"macos": rd_notify.Channel("macos", threshold=1, cooldown=1000)}
+        svc.notify_channels_state["macos"].open_until = time.monotonic() + 1000  # 熔断中
+        row = dict(ROW, id="r1")
+        with patch.dict(rd_notify.SENDERS, {"herdr": herdr, "macos": macos}), patch.object(rd_notify, "WAIT_SECONDS", 0.3):
+            first = rd_notify.dispatch(svc, row)
+            # herdr 超时但在途（可能已送达）；macos 熔断没尝试 -> queued，只保存 herdr 的结果
+            self.assertEqual(first, dict(status="queued", channels=[dict(channel="herdr", ok=False, reason="timeout")]))
+            svc.notify_channels_state["macos"].open_until = 0.0
+            second = rd_notify.dispatch(svc, dict(row, delivery=first))
+        release.set()
+        rd_notify.close(svc)
+        self.assertEqual(calls, {"herdr": 1, "macos": 1})
+        self.assertEqual(second["status"], "notified")
+        self.assertEqual([c["channel"] for c in second["channels"]], ["herdr", "macos"])
 
     def test_queued_result_is_not_recorded_and_is_retried_later(self):
         from remote_dispatch.rd_reports import Reports
