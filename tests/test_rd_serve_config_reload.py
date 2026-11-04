@@ -207,6 +207,41 @@ class ConfigReloadTests(unittest.TestCase):
         self.assertEqual([row["name"] for row in hosts["hosts"]],
                          [row["name"] for row in before["hosts"]] + ["recovered"])
 
+    def test_startup_with_one_invalid_host_still_serves_the_others_and_lists_the_error(self):
+        self.write_config(self.host_config("good") + self.host_config("bad", extra="max_load_per_core=nan\n")
+                          + self.host_config("old", enabled=False, extra="timeout=0\nmax_swap_io_mb_s=\n"))
+        self.start()
+        body = self.eventually(lambda: self.request("/v1/hosts")[1],
+                               lambda value: [row["name"] for row in value["hosts"]] == ["good"],
+                               "无效目标机不应让 serve 起不来，其余目标机应正常列出")
+        self.assertEqual([item["name"] for item in body["config_errors"]], ["bad"])
+        self.assertIn("max_load_per_core", body["config_errors"][0]["error"])
+
+    def test_reload_keeps_the_old_definition_when_a_running_host_becomes_invalid(self):
+        self.write_config(self.host_config("stable"))
+        self.start()
+        self.eventually(lambda: self.request("/v1/hosts")[1],
+                        lambda value: [row["name"] for row in value["hosts"]] == ["stable"], "启动目标机未出现")
+        self.write_config(self.host_config("stable", extra="timeout=0\n"))
+        failed = self.eventually(lambda: self.request("/v1/version")[1]["config_reload"],
+                                 lambda reload: reload["ok"] is False, "已在用的目标机写坏后应保留旧定义并报错")
+        self.assertIn("stable", failed["error"])
+        self.assertIn("timeout", failed["error"])
+        self.assertEqual([row["name"] for row in self.request("/v1/hosts")[1]["hosts"]], ["stable"])
+
+    def test_known_invalid_host_does_not_block_unrelated_reloads(self):
+        self.write_config(self.host_config("good") + self.host_config("bad", extra="timeout=0\n"))
+        self.start()
+        self.eventually(lambda: self.request("/v1/hosts")[1],
+                        lambda value: [item["name"] for item in value.get("config_errors", [])] == ["bad"], "启动错误未列出")
+        self.write_config(self.host_config("good") + self.host_config("bad", extra="timeout=0\n")
+                          + self.host_config("added"))
+        body = self.eventually(lambda: self.request("/v1/hosts")[1],
+                               lambda value: sorted(row["name"] for row in value["hosts"]) == ["added", "good"],
+                               "已知的无效目标机不应阻塞其他修改的重载")
+        self.assertTrue(body["config_reload"]["ok"])
+        self.assertEqual([item["name"] for item in body["config_errors"]], ["bad"])
+
     def test_reload_keeps_an_open_stream_and_forwarded_write_command_running(self):
         self.write_config(self.host_config("reload-target"))
         self.start()

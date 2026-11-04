@@ -44,6 +44,8 @@ setup_windows = npm ci
 test_windows = npm test
 ```
 
+SSH 连接复用（`ControlPersist`）：Linux 发起方请用 `ssh -V` 核对 OpenSSH 版本。较老的 OpenSSH 在 ControlPersist 下，后台 master 可能继续持有调用方的 stderr 管道，使 `subprocess` 等待最多 60 秒才返回；本项目没有核实出确切的版本阈值，现代版本（8.x 以上）未见此问题。遇到调用迟迟不返回时，在该目标机的 `ssh_opts` 写 `-o ControlMaster=no` 即可关闭复用。Windows 发起方自动跳过。
+
 环境指纹与非 Git 产物：macOS、Linux、Windows 目标都支持 `[project] fingerprint` 与 `run --artifact`。Windows 目标优先用 `fingerprint_windows`（PowerShell，经 SSH 在任务 worktree 内执行），`--host auto` 对 Windows 候选同样逐台核对。Windows 产物经原生 worker 的 Base64 通道取回 tar（与 `direct` 的 bundle 回传同一通道），本地校验成员后落地；失败保持待拉，可 `fetch JOB --artifacts` 重试。详见 [worker-setup](worker-setup.md)。
 
 ## Transport and Lifecycle

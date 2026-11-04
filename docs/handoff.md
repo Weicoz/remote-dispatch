@@ -41,7 +41,7 @@ Windows使用该机器当前Python与 `$env:RD_REPORTER`。无Python的POSIX普�
 
 回执为UTF-8 JSON，最大64KiB，原子写入、权限0600；包含job、round、phase、summary、artifacts、updated_at。结果另外包含 outcome (`completed/partial/blocked/failed`)、checks (`passed/failed/partial/not_run/not_reported`)。只引用本任务证据，摘要不含密码、私钥或敏感正文。
 
-runner收尾补 executor_exit、finished_at。代理未写结构化结果时，从Codex最后回复生成有界摘要，checks仍为not_reported；普通命令的stdout保留为日志引用。非零退出不能被执行方completed声明掩盖。
+runner收尾补 executor_exit、finished_at。setup 与主体共用同一超时预算（`--timeout`）：setup 超时或主体超时都是退出码124，回执`timeout_phase`为`setup`或`body`；主体只拿 setup 用剩的时间（至少1秒）。代理未写结构化结果时，从Codex最后回复生成有界摘要，checks仍为not_reported；普通命令的stdout保留为日志引用。`run --test` / `--test-full` 的命令任务例外：兜底回执按退出码写checks=passed（0）或failed（非0），并在`test_command`记录被执行的命令（最多1000字符）；任务自己写过结果回执时以其为准。测试类派单遇本地未发送的改动（既无`--wip`也未被`--include`覆盖）退出码4拒绝，防止测到旧代码；`--allow-dirty`显式跳过，非测试派单只在stderr警告。非零退出不能被执行方completed声明掩盖。
 
 ## 证据索引与有界读取
 

@@ -80,11 +80,22 @@ def artifact_lines(results):
     return lines
 
 
-def artifacts_pending(rec):
+def round_state(rec, number=None):
+    """某一轮的产物取回状态；每轮独立保存（artifacts_rounds），续轮不继承上一轮的已取回。
+    没有 round 字段的旧记录只当作第 1 轮。"""
+    number = number or rec.get("rounds") or 1
+    saved = (rec.get("artifacts_rounds") or {}).get(str(number))
+    if saved is not None:
+        return saved
+    legacy = rec.get("artifacts_state") or {}
+    return legacy if "round" not in legacy and number == 1 else {}
+
+
+def artifacts_pending(rec, number=None):
     """声明了产物但还有路径没成功处理（未尝试或失败）；远端确认缺失、本地保护跳过的是终态，不算待拉。"""
     if not rec.get("artifact_paths"):
         return False
-    state = rec.get("artifacts_state") or {}
+    state = round_state(rec, number)
     done = {item["path"] for item in state.get("results", []) if item["status"] in ("fetched", "missing", "skipped")}
     return any(path not in done for path in rec["artifact_paths"])
 

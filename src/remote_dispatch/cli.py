@@ -13,6 +13,7 @@ import concurrent.futures
 import configparser
 import functools
 import hashlib
+import io
 import json
 import math
 import ntpath
@@ -62,43 +63,22 @@ STATE = os.environ.get("RD_STATE") or os.path.expanduser("~/.local/state/remote-
 HERE = os.path.dirname(os.path.abspath(__file__))
 CONFIG_REQUEST_TIMEOUT = 30
 
-DEFAULTS = {
-    "workdir": "~/remote-dispatch",
-    "sync": "origin",
-    "launcher": "nohup",
-    "path": "$HOME/.local/bin:$HOME/.kimi-code/bin:/opt/homebrew/bin:/usr/local/bin",
-    "ssh_opts": "-o BatchMode=yes -o ConnectTimeout=8",
-    "env_file": "",
-    # 缓存目录声明：NAME=目录，多项用分号分隔。相对目录落在用户根目录的 cache/ 下；
-    # 绝对目录必须含 {user}（展开为用户 ID），且不得落在任何 worktree 内。空表示不注入。
-    "cache_dirs": "",
-    "codex_auth_file": "",
-    "dsh_auth_file": "",
-    "agy_auth_file": "~/.gemini/antigravity-cli/antigravity-oauth-token",
-    "platform": "posix",
-    "python": "python",
-    "max_cpu_pct": "85",
-    "warn_cpu_pct": "70",
-    "tags": "",
-    "enabled": "true",
-    "max_heavy": "1",
-    "max_load_per_core": "1.5",
-    "min_free_mem_pct": "10",
-    "min_free_disk_gb": "10",
-    "warn_load_per_core": "1.0",
-    "warn_free_mem_pct": "20",
-    "warn_free_disk_gb": "20",
-    # 交换区已用量只反映历史累积（macOS 不主动回收冷页），超过它只提示不拦；
-    # 拦派单看换页速率：持续高速换页，或交换区快用尽且仍在换页。
-    "max_swap_used_gb": "15",
-    # 已停用：下面三项仍可加载，但不再参与接单判定
-    "max_swap_io_mb_s": "10",
-    "min_swap_free_gb": "1",
-    "swap_active_mb_s": "1",
-    "timeout": "3600",
-    # worktree 总量上限（GB）；0 表示不限。仅 serve 定时回收使用，见 docs/cache-retention.md。
-    "max_worktree_gb": "0",
-}
+from .rd_defaults import DEFAULTS  # 重新导出，保持 cli.DEFAULTS 兼容
+from . import rd_host_config as host_checks
+from .rd_host_config import parse_cache_dirs  # 重新导出，保持 cli.parse_cache_dirs 兼容
+
+# SSH 连接复用：同一目标机的多次 ssh/git/rsync 共用一条连接（握手约 0.27 秒 -> 复用约 0.08 秒）。
+# %C 是 40 位哈希，路径远低于 macOS 的 104 字节 socket 上限。
+SSH_MULTIPLEX_OPTS = "-o ControlMaster=auto -o ControlPath=~/.ssh/rd-%C -o ControlPersist=60 -o ServerAliveInterval=10 -o ServerAliveCountMax=3"
+
+
+def with_ssh_multiplexing(opts):
+    """给 ssh_opts 追加连接复用；用户已写任一 Control* 选项（含 ControlMaster=no 关闭）时原样保留。
+    Windows 发起方的 OpenSSH 不支持 ControlMaster，也跳过。"""
+    if os.name == "nt" or "control" in opts.lower():
+        return opts
+    return (opts + " " + SSH_MULTIPLEX_OPTS).strip()
+
 
 # worktree 只被同一任务的 rdispatch resume 复用；保留时长按续跑可能性分级。
 # command：命令任务不能续跑；accepted：已合入或无新提交；unmerged：已取回未合入，最可能续跑。
@@ -151,27 +131,39 @@ mkdir -p "$RD_JOB_DIR/reports"
 @@ROLLOUT_ENV@@
 if [ -f "$RD_JOB_DIR/setup.sh" ] && [ ! -f "$RD_JOB_DIR/setup.done" ]; then
   rd_t0=$(date +%s)
-  if sh "$RD_JOB_DIR/setup.sh" > "$RD_JOB_DIR/setup.log" 2>&1; then
-    touch "$RD_JOB_DIR/setup.done"
-    echo "setup_seconds=$(( $(date +%s) - rd_t0 ))" > "$RD_JOB_DIR/timing.r$RD_ROUND"
-  else
-    echo "setup_seconds=$(( $(date +%s) - rd_t0 ))" > "$RD_JOB_DIR/timing.r$RD_ROUND"
+  sh "$RD_JOB_DIR/setup.sh" > "$RD_JOB_DIR/setup.log" 2>&1 &
+  spid=$!
+  ( sleep @@TIMEOUT@@; : > "$RD_JOB_DIR/timed_out"; killtree $spid ) &
+  swpid=$!
+  wait $spid; src=$?
+  killtree $swpid
+  rd_setup_s=$(( $(date +%s) - rd_t0 ))
+  echo "setup_seconds=$rd_setup_s" > "$RD_JOB_DIR/timing.r$RD_ROUND"
+  if [ -f "$RD_JOB_DIR/timed_out" ]; then
+    echo "timeout_phase=setup" >> "$RD_JOB_DIR/timing.r$RD_ROUND"
+    rc=124; @@REPORT_FINISH@@
+    echo 124 > "$RD_JOB_DIR/exit_code"; exit 124
+  elif [ "$src" -ne 0 ]; then
     rc=97; @@REPORT_FINISH@@
     echo 97 > "$RD_JOB_DIR/exit_code"; exit 97
   fi
+  touch "$RD_JOB_DIR/setup.done"
 else
+  rd_setup_s=0
   printf 'setup_seconds=0\nsetup_note=已跳过\n' > "$RD_JOB_DIR/timing.r$RD_ROUND"
 fi
+# setup 与主体共用同一超时预算：主体只拿剩余时间（至少 1 秒）。
+rd_left=$(( @@TIMEOUT@@ - rd_setup_s )); [ "$rd_left" -lt 1 ] && rd_left=1
 rd_t1=$(date +%s)
 @@EXEC@@ > "$RD_JOB_DIR/stdout.r$RD_ROUND.log" 2> "$RD_JOB_DIR/stderr.r$RD_ROUND.log" &
 cpid=$!
-( sleep @@TIMEOUT@@; : > "$RD_JOB_DIR/timed_out"; killtree $cpid ) &
+( sleep $rd_left; : > "$RD_JOB_DIR/timed_out"; killtree $cpid ) &
 wpid=$!
 wait $cpid; rc=$?
 killtree $wpid
 echo "body_seconds=$(( $(date +%s) - rd_t1 ))" >> "$RD_JOB_DIR/timing.r$RD_ROUND"
 @@REGEN@@
-[ -f "$RD_JOB_DIR/timed_out" ] && rc=124
+[ -f "$RD_JOB_DIR/timed_out" ] && { rc=124; echo "timeout_phase=body" >> "$RD_JOB_DIR/timing.r$RD_ROUND"; }
 git rev-parse HEAD > "$RD_JOB_DIR/head" 2>/dev/null
 git status --porcelain 2>/dev/null | wc -l | tr -d ' ' > "$RD_JOB_DIR/dirty"
 @@PUSH@@
@@ -228,6 +220,39 @@ def run(cmd, check=True, capture=True, **kw):
 
 
 # ---------------------------------------------------------------- config
+
+UNIT_VALUE = re.compile(r"\s*[-+]?\d+(?:\.\d+)?\s*[A-Za-z%]+\s*")
+
+
+def host_field_message(error):
+    """InvalidField 转成读取路径上的中文报错，带修改建议。"""
+    field = error.field
+    if error.reason == "host_field_required":
+        return f"缺少 {field}；" + ("填 user@address，或把 ssh 设为 local 以在本机派发。" if field == "ssh" else "请填写。")
+    if field == "cache_dirs":
+        return f"cache_dirs {error.detail}"
+    if field == "platform":
+        return "platform 必须是 macos、linux、posix 或 windows；本机目标（ssh 为 local）只支持 POSIX。"
+    if field == "workdir":
+        return "本机目标（ssh 为 local）的 workdir 必须是绝对路径或 ~ 开头；相对路径会随发起目录漂移。"
+    if field in ("sync", "launcher", "enabled"):
+        allowed = {"sync": "origin 或 direct", "launcher": "nohup 或 tmux", "enabled": "1、0、true、false、yes 或 no"}[field]
+        return f"{field} 必须是 {allowed}。"
+    shown = f"{field} = {error.detail!r}" if error.detail != "" else f"{field} 为空"
+    if UNIT_VALUE.fullmatch(error.detail or ""):
+        return f"{shown} 带了单位；请去掉单位，只写数字（例如 10）。"
+    if field in ("max_heavy", "timeout"):
+        return f"{shown} 无效；必须是不小于 1 的整数。"
+    if field.endswith("_pct"):
+        return f"{shown} 无效；必须是 0 到 100 之间的有限数。"
+    return f"{shown} 无效；必须是有限的非负数（不接受 NaN、inf 和负数）；max_worktree_gb 留空或 0 表示不限。"
+
+
+class HostConfigError(Exception):
+    def __init__(self, message, code=4):
+        super().__init__(message)
+        self.code = code
+
 
 class ConfigError(Exception):
     """配置无效；strict 模式供 serve 重载时保留旧配置而不是退出进程。"""
@@ -332,53 +357,62 @@ class Config:
         value = os.environ.get("RD_NETWORK_STALL_SECONDS") or self.cp.get("monitor", "network_stall_seconds", fallback="600")
         return health.positive_seconds(value, "RD_NETWORK_STALL_SECONDS / [monitor] network_stall_seconds")
 
-    def host(self, name):
+    def host(self, name, *, check_disabled=False):
+        """按名取目标机。启用的主机完整校验，配置无效时报错（退出码 4）；已停用的主机不校验，
+        旧任务仍能解析其所在主机。check_disabled=True（显式 --host 派单）时已停用的主机也校验。"""
+        try:
+            return self._build_host(name, check_disabled=check_disabled)
+        except HostConfigError as error:
+            self.fail(str(error), error.code)
+
+    def _build_host(self, name, *, check_disabled=False):
         sec = self._section("host", name)
         if sec is None:
-            self.fail(f"no [host:{name}] in {CONFIG}")
+            raise HostConfigError(f"no [host:{name}] in {CONFIG}", 1)
         h = dict(DEFAULTS)
         if self.cp.has_section("defaults"):
             h.update(self.cp["defaults"])
         h.update(sec)
-        try:
-            limit = float(h.get("max_worktree_gb") or 0)
-        except (TypeError, ValueError):
-            limit = -1
-        if not math.isfinite(limit) or limit < 0:
-            self.fail(f"[host:{name}] max_worktree_gb 必须是有限的非负数（GB）；0 或留空表示不限。", 4)
-        for key in ("warn_load_per_core", "warn_free_mem_pct", "warn_free_disk_gb", "warn_cpu_pct"):
+        if host_checks.is_enabled(h["enabled"]) or check_disabled:
             try:
-                value = float(h[key])
-            except (TypeError, ValueError):
-                value = -1
-            if not math.isfinite(value) or value < 0:
-                self.fail(f"[host:{name}] {key} 必须是有限的非负数。", 4)
-            if key in ("warn_free_mem_pct", "warn_cpu_pct") and value > 100:
-                self.fail(f"[host:{name}] {key} 必须在 0 到 100 之间。", 4)
+                host_checks.validate(h, lenient=True)  # 读取路径与 CRUD 共用同一套完整校验
+            except host_checks.InvalidField as error:
+                raise HostConfigError(f"[host:{name}] 配置无效：{host_field_message(error)}", 4) from None
+        h["ssh_opts"] = with_ssh_multiplexing(h["ssh_opts"])
         if h["platform"] in ("macos", "linux"):
             h["platform"] = "posix"
-        if h["platform"] not in ("posix", "windows"):
-            self.fail("platform 必须是 macos、linux、posix 或 windows。")
         if h["platform"] == "windows":
             h["path"] = sec.get("path", "")
-        if not h.get("ssh"):
-            self.fail(f"[host:{name}] 缺少 ssh；填 user@address，或把 ssh 设为 local 以在本机派发。")
-        if h["ssh"] == "local" and h["platform"] == "windows":
-            self.fail(f"[host:{name}] 本机派发只支持 POSIX；Windows 目标必须通过 SSH。")
-        if h["ssh"] == "local" and not h["workdir"].startswith(("/", "~", "$HOME")):
-            self.fail(f"[host:{name}] 本机目标（ssh 为 local）的 workdir 必须是绝对路径或 ~ 开头；相对路径会随发起目录漂移。")
         h["rollout_stats"] = "1" if self.rollout_stats() else "0"
-        try:
-            parse_cache_dirs(h.get("cache_dirs", ""), h["workdir"])
-        except ValueError as error:
-            self.fail(f"[host:{name}] cache_dirs {error}", 4)
         h["name"] = name
         h["probe_agent"] = getattr(self, "probe_agent", "codex")
         return h
 
+    def host_names(self):
+        return [s.split(":", 1)[1] for s in self.cp.sections() if s.startswith("host:")]
+
     def hosts(self):
-        names = [s.split(":", 1)[1] for s in self.cp.sections() if s.startswith("host:")]
-        return [h for h in map(self.host, names) if h["enabled"].lower() in ("1", "true", "yes")]
+        """已启用且配置有效的目标机。一台主机的配置错误只影响它自己：无效的启用主机被排除（见 host_errors），
+        已停用的主机不校验。"""
+        result = []
+        for name in self.host_names():
+            try:
+                h = self._build_host(name)
+            except HostConfigError:
+                continue
+            if host_checks.is_enabled(h["enabled"]):
+                result.append(h)
+        return result
+
+    def host_errors(self):
+        """{主机名: 报错文本}：已启用但配置无效的目标机。"""
+        errors = {}
+        for name in self.host_names():
+            try:
+                self._build_host(name)
+            except HostConfigError as error:
+                errors[name] = str(error)
+        return errors
 
     def project(self, name):
         section = self._section("project", name) or {}
@@ -1025,6 +1059,22 @@ def fmt_probe(host, info, why):
             f"heavy {unk('heavy')}/{host['max_heavy']}  network [{net}]  -> {verdict}{hint}")
 
 
+NETWORK_ERRORS_ZH = {"TLS handshake failed": "TLS 握手失败", "TLS certificate failed": "TLS 证书校验失败", "timeout": "超时",
+                     "DNS failed": "DNS 解析失败", "proxy DNS failed": "代理 DNS 解析失败", "connect failed": "连接失败"}
+
+
+def network_advice(why):
+    """目标机网络探针（含模型服务与 codex 端点）不通时的中文原因与建议；与网络无关返回空串。"""
+    reasons = [item for item in why if item.startswith("network unavailable")]
+    if not reasons:
+        return ""
+    text = "；".join(reasons)
+    for english, chinese in NETWORK_ERRORS_ZH.items():
+        text = text.replace(english, chinese)
+    return (f"网络不可达（{text}）。建议换主机（--host auto 会自动跳过）或稍后重试；"
+            "确认要照派可加 --force-host 跳过检查。")
+
+
 def pick_host(cfg, name, tags):
     return pick_hosts(cfg, name, tags)[0]
 
@@ -1032,12 +1082,13 @@ def pick_host(cfg, name, tags):
 def pick_hosts(cfg, name, tags):
     """按优先顺序返回可接单的目标机候选；显式目标机只返回它自己。"""
     if name and name != "auto":
-        host = cfg.host(name)
+        host = cfg.host(name, check_disabled=True)
         info = probe(host)
         why = assess(host, info)
         print(fmt_probe(host, info, why))
         if why:
-            die(f"目标机 {name} 离线或暂时无法接单（{'; '.join(why)}）；未派出，请检查目标机状态。", 3)
+            die(f"目标机 {name} 离线或暂时无法接单（{'; '.join(why)}）；未派出，请检查目标机状态。"
+                + (("\n" + network_advice(why)) if network_advice(why) else ""), 3)
         return [host]
     matching = [h for h in cfg.hosts() if set(tags) <= {t.strip() for t in h["tags"].split(",") if t.strip()}]
     hosts = [h for h in matching if not is_local(h)]
@@ -1045,17 +1096,22 @@ def pick_hosts(cfg, name, tags):
         local = [h["name"] for h in matching if is_local(h)]
         if local:
             die(f"auto 不会选择本机目标（{', '.join(local)} 配置为 ssh = local）；本机派单请显式 --host {local[0]}。", 4)
-        die(f"no enabled host{' with tags ' + ','.join(tags) if tags else ''} in {CONFIG}")
-    free = []
+        bad = cfg.host_errors()
+        die(f"no enabled host{' with tags ' + ','.join(tags) if tags else ''} in {CONFIG}"
+            + ("".join("\n" + text for text in bad.values()) if bad else ""))
+    free, refused = [], []
     for host, info in probe_all(hosts):
         why = assess(host, info)
         print(fmt_probe(host, info, why))
-        if not why:
+        if why:
+            refused.append((host["name"], why))
+        else:
             # 没有会话数上限：能不能接由负载、内存、磁盘决定；多台都能接时挑负载最低的。
             per_core = (num(info.get("load1")) or 0) / (num(info.get("ncpu")) or 1)
             free.append((per_core, int(num(info.get("running")) or 0), host["name"], host))
     if not free:
-        die("no host can take the job right now; nothing was dispatched.", 3)
+        advice = " ".join(f"[{n}] {network_advice(w)}" for n, w in refused if network_advice(w))
+        die("no host can take the job right now; nothing was dispatched." + (("\n" + advice) if advice else ""), 3)
     return [item[3] for item in sorted(free, key=lambda t: t[:3])]
 
 
@@ -1106,6 +1162,11 @@ def lock_wait_seconds():
     return value if math.isfinite(value) and value >= 0 else 60.0
 
 
+# 本进程当前持有任务锁的 job；锁不可重入，持锁的调用链用它判断可以直接写。
+# 按进程而不是按线程记录，只用于单线程的 CLI 路径（serve 的多线程路径不使用）。
+HELD_JOBS = set()
+
+
 @contextlib.contextmanager
 def wait_job_lock(job):
     """有界等待取得 job 锁；等待超过约 2 秒时向 stderr 提示一次。超时抛 JobBusy。"""
@@ -1124,9 +1185,11 @@ def wait_job_lock(job):
                 raise
             notify()
             lock.acquire(wait=max(0.0, total - (time.monotonic() - started)))
+    HELD_JOBS.add(job)
     try:
         yield lock
     finally:
+        HELD_JOBS.discard(job)
         lock.release()
 
 
@@ -1235,8 +1298,42 @@ def queries(cfg):
                                       if section.startswith("project:")] if cfg else ())
 
 
+def reconcile_dispatch_state(cfg, rec, snapshot):
+    """cmd_run 被强杀或在 launching 阶段异常退出，会让状态永远停在 launching／preparing。
+    这两个状态只在 cmd_run 持锁期间存在：能拿到任务锁就说明 cmd_run 已退出。
+    拿到锁后重新查询目标机（拿锁前的快照可能已过期，cmd_run 可能刚启动完就被杀）：
+    已有启动痕迹（run.rN.sh、pid、退出码）-> started；确认没有任何痕迹 -> preparation_failed；
+    连不上、锁被占时不动。就地更新 rec。"""
+    if rec.get("dispatch_state") not in ("launching", "preparing") or snapshot.get("state") in (None, "", "unreachable"):
+        return
+    lock = None
+    if rec["job"] not in HELD_JOBS:
+        try:
+            lock = JobLock(STATE, rec["job"]).acquire()
+        except JobBusy:
+            return
+    try:
+        fresh = load_job(rec["job"])
+        stage = fresh.get("dispatch_state")
+        if stage in ("launching", "preparing"):
+            current = remote_state(job_host(cfg, fresh), [fresh["job"]]).get(fresh["job"], {})
+            state = current.get("state")
+            try:
+                launched = state in ("running", "done", "dead") or int(current.get("round") or 0) >= 1
+            except ValueError:
+                return
+            if state not in (None, "", "unreachable"):
+                fresh["dispatch_state"] = "started" if launched else "preparation_failed"
+                save_job(fresh)
+        rec["dispatch_state"] = fresh["dispatch_state"]
+    finally:
+        if lock is not None:
+            lock.release()
+
+
 def collect_result(cfg, rec, snapshot):
     """Explicit write path used by inbox, resume and cleanup, never by queries."""
+    reconcile_dispatch_state(cfg, rec, snapshot)
     events.EventLog(STATE).observe_job(rec, snapshot)
     number = int(snapshot.get("round") or 0) or rec["rounds"]
     receipt = queries(cfg).result(rec, number, snapshot)
@@ -1608,6 +1705,8 @@ def build_run_script(host, rec, round_no, timeout):
     report_env, report_finish = "", ":"
     if rec.get("handoff_version"):
         report_env = 'export RD_REPORTER="$RD_JOB_DIR/rd_messages.py" RD_AGENT=' + shlex.quote(rec.get("agent") or "")
+        if rec.get("test") and not rec.get("agent") and rec.get("cmd"):
+            report_env += " RD_TEST_COMMAND=" + shlex.quote(rec["cmd"])
         report_finish = ('printf "%s\\n" "$rc" > "$RD_JOB_DIR/exit.r$RD_ROUND"; '
                          'if command -v python3 >/dev/null 2>&1; then python3 "$RD_REPORTER" finish --exit "$rc" '
                          '>> "$RD_JOB_DIR/report.r$RD_ROUND.log" 2>&1; fi')
@@ -1674,22 +1773,85 @@ def native_init(host, rec, repo, sha, origin):
     rec["worker_root"] = result["root"]
 
 
+LIB_MISSING = 87  # 启动打包：远端公共脚本库缺失或大小不符，需要带上脚本重传
+
+
+def tar_stream(entries):
+    """entries: [(包内路径, bytes, 八进制权限字符串)] -> 已回绕到开头的临时文件（GNU tar 格式）。"""
+    stream = tempfile.TemporaryFile()
+    now = time.time()
+    with tarfile.open(fileobj=stream, mode="w", format=tarfile.GNU_FORMAT) as archive:
+        for name, data, mode in entries:
+            info = tarfile.TarInfo(name)
+            info.size, info.mode, info.mtime = len(data), int(mode, 8), now
+            archive.addfile(info, io.BytesIO(data))
+    stream.seek(0)
+    return stream
+
+
+def bundle_script(files, libs, start):
+    """一次 ssh 里完成：解包到 $ROOT 下的临时目录 -> 公共脚本库按摘要就位 -> 逐个原子 mv 发布 -> 启动。
+    files: [(相对 $ROOT 的路径, bytes, 权限)]；libs: [(目标相对路径, bytes, 权限)]，按内容摘要存放在 $ROOT/lib/<摘要>/。"""
+    q = shlex.quote
+    lines = ['set -e', 'mkdir -p "$ROOT"', 'T=$(mktemp -d "$ROOT/.up.XXXXXX")', "trap 'rm -rf \"$T\"' EXIT",
+             'tar -xpf - -C "$T"']
+    for dest, data, mode in libs:
+        name = posixpath.basename(dest)
+        lib = f'"$ROOT"/lib/{hashlib.sha256(data).hexdigest()[:16]}/{q(name)}'
+        lines.append(f'if [ ! -f {lib} ] || [ "$(wc -c < {lib} | tr -d " ")" != {len(data)} ]; then '
+                     f'if [ -f "$T"/.lib/{q(name)} ]; then mkdir -p "$(dirname {lib})" && mv -f "$T"/.lib/{q(name)} {lib}; '
+                     f'else exit {LIB_MISSING}; fi; fi')
+    for dest in sorted({posixpath.dirname(rel) for rel, _, _ in files + libs} - {""}):
+        lines.append(f'mkdir -p "$ROOT"/{q(dest)}')
+    for rel, _, _ in files:
+        lines.append(f'mv -f "$T"/{q(rel)} "$ROOT"/{q(rel)}')
+    for dest, data, mode in libs:
+        lib = f'"$ROOT"/lib/{hashlib.sha256(data).hexdigest()[:16]}/{q(posixpath.basename(dest))}'
+        target = f'"$ROOT"/{q(dest)}'
+        lines.append(f'cmp -s {lib} {target} 2>/dev/null || {{ cp {lib} {target}.new.$$ && chmod {mode} {target}.new.$$ '
+                     f'&& mv -f {target}.new.$$ {target}; }}')
+    lines.append(start)
+    return "\n".join(lines)
+
+
+def upload_and_start(host, files, libs, start):
+    """POSIX 启动打包：所有启动文件一次 tar 流上传并原子发布，同一次 ssh 里启动。
+    公共脚本先假定远端库里已有同摘要副本（不传）；缺失时返回 87，再带脚本重试一次。"""
+    for with_libs in (False, True):
+        entries = list(files) + ([(".lib/" + posixpath.basename(d), data, m) for d, data, m in libs] if with_libs else [])
+        with tar_stream(entries) as stream:
+            result = ssh(host, bundle_script(files, libs, start), check=False, stdin=stream)
+        if result.returncode == 0:
+            return
+        if result.returncode != LIB_MISSING or with_libs:
+            die(f"[{host['name']}] step failed ({result.returncode}):\n{(result.stderr or result.stdout).strip()}")
+
+
+def read_text_file(*parts):
+    with open(os.path.join(HERE, *parts), "rb") as stream:
+        return stream.read()
+
+
 def launch(host, rec, round_no, cmd_text, prompt_text, timeout):
     j = rec["job"]
+    windows = host["platform"] == "windows"
+    files, libs = [], []  # files：本任务专属；libs：跨任务公共脚本（按摘要复用）
     if rec.get("handoff_version"):
         if prompt_text is not None:
-            reporter = 'python3 "$RD_REPORTER"' if host["platform"] != "windows" else '& ' + native.ps_quote(host["python"]) + ' $env:RD_REPORTER'
+            reporter = 'python3 "$RD_REPORTER"' if not windows else '& ' + native.ps_quote(host["python"]) + ' $env:RD_REPORTER'
             prompt_text += ("\n\nRemote Dispatch 本轮交付约定：只完成本轮指令范围内工作，结果回传后等待发起方新指令。"
                            "执行中用 " + reporter + " progress --phase 阶段 --summary 脱敏摘要 记录状态；"
                            "收尾用 " + reporter + " result --outcome completed|partial|blocked|failed "
                            "--checks passed|failed|partial|not_run --summary 脱敏结果 --artifact 证据路径。"
                            "检查状态为执行方报告，最终验收由发起方判断；密码、私钥和敏感正文不写回执。\n")
-        with open(os.path.join(HERE, "rd_messages.py"), encoding="utf-8") as stream:
-            put_file(host, f"jobs/{j}/rd_messages.py", stream.read(), "600")
-        with open(os.path.join(HERE, "rd_cache.py"), encoding="utf-8") as stream:
-            put_file(host, f"jobs/{j}/rd_cache.py", stream.read(), "600")
-        put_file(host, f"jobs/{j}/reports/dispatch.r{round_no}.json", json.dumps(dict(job=j, round=round_no, initiator_session=rec.get("initiator_session"))), "600")
-    if host["platform"] == "windows":
+        libs += [(f"jobs/{j}/rd_messages.py", read_text_file("rd_messages.py"), "600"),
+                 (f"jobs/{j}/rd_cache.py", read_text_file("rd_cache.py"), "600")]
+        files.append((f"jobs/{j}/reports/dispatch.r{round_no}.json",
+                      json.dumps(dict(job=j, round=round_no, initiator_session=rec.get("initiator_session"))).encode(), "600"))
+    if windows:
+        # Windows 原生 worker：保持逐文件上传。
+        for rel, data, _ in libs + files:
+            native.request(host, "upload", {"relative": rel}, payload=data)
         spec = dict(rec, round=round_no, base=workline.round_base(rec, round_no), timeout=int(timeout), max_heavy=int(host["max_heavy"]),
                     auth_file=host["codex_auth_file"], env_file=host["env_file"],
                     rollout_stats=host.get("rollout_stats", "0"),
@@ -1697,17 +1859,15 @@ def launch(host, rec, round_no, cmd_text, prompt_text, timeout):
         native.request(host, "launch", {"spec": spec, "prompt": prompt_text})
         return
     if rec.get("profile"):
-        put_file(host, f"jobs/{j}/profile.json", json.dumps(rec["profile"]), "600")
-    if (rec.get("profile") or rec.get("isolated")) and not rec.get("profile_script_uploaded"):
-        with open(os.path.join(HERE, "rd_profiles.py"), encoding="utf-8") as stream:
-            put_file(host, f"jobs/{j}/rd_profiles.py", stream.read(), "600")
-        rec["profile_script_uploaded"] = True
-    put_file(host, f"jobs/{j}/cmd.r{round_no}.sh", cmd_text + "\n")
+        files.append((f"jobs/{j}/profile.json", json.dumps(rec["profile"]).encode(), "600"))
+    upload_profiles = (rec.get("profile") or rec.get("isolated")) and not rec.get("profile_script_uploaded")
+    if upload_profiles:
+        libs.append((f"jobs/{j}/rd_profiles.py", read_text_file("rd_profiles.py"), "600"))
+    files.append((f"jobs/{j}/cmd.r{round_no}.sh", (cmd_text + "\n").encode(), "644"))
     if prompt_text is not None:
-        put_file(host, f"jobs/{j}/prompt.r{round_no}.md", prompt_text)
-    put_file(host, f"jobs/{j}/run.r{round_no}.sh", build_run_script(host, rec, round_no, timeout), "755")
-    with open(os.path.join(HERE, "bin", "rd-heavy")) as f:
-        put_file(host, "bin/rd-heavy", f.read(), "755")
+        files.append((f"jobs/{j}/prompt.r{round_no}.md", prompt_text.encode(), "644"))
+    files.append((f"jobs/{j}/run.r{round_no}.sh", build_run_script(host, rec, round_no, timeout).encode(), "755"))
+    libs.append(("bin/rd-heavy", read_text_file("bin", "rd-heavy"), "755"))
     script = f'"$ROOT/jobs/{j}/run.r{round_no}.sh"'
     if host["launcher"] == "tmux":
         start = f"tmux new-session -d -s {shlex.quote('rd-' + j + '-r' + str(round_no))} sh {script}"
@@ -1715,57 +1875,9 @@ def launch(host, rec, round_no, cmd_text, prompt_text, timeout):
         start = f"nohup sh {script} > /dev/null 2>&1 < /dev/null &"
     else:
         die(f"[host:{host['name']}] launcher must be nohup or tmux")
-    ssh(host, f'rm -f "$ROOT/jobs/{j}/exit_code" "$ROOT/jobs/{j}/pid"; {start}')
-
-
-CACHE_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
-
-
-def _cache_norm(path):
-    path = path.replace("\\", "/")
-    if path.startswith("$HOME"):
-        path = "~" + path[5:]
-    return path
-
-
-def _cache_absolute(path):
-    return path.startswith(("/", "~")) or bool(re.match(r"[A-Za-z]:/", path))
-
-
-def parse_cache_dirs(text, root):
-    """解析 cache_dirs；返回 [(环境变量名, 目录, 是否绝对)]。声明不合法或落在 worktree 内时抛 ValueError。
-
-    root 是用户 ID 级（或共享）根目录；worktree 位于 root/wt、root/users/<ID>/wt 下。
-    """
-    items, seen = [], set()
-    for part in (text or "").split(";"):
-        part = part.strip()
-        if not part:
-            continue
-        name, sep, path = part.partition("=")
-        name, path = name.strip(), path.strip()
-        if not sep or not CACHE_NAME.fullmatch(name) or not path:
-            raise ValueError(f"项必须是 NAME=目录：{part}")
-        if name in seen:
-            raise ValueError(f"环境变量重复声明：{name}")
-        seen.add(name)
-        norm = _cache_norm(path)
-        if ".." in norm.split("/"):
-            raise ValueError(f"{name} 的目录不得含 ..：{path}")
-        absolute = _cache_absolute(norm)
-        if absolute and "{user}" not in norm:
-            raise ValueError(f"{name} 的绝对目录必须含 {{user}}，按用户 ID 分开：{path}")
-        if absolute:
-            expanded = posixpath.normpath(norm.replace("{user}", "user"))
-            base = posixpath.normpath(_cache_norm(root))
-            if re.match(r"[A-Za-z]:/", base):
-                expanded, base = expanded.lower(), base.lower()
-            if expanded.startswith(base.rstrip("/") + "/"):
-                rest = expanded[len(base.rstrip("/")) + 1:].split("/")
-                if rest[0] == "wt" or (rest[0] == "users" and len(rest) > 2 and rest[2] == "wt"):
-                    raise ValueError(f"{name} 的目录落在 worktree 内：{path}")
-        items.append((name, path, absolute))
-    return items
+    upload_and_start(host, files, libs, f'rm -f "$ROOT/jobs/{j}/exit_code" "$ROOT/jobs/{j}/pid"; {start}')
+    if upload_profiles:
+        rec["profile_script_uploaded"] = True
 
 
 def cache_env(host, uid):
@@ -2411,6 +2523,27 @@ def run_scope(a, cfg):
                               after=after, plan_store=plan_store)
 
 
+def unsent_changes(porcelain, include_paths, wip=False):
+    """`git status --porcelain -z -uall` 的输出里，去掉已被 --include 覆盖的路径，返回仍不会发送的条目。
+    wip=True 时已跟踪的改动由 --wip 发送，只检查未跟踪文件。输出不得 strip：首行 " M" 的前导空格是状态位。"""
+    rows = []
+    tokens = porcelain.split("\0")
+    index = 0
+    while index < len(tokens):
+        entry = tokens[index]
+        index += 1
+        if len(entry) < 4:
+            continue
+        status, path = entry[:2], entry[3:]
+        if "R" in status or "C" in status:
+            index += 1  # 重命名／复制后跟一个原路径条目
+        if wip and status != "??":
+            continue
+        if not any(path == inc or path.startswith(inc.rstrip("/") + "/") for inc in include_paths):
+            rows.append(entry)
+    return rows
+
+
 def include_list(a, repo):
     """--include 规范化成仓库内相对路径；缺失或越界直接退出 4。"""
     include_paths = []
@@ -2507,7 +2640,8 @@ def compare_fingerprint(local, remote, host_name):
 
 
 def check_fingerprint(host, rec, command, local, timeout, setup_timeout):
-    """同步完成后先在目标机跑 setup（落 setup.done，启动脚本随后跳过），再执行指纹并与本机比较。"""
+    """同步完成后先在目标机跑 setup（落 setup.done，启动脚本随后跳过），再执行指纹并与本机比较。
+    返回 setup 这一步实际耗时（秒）：setup 与主体共用同一超时预算，调用方要从 launch 的 timeout 里扣掉。"""
     job = rec["job"]
     # host["timeout"] 来自 config.ini，是字符串；ssh/win_ps 需要数值
     setup_timeout = int(setup_timeout) if setup_timeout not in (None, "") else None
@@ -2518,13 +2652,16 @@ def check_fingerprint(host, rec, command, local, timeout, setup_timeout):
                  "$s=Get-Content -Raw (Join-Path $d 'setup.ps1'); "
                  "& powershell.exe -NoProfile -NonInteractive -Command $s *> (Join-Path $d 'setup.log'); "
                  "if($LASTEXITCODE -ne 0){ exit $LASTEXITCODE }; New-Item -ItemType File (Join-Path $d 'setup.done') -Force | Out-Null }")
+        began = time.monotonic()
         r = win_ps(host, setup, setup_timeout)
     else:
         setup = (f'D="$ROOT/jobs/{job}"; [ -f "$D/setup.sh" ] || exit 0; [ -f "$D/setup.done" ] && exit 0\n'
                  f'cd {warm.worktree_sh(rec)} || exit 96\n'
                  f'export RD_JOB={shlex.quote(job)} RD_WT="$PWD" RD_JOB_DIR="$D"\n'
                  f'sh "$D/setup.sh" > "$D/setup.log" 2>&1 && touch "$D/setup.done"')
+        began = time.monotonic()
         r = ssh(host, setup, check=False, timeout=setup_timeout)
+    setup_spent = time.monotonic() - began
     if r is None or r.returncode:
         reason = "setup 超时" if r is None else f"setup 失败（退出码 {r.returncode}，见 setup.log）"
         raise FingerprintMismatch(dict(host=host["name"], remote="", diff="", error=reason + "，未能核对环境指纹"))
@@ -2534,6 +2671,12 @@ def check_fingerprint(host, rec, command, local, timeout, setup_timeout):
         raise FingerprintMismatch(dict(host=host["name"], remote=artifacts.trim(remote), diff=diff, error=error))
     rec["fingerprint"] = dict(command=command, match=True, host=host["name"], local=artifacts.trim(local),
                               remote=artifacts.trim(remote), digest=artifacts.fingerprint_digest(local))
+    return setup_spent
+
+
+def remaining_timeout(total, spent):
+    """总超时预算扣掉已用掉的 setup 时间，至少 1 秒。"""
+    return max(1, int(float(total)) - int(spent or 0))
 
 
 def drop_attempt(host, rec):
@@ -2655,7 +2798,10 @@ def pull_artifacts(cfg, rec):
                 results.append(native_artifact(host, job, repo, path, kind == "d"))
             else:
                 results.append(rsync_artifact(host, job, repo, path, kind == "d", worktree=warm.job_worktree(rec)))
-    rec["artifacts_state"] = dict(results=results, at=time.strftime("%Y-%m-%d %H:%M:%S"))
+    number = rec.get("rounds") or 1
+    state = dict(round=number, paths=list(paths), results=results, at=time.strftime("%Y-%m-%d %H:%M:%S"))
+    rec["artifacts_state"] = state  # 最近一次；按轮次的状态在 artifacts_rounds
+    rec.setdefault("artifacts_rounds", {})[str(number)] = state
     save_job(rec)
     if warm.is_warm(rec) and host["platform"] != "windows" and not artifacts.artifacts_pending(rec):
         # 产物已处理完，解除目标机上的钉住标记，槽位可被接手。
@@ -2724,13 +2870,13 @@ def auto_pull_artifacts(cfg, rec, snapshot):
     """任务已结束且尚未成功拉回时自动拉取一次；返回结果列表，无产物或不适用返回 None。"""
     if not rec.get("artifact_paths") or snapshot.get("state") not in ("done", "dead"):
         return None
-    if artifacts.artifacts_pending(rec) or not (rec.get("artifacts_state") or {}).get("results"):
+    if artifacts.artifacts_pending(rec) or not artifacts.round_state(rec).get("results"):
         try:
             return pull_artifacts(cfg, rec)
         except (OSError, SystemExit, subprocess.SubprocessError) as error:
             print(f"产物拉回未完成：{error}；稍后用 rdispatch fetch {rec['job']} --artifacts 重试。", file=sys.stderr)
             return None
-    return rec["artifacts_state"]["results"]
+    return artifacts.round_state(rec)["results"]
 
 
 def release_unstarted_slot(host, rec):
@@ -2858,9 +3004,17 @@ def cmd_run(a, cfg):
         if not wip:
             die(f"--wip：已跟踪文件相对 {a.ref} 没有改动；未跟踪文件请用 --include。未派单。", 4)
         print(f"wip: sending tracked working-tree changes relative to {a.ref}; applied to remote index")
-    dirty = git(["status", "--porcelain"], repo).stdout.strip()
-    if dirty and not a.wip:
-        print("note: uncommitted local changes are NOT sent (commit them, or use --wip / --include).")
+    dirty = git(["status", "--porcelain", "-z", "-uall"], repo).stdout
+    if dirty:
+        unsent = unsent_changes(dirty, include_paths, wip=bool(a.wip))
+        if unsent and (a.test or test_full) and not getattr(a, "allow_dirty", False):
+            die("测试类派单（--test / --test-full）拒绝派出：本地有未发送的改动，远端会测到旧代码。\n  "
+                + "\n  ".join(unsent[:5]) + ("\n  ..." if len(unsent) > 5 else "")
+                + "\n先提交，或加 --wip（已跟踪文件改动）/ --include 路径（未跟踪文件）一并发送；"
+                "确认要测 HEAD 时用 --allow-dirty 跳过。未派单。", 4)
+        if unsent:
+            print("警告：本地未提交的改动不会发送，远端运行的是 " + a.ref + " 的已提交代码"
+                  "（先提交，或用 --wip / --include）。", file=sys.stderr)
 
     stamp = time.strftime("%Y%m%d-%H%M%S") + f"-{time.time_ns() % 1000000000:09d}"
     name = re.sub(r"[^A-Za-z0-9._-]+", "-", a.name or a.agent or "cmd").strip("-")
@@ -2960,6 +3114,8 @@ def cmd_run(a, cfg):
         bare = f"repos/{project}-{repo_key}.git"
         rec["bare"] = bare
         rec["dispatch_state"] = "preparing"
+        # 登记到 started 之间持有任务锁：并发的收取、清理等写操作拿不到锁，不会在半成品状态上落盘。
+        stack.enter_context(wait_job_lock(job))
         projects.ProjectIndex(STATE, uid).register(rec)
         if plan_item:
             plan_store.attach_job(plan_item, job, after)
@@ -2976,12 +3132,13 @@ def cmd_run(a, cfg):
                     setup = proj.get("setup_windows", proj.get("setup"))
                     if setup:
                         put_file(host, f"jobs/{job}/setup.ps1", setup)
+                    spent = 0
                     if fp_command and not skip_fp:
-                        check_fingerprint(host, rec, host_fingerprint_command(proj, host, fp_command), local_fp,
-                                          fp_timeout, a.timeout or host["timeout"])
+                        spent = check_fingerprint(host, rec, host_fingerprint_command(proj, host, fp_command), local_fp,
+                                                  fp_timeout, a.timeout or host["timeout"])
                     rec["dispatch_state"] = "launching"
                     save_job(rec)
-                    launch(host, rec, 1, "", prompt, a.timeout or host["timeout"])
+                    launch(host, rec, 1, "", prompt, remaining_timeout(a.timeout or host["timeout"], spent))
                     rec["dispatch_state"] = "started"
                     save_job(rec)
                     record_decline(a, scope)
@@ -3023,8 +3180,9 @@ def cmd_run(a, cfg):
                         ssh(host, f'git -C {warm.worktree_sh(rec)} apply --index --binary -', stdin=patch_file)
                 if proj.get("setup"):
                     put_file(host, f"jobs/{job}/setup.sh", proj["setup"] + "\n")
+                spent = 0
                 if fp_command and not skip_fp:
-                    check_fingerprint(host, rec, fp_command, local_fp, fp_timeout, a.timeout or host["timeout"])
+                    spent = check_fingerprint(host, rec, fp_command, local_fp, fp_timeout, a.timeout or host["timeout"])
 
                 if a.agent:
                     cmd_text = agent_command(agent, a.model, a.effort, permission=permission)
@@ -3032,7 +3190,7 @@ def cmd_run(a, cfg):
                     cmd_text = ("rd-heavy sh -c " + shlex.quote(a.cmd)) if a.heavy else a.cmd
                 rec["dispatch_state"] = "launching"
                 save_job(rec)
-                launch(host, rec, 1, cmd_text, prompt, a.timeout or host["timeout"])
+                launch(host, rec, 1, cmd_text, prompt, remaining_timeout(a.timeout or host["timeout"], spent))
                 rec["dispatch_state"] = "started"
                 save_job(rec)
                 record_decline(a, scope)
@@ -4085,6 +4243,7 @@ def cmd_clean_merged(a, cfg):
     return cmd_clean_batch(a, cfg, "merged")
 
 
+@locked_job
 def cmd_keep(a, cfg):
     rec = load_job(a.job)
     if rec.get("user_id") and rec["user_id"] != require_user():
@@ -4286,10 +4445,15 @@ def remove_job(a, rec, host):
 
 def cmd_hosts(a, cfg):
     hosts = cfg.hosts()
-    if not hosts:
+    errors = cfg.host_errors()
+    if not hosts and not errors:
         die(f"no hosts configured. Add a [host:NAME] section to {CONFIG}")
     for host, info in probe_all(hosts):
         print(fmt_probe(host, info, assess(host, info)))
+    for name, text in errors.items():
+        print(f"{name:<12} 配置无效  {text}")
+    if errors and not hosts:
+        sys.exit(4)
 
 
 def cmd_doctor(a, cfg):
@@ -4737,6 +4901,7 @@ def main(argv=None, *, forwarded=None):
         p.add_argument("--tag", action="append", default=[], help="only machines with this tag (repeatable)")
         p.add_argument("--ref", default="HEAD", help="commit to send (default HEAD)")
         p.add_argument("--wip", action="store_true", help="apply tracked working-tree differences from --ref to the remote index; fail if empty")
+        p.add_argument("--allow-dirty", action="store_true", help="测试类派单也允许本地有未发送的改动（远端测的是已提交的 --ref）")
         p.add_argument("--branch", help="branch the job works on (default rd/<RD_USER_ID>/<name>-<time>)")
         p.add_argument("--name", help="short label used in the job id")
         p.add_argument("--project", help="project name (default: name of the origin repository)")

@@ -168,6 +168,57 @@ class DispatchTests(unittest.TestCase):
             self.dispatch(project="app", cmd=None, test_full=True)
         self.assertTrue(launch.call_args.args[3].startswith("rd-heavy sh -c"))
 
+    def test_test_dispatch_refuses_unsent_local_changes_with_exit_4(self):
+        self.configure_project(test_quick="echo quick")
+        (self.repo / "tracked.txt").write_text("edited\n")
+        before = len(rd.all_jobs())
+        with self.assertRaises(SystemExit) as caught:
+            self.dispatch(project="app", cmd=None, test=True)
+        self.assertEqual(caught.exception.code, 4)
+        self.assertEqual(len(rd.all_jobs()), before)
+
+    def test_test_dispatch_allows_dirty_with_flag_wip_or_covering_include(self):
+        self.configure_project(test_quick="echo quick")
+        (self.repo / "tracked.txt").write_text("edited\n")
+        (self.repo / "new.txt").write_text("new\n")
+        self.assertTrue(self.dispatch(project="app", cmd=None, test=True, allow_dirty=True)["test"])
+        self.assertTrue(self.dispatch(project="app", cmd=None, test=True, wip=True, include=["new.txt"])["test"])
+        with self.assertRaises(SystemExit):  # include 只覆盖 new.txt，tracked.txt 改动仍未发送
+            self.dispatch(project="app", cmd=None, test=True, include=["new.txt"])
+
+    def test_wip_does_not_hide_untracked_files_from_the_test_guard(self):
+        self.configure_project(test_quick="echo quick")
+        (self.repo / "tracked.txt").write_text("edited\n")
+        (self.repo / "new_test.py").write_text("x\n")
+        with self.assertRaises(SystemExit) as caught:
+            self.dispatch(project="app", cmd=None, test=True, wip=True)
+        self.assertEqual(caught.exception.code, 4)
+        self.assertTrue(self.dispatch(project="app", cmd=None, test=True, wip=True, include=["new_test.py"])["test"])
+
+    def test_unsent_changes_parsing(self):
+        self.assertEqual(rd.unsent_changes(" M src/a.py\0", ["src/a.py"]), [])
+        self.assertEqual(rd.unsent_changes("?? src/new/a.py\0?? src/new/b.py\0", ["src/new/a.py"]), ["?? src/new/b.py"])
+        self.assertEqual(rd.unsent_changes("?? src2/x.py\0", ["src"]), ["?? src2/x.py"])
+        self.assertEqual(rd.unsent_changes("?? src/x.py\0", ["src"]), [])
+        self.assertEqual(rd.unsent_changes("R  new name.py\0old.py\0", []), ["R  new name.py"])
+        self.assertEqual(rd.unsent_changes(" M a.py\0?? b.py\0", [], wip=True), ["?? b.py"])
+
+    def test_non_test_dispatch_with_dirty_only_warns(self):
+        (self.repo / "tracked.txt").write_text("edited\n")
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            rec = self.dispatch()
+        self.assertEqual(rec["cmd"], "true")
+        self.assertIn("警告", err.getvalue())
+
+    def test_test_job_run_script_exports_test_command_only_for_command_tests(self):
+        self.configure_project(test_quick="echo 'a b'")
+        host = self.cfg.host("fixture")
+        test = self.dispatch(project="app", cmd=None, test=True)
+        plain = self.dispatch()
+        self.assertIn("RD_TEST_COMMAND='echo '\"'\"'a b'\"'\"''", rd.build_run_script(host, test, 1, 10))
+        self.assertNotIn("RD_TEST_COMMAND", rd.build_run_script(host, plain, 1, 10))
+
     def test_posix_run_script_exports_baseline_for_command_and_agent_jobs(self):
         host = self.cfg.host("fixture")
         for kwargs in ({}, {"cmd": None, "agent": "codex", "prompt_file": str(self.root / "p.md")}):
@@ -192,6 +243,35 @@ class DispatchTests(unittest.TestCase):
         self.addCleanup(os.chdir, os.getcwd())  # run_job 会切换工作目录
         native.run_job(str(spec_file))
         self.assertEqual((directory / "stdout.r1.log").read_text().strip(), self.base)
+
+    def native_receipt(self, code, **spec_changes):
+        rec = self.dispatch()
+        code_key = f"{code}-{len(list(self.root.glob('native-job-*')))}"
+        directory, wt = self.root / f"native-job-{code_key}", self.root / f"native-wt-{code_key}"
+        for folder in (directory, wt, self.root / f"native-bin-{code_key}"):
+            folder.mkdir()
+        (directory / "prompt.r1.md").write_text("")
+        command = f'"{sys.executable}" -c "import sys; sys.exit({code})"'
+        spec = dict(rec, round=1, user_id="employee_a", timeout=20, max_heavy=1, heavy=False, cmd=command,
+                    directory=str(directory), wt=str(wt), bin=str(self.root / f"native-bin-{code_key}"),
+                    lock_dir=str(self.root / "locks"), sync="direct", profile=None, handoff_version=1)
+        spec.update(spec_changes)
+        spec_file = self.root / f"spec-{code_key}.json"
+        spec_file.write_text(json.dumps(spec))
+        self.addCleanup(os.chdir, os.getcwd())
+        native.run_job(str(spec_file))
+        return json.loads((directory / "reports" / "result.r1.json").read_text()), command
+
+    def test_windows_native_test_job_reports_checks_from_exit_code(self):
+        for code, checks in ((0, "passed"), (3, "failed")):
+            with self.subTest(code=code):
+                report, command = self.native_receipt(code, test=True, agent=None)
+                self.assertEqual((report["checks"], report["test_command"]), (checks, command))
+
+    def test_windows_native_plain_command_and_agent_checks_stay_not_reported(self):
+        self.assertEqual(self.native_receipt(0, test=False, agent=None)[0]["checks"], "not_reported")
+        report, _ = self.native_receipt(0, test=True, agent="codex")
+        self.assertEqual(report["checks"], "not_reported")
 
     def test_project_history_survives_clean_with_dispatch_count_and_times(self):
         with patch.object(rd.time, "strftime", side_effect=lambda fmt: "2026-10-24 10:00:00" if fmt == "%Y-%m-%d %H:%M:%S" else "20261024-100000"):

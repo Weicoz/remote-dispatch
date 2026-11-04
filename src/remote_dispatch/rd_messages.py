@@ -143,29 +143,92 @@ AUTH_NEEDLES = {
 }
 
 
+def error_texts(agent, text):
+    """harness 输出里的错误文本（小写）。DSH 输出格式未公开固定：整段按原文；其他只取 JSON 错误字段。"""
+    if agent == "dsh":
+        return [text.lower()]
+    errors = []
+    for line in text.splitlines():
+        try:
+            row = json.loads(line)
+        except ValueError:
+            continue
+        if not isinstance(row, dict):
+            continue
+        if row.get("type") == "error":
+            errors.append(str(row.get("message", "")).lower())
+        if row.get("type") == "turn.failed" and isinstance(row.get("error"), dict):
+            errors.append(str(row["error"].get("message", "")).lower())
+        if row.get("event") == "result" and isinstance(row.get("result"), dict):
+            errors.append(str(row["result"].get("error", "")).lower())
+    return errors
+
+
 def credential_suspect(agent, text, exit_code):
     """本轮失败输出里有明确认证失败返回 True。只在执行方非零退出时判定；不读取凭据内容，不调用 API。"""
     needles = AUTH_NEEDLES.get(agent)
     if not needles or not text or exit_code in (None, "", 0, "0"):
         return False
-    errors = []
+    return any(needle in error for error in error_texts(agent, text) for needle in needles)
+
+
+# 网络类失败的已知模式（小写子串）；识别不了不标记。
+NETWORK_NEEDLES = ("workspace routing discovery failed", "tls handshake", "ssl handshake", "handshake failed",
+                   "error sending request", "connection reset", "connection timed out", "connection refused",
+                   "network is unreachable", "dns error", "failed to lookup address", "could not resolve host")
+
+
+PROGRESS_EVENTS = ("item.completed", "turn.completed")
+
+
+def final_failure(agent, text, skip=None):
+    """本轮输出里最后一条失败事件的小写文本（最后一条 turn.failed 或 error）；没有时返回 None。
+    skip(文本) 为真的事件（瞬时重连）不算；失败之后又出现 item.completed／turn.completed 等进展事件，
+    说明该错误已被重试掉，同样不算。纯文本输出不用于判定（宁可不标）：只有 DSH（输出格式未公开固定）
+    取末尾 20 行里最后一条以 error／fatal 开头的行。"""
     if agent == "dsh":
-        errors.append(text.lower())  # DSH 输出格式未公开固定：文本与 JSON 行都按原文匹配
-    else:
-        for line in text.splitlines():
-            try:
-                row = json.loads(line)
-            except ValueError:
-                continue
-            if not isinstance(row, dict):
-                continue
-            if row.get("type") == "error":
-                errors.append(str(row.get("message", "")).lower())
-            if row.get("type") == "turn.failed" and isinstance(row.get("error"), dict):
-                errors.append(str(row["error"].get("message", "")).lower())
-            if row.get("event") == "result" and isinstance(row.get("result"), dict):
-                errors.append(str(row["result"].get("error", "")).lower())
-    return any(needle in error for error in errors for needle in needles)
+        for line in reversed(text.splitlines()[-20:]):
+            value = line.strip().lower()
+            if value.startswith(("error", "[error", "fatal")) and not (skip and skip(line)):
+                return value
+        return None
+    last = None
+    for line in text.splitlines():
+        try:
+            row = json.loads(line)
+        except ValueError:
+            continue
+        if not isinstance(row, dict):
+            continue
+        message = None
+        if row.get("type") == "error":
+            message = str(row.get("message", ""))
+        elif row.get("type") == "turn.failed" and isinstance(row.get("error"), dict):
+            message = str(row["error"].get("message", ""))
+        elif row.get("event") == "result" and isinstance(row.get("result"), dict) and row["result"].get("error"):
+            message = str(row["result"]["error"])
+        elif row.get("type") in PROGRESS_EVENTS:
+            last = None
+        if message is not None and not (skip and skip(message)):
+            last = message.lower()
+    return last
+
+
+def failure_hint(agent, text, exit_code, skip=None):
+    """失败输出的已知原因提示：返回 (kind, 中文说明) 或 None。只在非零退出时判定，且只看最后一条失败事件，
+    先前被重试掉的瞬时错误不算。认证失败优先（auth_failed），其次网络类（network_unreachable）。"""
+    if not agent or not text or exit_code in (None, "", 0, "0"):
+        return None
+    final = final_failure(agent, text, skip)
+    if not final:
+        return None
+    if any(needle in final for needle in AUTH_NEEDLES.get(agent, ())):
+        return "auth_failed", "疑似认证失效：目标机上的登录凭据被服务端拒绝；见 credential_hint 的续跑命令。"
+    for needle in NETWORK_NEEDLES:
+        if needle in final:
+            return "network_unreachable", ("疑似网络不可达：目标机访问模型服务失败（" + needle + "）；"
+                                          "先用 rdispatch hosts 看该机网络探针，恢复后再续跑，或换主机重派。")
+    return None
 
 
 def refresh_auth_hint(job):
@@ -183,6 +246,8 @@ def result_summary(receipt):
     result.update({k: report[k] for k in ("outcome", "checks", "phase") if k in report})
     if receipt.get("credential_suspect"):
         result.update({k: receipt[k] for k in ("credential_suspect", "credential_hint") if k in receipt})
+    if receipt.get("failure_hint"):
+        result.update({k: receipt[k] for k in ("failure_hint", "failure_note") if k in receipt})
     if isinstance(report.get("runtime_failure"), dict):
         result["runtime_failure"] = {k: report["runtime_failure"].get(k) for k in ("kind", "work_observed", "scan_complete")}
     if isinstance(report.get("denied_actions"), list):
@@ -421,6 +486,8 @@ def phase_timings(directory, number):
                 result[key] = int(seconds) if seconds == int(seconds) else round(seconds, 1)
         elif key == "setup_note" and value == "已跳过":
             result[key] = value
+        elif key == "timeout_phase" and value in ("setup", "body"):
+            result[key] = value
         elif key == "path_size_kb":
             number, tab, rel = value.partition("\t")
             try:
@@ -459,7 +526,7 @@ def rollout_calls(directory):
         return "未记录"
 
 
-def finish(directory, job, number, code, agent=None):
+def finish(directory, job, number, code, agent=None, test_command=None):
     directory, job, number = Path(directory).resolve(), job_id(job), round_id(number)
     agent = agent or os.environ.get("RD_AGENT")
     path = directory / "reports" / ("result.r" + str(number) + ".json")
@@ -474,7 +541,12 @@ def finish(directory, job, number, code, agent=None):
         if reply.is_file() and not reply.is_symlink():
             with reply.open("rb") as stream:
                 summary = stream.read(MAX_BYTES).decode("utf-8", errors="replace")[:8000]
-        data = report(directory, job, number, "result", summary=summary, outcome="completed" if code == 0 else "failed")
+        # 显式测试派单（run --test）：退出码即检查结论，并记录被执行的命令；代理任务不适用。
+        is_test = bool(test_command) and not agent
+        data = report(directory, job, number, "result", summary=summary, outcome="completed" if code == 0 else "failed",
+                      checks=("passed" if code == 0 else "failed") if is_test else "not_reported")
+        if is_test:
+            data["test_command"] = test_command[:1000]
     else:
         validate_report(data, job, number, "result")
     started = directory / ("started.r" + str(number))
@@ -482,7 +554,7 @@ def finish(directory, job, number, code, agent=None):
         data["started_at"] = started.read_text(encoding="utf-8").strip()
     data.update(executor_exit=int(code), finished_at=utc_now(),
                 reply_file="last.r" + str(number) + ".txt", stdout_file="stdout.r" + str(number) + ".log")
-    for key in ("setup_seconds", "body_seconds", "setup_note", "rollout_calls", "regenerable_kb"):
+    for key in ("setup_seconds", "body_seconds", "setup_note", "timeout_phase", "rollout_calls", "regenerable_kb"):
         data.pop(key, None)
     data.update(phase_timings(directory, number))
     if agent == "codex" and os.environ.get("RD_ROLLOUT_STATS") == "1":
@@ -525,7 +597,7 @@ def main():
         if args.action == "finish":
             if args.exit is None:
                 raise ValueError("finish 必须指定 --exit。")
-            finish(directory, job, number, args.exit)
+            finish(directory, job, number, args.exit, test_command=os.environ.get("RD_TEST_COMMAND") or None)
         else:
             evidence = read_json(args.evidence_file.absolute()) if args.evidence_file else {}
             if evidence is None:

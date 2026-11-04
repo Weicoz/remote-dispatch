@@ -142,6 +142,9 @@ def row_for(query, rec, snapshot, project_row, unit, referrers, now, stale=None,
     if (receipt or {}).get("credential_suspect"):
         row["credential_suspect"] = True
         row["credential_hint"] = receipt.get("credential_hint")
+    if (receipt or {}).get("failure_hint"):
+        row["failure_hint"] = receipt["failure_hint"]
+        row["failure_note"] = receipt.get("failure_note")
     if stale:
         row["stale"] = stale
     residue = workline.current_residue(rec)
@@ -238,6 +241,8 @@ def render(board):
             lines.append("    可再生目录：" + size_text(row["regenerable_kb"]))
         if row.get("credential_suspect"):
             lines.append("    认证疑似失败：" + str(row.get("credential_hint") or ""))
+        if row.get("failure_hint"):
+            lines.append(f"    失败提示 [{row['failure_hint']}]：" + str(row.get("failure_note") or ""))
         if row.get("integration_sync"):
             sync = row["integration_sync"]
             lines.append(f"    已同步 integration {sync['integration'][:10]}（{sync['from_head'][:10]} -> {sync['head'][:10]}）")

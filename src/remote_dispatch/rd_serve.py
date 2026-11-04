@@ -322,7 +322,7 @@ class PollWake(threading.Event):
 
 
 class Service:
-    def __init__(self, config, socket_path=None, *, poll_interval=15, push_sender=None):
+    def __init__(self, config, socket_path=None, *, poll_interval=15, push_sender=None, state=None):
         self.config = config
         self.host_config = HostConfigRoutes(self)
         self.config_path = self.host_config.path
@@ -333,7 +333,7 @@ class Service:
             # Startup already read the config; a transient stat failure must not
             # turn into a traceback. The reload loop records the next failure.
             self.config_stamp = None
-        self.state = Path(cli.STATE).resolve()
+        self.state = Path(state or cli.STATE).resolve()  # 状态目录可显式传入，缺省仍取 cli.STATE
         self.user_id = cli.require_user()
         # 启动时已成功读完配置；后续自动重载在成功或失败后更新同一结构。
         self.config_reload = self.reload_status(config.loaded_at)
@@ -673,6 +673,12 @@ class Service:
         try:
             config = cli.Config(strict=True)
             hosts = config.hosts()
+            # 启动时一台主机写坏不拖垮 serve；但运行中的主机在重载时被写坏，保留旧定义继续监控其在途任务，
+            # 并报错（已知的无效主机不阻塞其他修改）。
+            known = self.config.host_errors()
+            fresh = [text for name, text in config.host_errors().items() if known.get(name) != text]
+            if fresh:
+                raise ValueError("; ".join(fresh))
             execute_timeout = network.positive_setting(config.cp, "execute_timeout", 120)
             config.cp.getboolean("serve", "session_access", fallback=True)
             config.notify_channels()
@@ -955,6 +961,8 @@ class Service:
         if path == "/v1/hosts":
             with self.cache_lock:
                 return 200, {"hosts": list(self.hosts),
+                             "config_errors": [dict(name=name, error=self.redact(text))
+                                               for name, text in self.config.host_errors().items()],
                              "config_reload": dict(self.config_reload)}
         if path == "/v1/reclaim":
             # 定时回收状态：从未运行时 reclaim 为 null；只读状态文件，不连目标机。

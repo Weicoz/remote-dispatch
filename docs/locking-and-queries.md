@@ -47,6 +47,13 @@ receipt_id, captured_at`。旧缓存保留原 ID 和字段。未缓存历史轮�
 新 ID 按回执内容计算，不含查询时间 `captured_at`；再次查询相同结果可用于签收。
 签收先验证 ID 再落盘，错误 ID 不生成回执文件。
 
+`result` 在派单记录 `dispatch_state` 为 `preparing` 时一律返回 `None`，为 `launching` 时除 `done`
+（`exit_code` 已写）外也返回 `None`：此时目标机上的 `missing`／`dead` 只是目录或脚本尚未就绪，
+不是终态，不得生成或缓存回执。`run` 从登记到 started 持有任务锁；`keep` 持锁读改写。
+`run` 被强杀或在 launching 阶段异常退出会让状态卡在 `launching`／`preparing`（这两个状态只在 `run` 持锁期间存在）；`collect_result`（inbox、clean、resume 等显式收取路径）拿到任务锁后重新查询目标机再校正：已有启动痕迹（`run.rN.sh`、pid、退出码）改为 `started`，确认没有痕迹改为 `preparation_failed`，连不上或锁被占（派单可能仍在进行）时不动。`HELD_JOBS` 按进程记录，只用于单线程 CLI 路径。
+产物取回状态按轮次保存在派单记录 `artifacts_rounds`（`{轮次: {round, paths, results, at}}`），
+续轮不继承上一轮的「已取回」。
+
 查询不修改调用方的记录、不写缓存、不创建目录、不取写锁。
 `collect_result` 是保留的显式持久化路径，查询不调用它。
 

@@ -18,7 +18,7 @@
   配置未变化时重复读取保持同一个启动加载时间。接口只读内存状态；
   样例由 `tests/test_rd_serve_version.py` 经真实 serve 子进程校验。
 
-- `hosts.json` / `hosts-populated.json`：空列表与已配置目标机。配置顺序固定；
+- `hosts.json` / `hosts-populated.json`：空列表与已配置目标机。响应另有可选 `config_errors`（`[{name, error}]`）：已启用但配置无效、因此不在 `hosts` 里的目标机（新增字段）。配置顺序固定；
   响应顶层另带 `config_reload`，与 `version.json` 同形，成功和失败都返回；
   它是客户端可忽略的新增字段，合同版本保持 1。
   票 03 起由真实 serve 子进程在临时配置变化后验证。
@@ -42,7 +42,7 @@
   `hosts-offline.json` 展示离线仍保留时间。查询不探测，单纯时间刷新不发事件。
 - `board.json`：`GET /v1/board?all=1`（该用户全部派单）或 `?initiator_session=<会话>`（单个发起会话），
   二者都缺返回 400。结构与 `rdispatch board --json` 相同：`summary`（已派、运行中、待派、阻塞）与逐派单 `rows`，另有 `reclaim_plan`（serve 定时回收的计划与结果，未启用为 null）；
-  老记录缺的 `harness`、`model`、`created`、`elapsed_seconds` 为「未记录」；`regenerable_kb`（路径到 KB 大小）仅在有记录时出现；`credential_suspect`（true）与 `credential_hint` 仅在本轮输出有明确认证失败时出现。
+  老记录缺的 `harness`、`model`、`created`、`elapsed_seconds` 为「未记录」；`regenerable_kb`（路径到 KB 大小）仅在有记录时出现；`credential_suspect`（true）与 `credential_hint` 仅在本轮输出有明确认证失败时出现；`failure_hint`（`network_unreachable`／`auth_failed`）与中文说明 `failure_note` 仅在本轮非零退出且最后一条失败事件匹配已知模式时出现（识别不了不出现）；回执 `report.test_command` 仅 `run --test`／`--test-full` 的命令任务兜底回执出现（被执行的命令，最多 1000 字符，此时 `report.checks` 按退出码为 `passed`／`failed`）。回执 `report.timeout_phase`（`setup`／`body`）仅在超时（退出码 124）时出现，标明超时发生的阶段。以上均为新增可选字段。
   只读本地快照，不探测目标机；`reclaim_block` 只含不连目标机可判的原因，合入与未提交检查仍由 `clean` 给出。
 - `jobs.json`：卡片列表，只含当前用户和没有用户字段的旧记录，跨发起会话。
   卡片与详情各轮可选 `snapshot_at` 是后台执行快照的控制端采集时间；
