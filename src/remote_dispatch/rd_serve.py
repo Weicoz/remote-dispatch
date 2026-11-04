@@ -675,10 +675,11 @@ class Service:
             hosts = config.hosts()
             # 启动时一台主机写坏不拖垮 serve；但运行中的主机在重载时被写坏，保留旧定义继续监控其在途任务，
             # 并报错（已知的无效主机不阻塞其他修改）。
-            known = self.config.host_errors()
-            fresh = [text for name, text in config.host_errors().items() if known.get(name) != text]
-            if fresh:
-                raise ValueError("; ".join(fresh))
+            # 只拦截「旧配置里有效、新配置里变无效」的主机；其余无效主机逐主机隔离，不阻塞好修改。
+            was_valid = {host["name"] for host in self.config.hosts()}
+            broken = [text for name, text in config.host_errors().items() if name in was_valid]
+            if broken:
+                raise ValueError("; ".join(broken))
             execute_timeout = network.positive_setting(config.cp, "execute_timeout", 120)
             config.cp.getboolean("serve", "session_access", fallback=True)
             config.notify_channels()
@@ -819,7 +820,7 @@ class Service:
                 try:
                     # Disabling new dispatches must not freeze existing jobs.
                     if (name not in enabled_names and config.cp.has_section("host:" + name)
-                            and not self.host_poll_due(config.host(name))):
+                            and not self.host_poll_due(config.host(name, lenient=True))):
                         continue
                     batch = cli.job_states(config, group)
                     states.update({rec["job"]: batch.get(rec["job"], {"state": "unreachable"})

@@ -186,6 +186,27 @@ class HostIsolationTests(ConfigFixture):
         self.assertNotIn("nan", [h["name"] for h in config.hosts()])
 
 
+class InFlightJobHostTests(ConfigFixture):
+    def test_config_error_is_a_value_error_so_existing_handlers_catch_it(self):
+        self.assertTrue(issubclass(cli.ConfigError, ValueError))
+        with self.assertRaises(ValueError):
+            self.config(timeout="0").host("box")  # strict 配置：无效主机抛 ConfigError
+
+    def test_job_host_resolves_an_invalid_host_without_validation(self):
+        config = self.config(max_load_per_core="nan", timeout="0")
+        rec = {"job": "j", "host": "box"}
+        self.assertEqual(cli.job_host(config, rec)["name"], "box")
+        with self.assertRaises(cli.ConfigError):  # 派新单仍严格
+            config.host("box")
+
+    def test_resume_of_a_job_on_an_invalid_host_is_refused_like_a_new_dispatch(self):
+        config = self.config(timeout="0")
+        rec = {"job": "j", "host": "box", "agent": "codex", "user_id": "u", "isolated": True}
+        with self.assertRaises(cli.ConfigError) as caught, patch.object(cli, "require_user", return_value="u"):
+            cli.resume_job(None, config, rec)
+        self.assertIn("timeout", str(caught.exception))
+
+
 class DependencyDirectionTests(unittest.TestCase):
     def test_defaults_and_cache_parser_live_below_cli_and_are_re_exported(self):
         self.assertIs(cli.DEFAULTS, rd_defaults.DEFAULTS)

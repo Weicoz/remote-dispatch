@@ -248,7 +248,7 @@ class HostConfigError(Exception):
         self.code = code
 
 
-class ConfigError(Exception):
+class ConfigError(ValueError):
     """配置无效；strict 模式供 serve 重载时保留旧配置而不是退出进程。"""
 
 
@@ -339,15 +339,16 @@ class Config:
         value = os.environ.get("RD_NETWORK_STALL_SECONDS") or self.cp.get("monitor", "network_stall_seconds", fallback="600")
         return health.positive_seconds(value, "RD_NETWORK_STALL_SECONDS / [monitor] network_stall_seconds")
 
-    def host(self, name, *, check_disabled=False):
-        """按名取目标机。启用的主机完整校验，配置无效时报错（退出码 4）；已停用的主机不校验，
-        旧任务仍能解析其所在主机。check_disabled=True（显式 --host 派单）时已停用的主机也校验。"""
+    def host(self, name, *, check_disabled=False, lenient=False):
+        """按名取目标机。启用的主机完整校验，配置无效时报错（退出码 4）；已停用的主机不校验。
+        check_disabled=True（显式 --host 派单）时已停用的主机也校验。
+        lenient=True 用于已登记的在途任务（job_host）：不校验字段，任务必须能继续被监控与收尾。"""
         try:
-            return self._build_host(name, check_disabled=check_disabled)
+            return self._build_host(name, check_disabled=check_disabled, lenient=lenient)
         except HostConfigError as error:
             self.fail(str(error), error.code)
 
-    def _build_host(self, name, *, check_disabled=False):
+    def _build_host(self, name, *, check_disabled=False, lenient=False):
         sec = self._section("host", name)
         if sec is None:
             raise HostConfigError(f"no [host:{name}] in {CONFIG}", 1)
@@ -355,7 +356,7 @@ class Config:
         if self.cp.has_section("defaults"):
             h.update(self.cp["defaults"])
         h.update(sec)
-        if host_checks.is_enabled(h["enabled"]) or check_disabled:
+        if not lenient and (host_checks.is_enabled(h["enabled"]) or check_disabled):
             try:
                 host_checks.validate(h, lenient=True)  # 读取路径与 CRUD 共用同一套完整校验
             except host_checks.InvalidField as error:
@@ -795,7 +796,8 @@ def scoped_host(host, uid):
 
 
 def job_host(cfg, rec):
-    host = cfg.host(rec["host"])
+    # 已登记的任务：宽松读取，不校验字段（目标机配置被写坏也要能继续监控与收尾）；派新单才严格校验。
+    host = cfg.host(rec["host"], lenient=True)
     if rec.get("user_id"):
         if require_user() != rec["user_id"]:
             die("当前 RD_USER_ID 与任务员工 ID 不匹配。", 4)
@@ -2968,7 +2970,7 @@ def cmd_run(a, cfg):
             included.seek(0)
         explicit = a.force_host and a.host not in (None, "auto")
         if explicit:
-            candidates = [cfg.host(a.host)]
+            candidates = [cfg.host(a.host, check_disabled=True)]
         elif fp_command and not skip_fp and a.host in (None, "auto"):
             candidates = pick_hosts(cfg, a.host, a.tag)
         else:
@@ -3549,6 +3551,7 @@ def resume_job(a, cfg, rec, *, prompt=None, before_launch=None, rollback_stack=N
         die("resume_not_allowed: 旧任务未固定用户配置；查看、取回仍可用，续跑必须重新派单。", 4)
     if not rec.get("agent"):
         die("resume_not_allowed: only agent jobs can be resumed; start a new job for commands")
+    cfg.host(rec["host"])  # 续跑是新一轮工作：和派新单一样严格校验目标机配置
     host = job_host(cfg, rec)
     host["probe_agent"] = rec["agent"]
     host["probe_profile_fingerprint"] = (rec.get("profile") or {}).get("fingerprint")

@@ -72,10 +72,10 @@ class ServeTests(unittest.TestCase):
         response = connection.getresponse()
         return response.status, json.loads(response.read())
 
-    def seed(self, poll_interval=0.05, running=False):
+    def seed(self, poll_interval=0.05, running=False, extra_config=""):
         self.config.write_text(f"[host:target]\nssh=local\nworkdir={self.root / 'worker'}\nsync=direct\n"
                                "env_file=/private/fixture-env\ncodex_auth_file=/private/fixture-auth\n"
-                               "ssh_opts=-o SecretOption=fixture-ssh\n", encoding="utf-8")
+                               "ssh_opts=-o SecretOption=fixture-ssh\n" + extra_config, encoding="utf-8")
         # Only the OS/resource boundary is replaced; job/report/log reads use real shell + files.
         probe = patch.object(cli, "PROBE", 'echo "os=Darwin ncpu=8 load1=1 memfree=80 disk=100 disk_total=500 running=0 heavy=0"')
         probe.start()
