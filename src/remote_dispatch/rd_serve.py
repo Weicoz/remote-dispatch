@@ -62,10 +62,10 @@ CONFIG_RELOAD_ERROR_LIMIT = 1000
 
 # 常见裸令牌（无 key=value 标签也要遮盖）：OpenAI/Anthropic 风格 sk-、GitHub ghp_/github_pat_、Bearer、Slack xox*-、AWS AKIA。
 # 强前缀令牌宁可多遮：只排除前一字符为 ASCII 字母数字或下划线（URL 用户名、路径、扩展名、中文紧邻都遮）；
-# sk-ant-/sk-proj- 另排除前一字符为 -，避免命中派单 ID。通用 sk/pk/rk- 是弱形态：须含数字、≥20 位，前一字符还不得是 / . -。
+# 强前缀只排除前接字母数字（含 _ 不排除，KEY_sk-… 也遮）；sk-ant-/sk-proj- 另排除「字母数字+-」，避免命中派单 ID。通用 sk/pk/rk- 是弱形态：须含数字、≥20 位，前一字符还不得是 / . -。
 TOKEN_PATTERN = re.compile(
-    r"(?<![A-Za-z0-9_])(?:gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|xox[abposr]-[A-Za-z0-9\-]{10,}|AKIA[0-9A-Z]{16}(?![0-9A-Z]))"
-    r"|(?<![A-Za-z0-9_\-])sk-(?:ant-|proj-)[A-Za-z0-9_\-]{16,}"
+    r"(?<![A-Za-z0-9])(?:gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|xox[abposr]-[A-Za-z0-9\-]{10,}|AKIA[0-9A-Z]{16}(?![0-9A-Z]))"
+    r"|(?<![A-Za-z0-9])(?<![A-Za-z0-9]-)sk-(?:ant-|proj-)[A-Za-z0-9_\-]{16,}"
     r"|(?<![A-Za-z0-9_/.\-])(?:sk|pk|rk)-(?=[A-Za-z0-9_\-]*\d)[A-Za-z0-9_\-]{20,}"
     r"|(?i:(?<![A-Za-z0-9_])Bearer\s+)[A-Za-z0-9._~+/=\-]{8,}")
 

@@ -314,6 +314,12 @@ class CachedReadTests(unittest.TestCase):
                          "密钥" + token, "令牌Bearer abcDEF123456"):
                 self.assertNotIn(token[4:], service.redact(text), text)
                 self.assertNotIn("abcDEF123456", service.redact(text), text)
+        for token in strong:
+            for text in ("key:-" + token, "token -" + token, "${ANTHROPIC_API_KEY:-%s}" % token,
+                         "KEY_" + token, "AWS_KEY_AKIAABCDEFGHIJKLMNOP"):
+                out = service.redact(text)
+                self.assertNotIn(token[4:], out, text)
+                self.assertNotIn("AKIAABCDEFGH", out, text)
         for text in ("-pPassw0rd12345", "pw%3DPassw0rd12345", "x\\nPassw0rd12345", "KEY_Passw0rd12345"):
             self.assertNotIn("Passw0rd12345", service.redact(text), text)
         self.assertEqual(service.redact("weicoz-sk-proj-fix-login-20261104-1200 ok"),
