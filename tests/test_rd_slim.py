@@ -40,6 +40,7 @@ class SlimFixture(unittest.TestCase):
         self.config_path.write_text(
             f"[host:self]\nssh = local\nworkdir = {self.root / 'worker'}\nsync = direct\n"
             f"path = {os.environ['PATH']}\ntimeout = 30\n"
+            f"[features]\nwarm_worktree = false\n"
             f"[project:repo]\nsetup = echo run >> \"$RD_JOB_DIR/setup-runs\"\n"
             f"regenerable_paths = {self.declared}\n", encoding="utf-8")
         for mock in (

@@ -37,6 +37,8 @@ from . import rd_native as native
 from . import rd_messages as messages
 from . import rd_notify as notifier
 from . import rd_slim as slim
+from . import rd_warm as warm
+from . import rd_include_guard as include_guard
 from . import rd_artifacts as artifacts
 from . import rd_timings as timings
 from . import rd_health as health
@@ -118,6 +120,8 @@ export PATH="@@PATH@@:$PATH"
 ROOT=@@ROOT@@
 export RD_JOB=@@JOB@@ RD_ROUND=@@ROUND@@ RD_BASE=@@BASE@@
 export RD_JOB_DIR="$ROOT/jobs/$RD_JOB" RD_WT="$ROOT/wt/$RD_JOB"
+# 热工作树：领用脚本把槽位绝对路径写进 worktree 文件；没有该文件按冷 worktree。
+[ -f "$RD_JOB_DIR/worktree" ] && RD_WT=$(cat "$RD_JOB_DIR/worktree"); export RD_WT
 export RD_LOCK_DIR=@@SHARED_ROOT@@/locks RD_MAX_HEAVY=@@MAX_HEAVY@@
 export RD_PROMPT="$RD_JOB_DIR/prompt.r$RD_ROUND.md"
 @@REPORT_ENV@@
@@ -173,6 +177,8 @@ git status --porcelain 2>/dev/null | wc -l | tr -d ' ' > "$RD_JOB_DIR/dirty"
 @@PUSH@@
 @@REPORT_FINISH@@
 echo $rc > "$RD_JOB_DIR/exit_code"
+# 释放热槽位领用；异常退出时 exit_code 或 pid 不存在同样让下次领用判定为可接手。
+if [ -f "$RD_JOB_DIR/warm-claim" ]; then : > "$(cat "$RD_JOB_DIR/warm-claim")/released" 2>/dev/null; fi
 """
 
 PROBE = r"""
@@ -273,8 +279,20 @@ class Config:
         return self.cp.get("features", "rollout_stats", fallback="false").strip().lower() in ("1", "true", "yes", "on")
 
     def scheduled_reclaim(self):
-        """[features] scheduled_reclaim：serve 每小时按 max_worktree_gb 回收，默认关闭；取值无效按关闭处理。"""
-        return self.cp.get("features", "scheduled_reclaim", fallback="false").strip().lower() in ("1", "true", "yes", "on")
+        """[features] scheduled_reclaim：serve 每小时回收已签收且过期的任务，超过 max_worktree_gb 再瘦身。
+        默认开启，显式写 false 才关闭；取值无效按关闭处理。"""
+        return self.cp.get("features", "scheduled_reclaim", fallback="true").strip().lower() in ("1", "true", "yes", "on")
+
+    def warm_worktree(self):
+        """[features] warm_worktree：命令任务热工作树，默认开启，显式写 false 整体关闭。"""
+        return warm.feature_enabled(self.cp)
+
+    def warm_idle_days(self):
+        """热槽位闲置多少天后可回收；环境变量 RD_RETAIN_WARM_IDLE_DAYS 优先，默认 7。"""
+        try:
+            return warm.idle_days(self.cp)
+        except ValueError as error:
+            self.fail(str(error), 4)
 
     def line_enabled(self):
         """[features] line：显式写 false 才关闭；关闭后不接新线，已有线继续。"""
@@ -2503,14 +2521,14 @@ def check_fingerprint(host, rec, command, local, timeout, setup_timeout):
         r = win_ps(host, setup, setup_timeout)
     else:
         setup = (f'D="$ROOT/jobs/{job}"; [ -f "$D/setup.sh" ] || exit 0; [ -f "$D/setup.done" ] && exit 0\n'
-                 f'cd "$ROOT/wt/{job}" || exit 96\n'
+                 f'cd {warm.worktree_sh(rec)} || exit 96\n'
                  f'export RD_JOB={shlex.quote(job)} RD_WT="$PWD" RD_JOB_DIR="$D"\n'
                  f'sh "$D/setup.sh" > "$D/setup.log" 2>&1 && touch "$D/setup.done"')
         r = ssh(host, setup, check=False, timeout=setup_timeout)
     if r is None or r.returncode:
         reason = "setup 超时" if r is None else f"setup 失败（退出码 {r.returncode}，见 setup.log）"
         raise FingerprintMismatch(dict(host=host["name"], remote="", diff="", error=reason + "，未能核对环境指纹"))
-    remote, error = run_remote_fingerprint(host, command, timeout, f'"$ROOT/wt/{job}"', job=job)
+    remote, error = run_remote_fingerprint(host, command, timeout, warm.worktree_sh(rec), job=job)
     diff = "" if error else compare_fingerprint(local, remote, host["name"])
     if error or diff:
         raise FingerprintMismatch(dict(host=host["name"], remote=artifacts.trim(remote), diff=diff, error=error))
@@ -2525,6 +2543,10 @@ def drop_attempt(host, rec):
         win_ps(host, f"$w=Join-Path $root {native.ps_quote('wt/' + job)}; $b=Join-Path $root {native.ps_quote(bare)}; "
                      f"git -C $b worktree remove --force $w 2>$null; if(Test-Path $w){{ Remove-Item -Recurse -Force $w }}; "
                      f"git -C $b worktree prune 2>$null; Remove-Item -Recurse -Force (Join-Path $root {native.ps_quote('jobs/' + job)}) -ErrorAction SilentlyContinue", 300)
+        return
+    if warm.is_warm(rec):
+        # 热槽位只释放领用，保留 worktree 与缓存给后续任务。
+        ssh(host, warm.release_script(rec) + f'rm -rf "$ROOT/jobs/{job}"', check=False)
         return
     wt = f'"$ROOT/wt/{job}"'
     ssh(host, f'git -C "$ROOT/{bare}" worktree remove --force {wt} 2>/dev/null || rm -rf {wt}; '
@@ -2600,9 +2622,14 @@ def pull_artifacts(cfg, rec):
         else:
             probe = "".join(f'if [ -d {shlex.quote(p)} ]; then echo "d {p}"; elif [ -e {shlex.quote(p)} ]; then echo "f {p}"; '
                             f'else echo "m {p}"; fi\n' for p in paths)
-            r = ssh(host, f'cd "$ROOT/wt/{job}" 2>/dev/null || {{ echo W; exit 0; }}\n{probe}', check=False, timeout=60)
+            # 热槽位代次不一致（已被后来的任务接手）时 WT 为空：不拉，避免拉到别的任务的文件。
+            r = ssh(host, warm.resolve_sh(rec) + 'if [ -z "$WT" ]; then echo T; exit 0; fi\n'
+                          f'cd "$WT" 2>/dev/null || {{ echo W; exit 0; }}\n{probe}', check=False, timeout=60)
             if r is not None and r.returncode == 0:
                 for line in r.stdout.splitlines():
+                    if line == "T":
+                        kinds = {p: "t" for p in paths}
+                        break
                     if line == "W":
                         kinds = {p: "w" for p in paths}
                         break
@@ -2616,6 +2643,8 @@ def pull_artifacts(cfg, rec):
             results.append(dict(path=path, status="error", error="无法连接目标机核对路径"))
         elif kind == "x":
             results.append(dict(path=path, status="error", error="目标机路径含符号链接或越界，已拒绝"))
+        elif kind == "t":
+            results.append(dict(path=path, status="skipped", error="工作树已被后来的任务接手，产物不可再拉"))
         elif kind in ("m", "w"):
             results.append(dict(path=path, status="missing", error="目标机 worktree 里没有该路径"))
         else:
@@ -2625,9 +2654,12 @@ def pull_artifacts(cfg, rec):
             elif host["platform"] == "windows":
                 results.append(native_artifact(host, job, repo, path, kind == "d"))
             else:
-                results.append(rsync_artifact(host, job, repo, path, kind == "d"))
+                results.append(rsync_artifact(host, job, repo, path, kind == "d", worktree=warm.job_worktree(rec)))
     rec["artifacts_state"] = dict(results=results, at=time.strftime("%Y-%m-%d %H:%M:%S"))
     save_job(rec)
+    if warm.is_warm(rec) and host["platform"] != "windows" and not artifacts.artifacts_pending(rec):
+        # 产物已处理完，解除目标机上的钉住标记，槽位可被接手。
+        ssh(host, warm.pin_script(rec, artifacts=False), check=False, timeout=30)
     return results
 
 
@@ -2665,9 +2697,9 @@ def rsync_supports_protect_args():
     return "--protect-args" in (p.stdout or "") + (p.stderr or "")
 
 
-def rsync_artifact(host, job, repo, path, is_dir):
+def rsync_artifact(host, job, repo, path, is_dir, worktree=None):
     dest = os.path.join(repo, *path.split("/"))
-    source = scp_path(host, f"wt/{job}/{path}")
+    source = scp_path(host, f"{worktree or 'wt/' + job}/{path}")
     command = ["rsync", "-a", "--safe-links"]
     if not is_local(host):
         command += ["-e", "ssh " + host["ssh_opts"]]
@@ -2699,6 +2731,47 @@ def auto_pull_artifacts(cfg, rec, snapshot):
             print(f"产物拉回未完成：{error}；稍后用 rdispatch fetch {rec['job']} --artifacts 重试。", file=sys.stderr)
             return None
     return rec["artifacts_state"]["results"]
+
+
+def release_unstarted_slot(host, rec):
+    """准备或启动失败时释放热槽位领用：目标机上没有 pid 也没有 run 脚本（任务肯定没启动）才释放，
+    释放后心跳随之停止；有则保留（启动结果待核实）。释放失败不掩盖原错误，控制端崩溃由心跳上限兜底。"""
+    if warm.is_warm(rec) and host["platform"] != "windows":
+        with contextlib.suppress(Exception, SystemExit):
+            ssh(host, warm.release_unstarted_script(rec), check=False, timeout=30)
+
+
+def place_worktree(cfg, host, rec, a, proj, repo_key, prefix):
+    """POSIX 目标建任务 worktree：命令任务先试热槽位（一次 ssh 完成准备、领用、交接快照与精确快照），
+    无空闲槽位且达上限、关闭热模式或领用结果缺失时建冷 worktree。结果写进 rec["worktree"] 并落盘。"""
+    job, bare, branch = rec["job"], rec["bare"], rec["branch"]
+    cold = f'git -C "$ROOT/{bare}" worktree add -q "$ROOT/wt/{job}" {shlex.quote(branch)} || exit 92'
+    fields, prepared = None, False
+    try:
+        use_warm = warm.eligible(a, proj, host, cfg.warm_worktree())
+        slots = warm.slot_limit(proj) if use_warm else 0
+    except ValueError as error:
+        die(str(error), 4)
+    if use_warm:
+        pinned = warm.pinned_jobs([r for r in all_jobs() if r.get("host") == host["name"]
+                                   and r.get("user_id") == rec.get("user_id") and r["job"] != job], time.time())
+        script = warm.claim_script(prefix, bare, job, branch, f"{warm.slot_name_part(rec['project'])}-{repo_key}", slots, pinned,
+                                   heartbeat_max=warm.heartbeat_limit(getattr(a, "timeout", None) or host["timeout"],
+                                                                      fingerprint_settings(proj)[1]))
+        fields, prepared = warm.parse_result(ssh(host, script).stdout), True
+        if fields and fields["mode"] == warm.COLD:
+            print(f"热工作树：{fields.get('reason', '无空闲槽位')}，改用冷 worktree。")
+        elif fields:
+            print(f"热工作树：槽位 {fields['slot']}（" + ("复用" if fields.get("reused") == "1" else "新建") + "）")
+    if not prepared:
+        ssh(host, prefix + cold)
+    elif fields is None:
+        ssh(host, cold)
+    warm.apply_result(rec, fields, job)
+    save_job(rec)
+    if warm.is_warm(rec) and rec.get("artifact_paths"):
+        # 产物在槽位里：拉回前其他控制端的领用也不能接手。
+        ssh(host, warm.pin_script(rec, artifacts=True))
 
 
 def cmd_run(a, cfg):
@@ -2812,6 +2885,10 @@ def cmd_run(a, cfg):
             if packed.returncode:
                 die("--include 打包失败，未派单：\n" + packed.stderr.decode(errors="replace"))
             included.seek(0)
+            # 实际写入目标机的文件清单（任何 include 形式，含 "."），热槽位下次领用前据此清理。
+            listing = subprocess.run(["tar", "-tf", "-"], stdin=included, capture_output=True)
+            unpacked = warm.unpacked_files(listing.stdout.decode(errors="replace")) if listing.returncode == 0 else []
+            included.seek(0)
         explicit = a.force_host and a.host not in (None, "auto")
         if explicit:
             candidates = [cfg.host(a.host)]
@@ -2856,6 +2933,11 @@ def cmd_run(a, cfg):
                "handoff_version": 1, "initiator_session": owner, "test": bool(a.test or test_full),
                "test_tier": ("full" if test_full or not proj.get("test_quick") else "quick") if (a.test or test_full) else None,
                "regenerable_paths": slim.parse_paths(proj.get("regenerable_paths", ""))}
+        rec["worktree"] = warm.cold_field(job)
+        if include_paths:
+            hashes = include_guard.hash_includes(repo, include_paths)
+            if hashes is not None:
+                rec["include_hashes"] = hashes
         rec.update(host_fields(host, profile))
         if artifact_paths:
             rec["artifact_paths"] = artifact_paths
@@ -2885,6 +2967,7 @@ def cmd_run(a, cfg):
         while True:
             try:
                 if host["platform"] == "windows":
+                    rec["worktree"] = warm.cold_field(job)
                     native_init(host, rec, repo, sha, proj.get("origin_url") or origin_url)
                     if a.include:
                         native.request(host, "upload", {"relative": "wt/" + job, "archive": True}, payload=included)
@@ -2925,16 +3008,19 @@ def cmd_run(a, cfg):
                     prep = ""
                 else:
                     die(f"[host:{host['name']}] sync must be origin or direct")
-                ssh(host, f'mkdir -p "$ROOT/jobs/{job}" "$ROOT/repos" "$ROOT/wt" "$SHARED_ROOT/locks" "$ROOT/bin"\n{prep}'
-                          f'git -C "$ROOT/{bare}" worktree add -q "$ROOT/wt/{job}" {shlex.quote(branch)} || exit 92')
+                place_worktree(cfg, host, rec, a, proj, repo_key,
+                               f'mkdir -p "$ROOT/jobs/{job}" "$ROOT/repos" "$ROOT/wt" "$SHARED_ROOT/locks" "$ROOT/bin"\n{prep}')
 
                 if a.include:
-                    ssh(host, f'tar -xf - -C "$ROOT/wt/{job}"', stdin=included)
+                    ssh(host, f'tar -xf - -C {warm.worktree_sh(rec)}', stdin=included)
+                    if warm.is_warm(rec) and unpacked:
+                        # 记下解包路径：下次领用前连被 .gitignore 忽略的文件一起清掉。
+                        ssh(host, warm.record_unpacked_script(rec), stdin_data="\n".join(unpacked) + "\n")
                 if wip:
                     with tempfile.TemporaryFile() as patch_file:
                         patch_file.write(wip)
                         patch_file.seek(0)
-                        ssh(host, f'git -C "$ROOT/wt/{job}" apply --index --binary -', stdin=patch_file)
+                        ssh(host, f'git -C {warm.worktree_sh(rec)} apply --index --binary -', stdin=patch_file)
                 if proj.get("setup"):
                     put_file(host, f"jobs/{job}/setup.sh", proj["setup"] + "\n")
                 if fp_command and not skip_fp:
@@ -2979,8 +3065,10 @@ def cmd_run(a, cfg):
                 if rec["dispatch_state"] == "preparing":
                     rec["dispatch_state"] = "preparation_failed"
                     save_job(rec)
+                    release_unstarted_slot(host, rec)
                     print(f"rdispatch: 准备失败，job 已登记：{job}；核对后用 rdispatch clean {job} --force --delete-branch 清理本任务。", file=sys.stderr)
                 else:
+                    release_unstarted_slot(host, rec)
                     print(f"rdispatch: 启动结果待核实，job 已登记：{job}；先用 rdispatch status {job} 检查。", file=sys.stderr)
                 raise
 
@@ -3005,13 +3093,16 @@ def remote_state(host, jobs):
   n=${n:-0}
   last=$(tail -n 5 "$D/stdout.r$n.log" 2>/dev/null | awk 'NF{l=$0}END{print l}' | tr '\t' ' ' | cut -c1-200)
   head=$(cat "$D/head" 2>/dev/null); dirty=$(cat "$D/dirty" 2>/dev/null); head_source=recorded
-  if [ "$st" = running ] && [ -d "$ROOT/wt/$J" ]; then
-    current_head=$(GIT_OPTIONAL_LOCKS=0 git -C "$ROOT/wt/$J" rev-parse HEAD 2>/dev/null)
+  W="$ROOT/wt/$J"; [ -f "$D/worktree" ] && W=$(cat "$D/worktree")
+  if [ "$st" = running ] && [ -d "$W" ]; then
+    current_head=$(GIT_OPTIONAL_LOCKS=0 git -C "$W" rev-parse HEAD 2>/dev/null)
     if [ -n "$current_head" ]; then
       head=$current_head; head_source=live
-      dirty=$(GIT_OPTIONAL_LOCKS=0 git -C "$ROOT/wt/$J" status --porcelain 2>/dev/null | wc -l | tr -d ' ')
+      dirty=$(GIT_OPTIONAL_LOCKS=0 git -C "$W" status --porcelain 2>/dev/null | wc -l | tr -d ' ')
     fi
   fi
+  # 热槽位被下一任务接手前写下的交接快照优先于记录值（槽位现场已不属于本任务）。
+  if [ "$st" != running ] && [ -f "$D/final-head" ]; then head=$(cat "$D/final-head"); dirty=$(cat "$D/final-dirty" 2>/dev/null); head_source=recorded; fi
   setup=; [ -f "$D/setup.sh" ] && { [ -f "$D/setup.done" ] && setup=done || setup=pending; }
   sample=$(python3 -c "$sample_code" "$D" "$n" 2>/dev/null)
   printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$J" "$st" "$(cat "$D/exit_code" 2>/dev/null)" \
@@ -3066,6 +3157,8 @@ def describe(rec, st):
             bits.append("等待发起方收取与判断；检查状态以结果回执为准")
     if rec.get("artifact_paths"):
         bits.append("产物 " + ("待拉回" if artifacts.artifacts_pending(rec) else "已处理") + f"（{len(rec['artifact_paths'])} 项）")
+        if artifacts.artifacts_pending(rec) and warm.is_warm(rec):
+            bits.append(warm.ARTIFACT_PIN_TEXT)
     if st.get("setup") == "pending" and s == "running":
         bits.append("running setup")
     if st.get("head"):
@@ -3644,10 +3737,14 @@ def worktree_changes(host, rec):
         info = native.request(host, "clean-check", {"job": rec["job"], "detailed": True})
         head, status = info["head"], info["status"]
     else:
-        wt = '"$ROOT/wt/' + messages.job_id(rec["job"]) + '"'
-        reply = ssh(host, f'head=$(git -C {wt} rev-parse HEAD) || exit 1; '
-                          'printf "%s\\n" "$head"; '
-                          f'GIT_OPTIONAL_LOCKS=0 git -C {wt} status --porcelain=v1 -z --untracked-files=all', check=False)
+        messages.job_id(rec["job"])
+        # 热槽位已被下一任务接手时读交接快照，不读槽位现场。
+        reply = ssh(host, warm.resolve_sh(rec) +
+                    'if [ -z "$WT" ]; then [ -f "$FSD/final-head" ] && [ -f "$FSD/final-status.z" ] || exit 1; '
+                    'cat "$FSD/final-head" "$FSD/final-status.z"; exit 0; fi\n'
+                    'head=$(git -C "$WT" rev-parse HEAD) || exit 1; '
+                    'printf "%s\\n" "$head"; '
+                    'GIT_OPTIONAL_LOCKS=0 git -C "$WT" status --porcelain=v1 -z --untracked-files=all', check=False)
         if not reply or reply.returncode:
             raise ValueError("无法核验 worktree 的 head 与未提交内容")
         head, separator, status = reply.stdout.partition("\n")
@@ -3742,9 +3839,11 @@ def source_missing_report(host, rec):
         return prefix + "Windows 目标机无法核对 bare 仓库，请人工确认提交已取回或不再需要。"
     j, b = rec["job"], rec["branch"]
     bare = f'"$ROOT/{rec.get("bare", "repos/" + rec["project"] + ".git")}"'
-    wt = f'"$ROOT/wt/{messages.job_id(j)}"'
+    messages.job_id(j)
     try:
-        r = ssh(host, f'head=$(git -C {wt} rev-parse HEAD 2>/dev/null); echo "head=$head"; '
+        r = ssh(host, warm.resolve_sh(rec) +
+                      'if [ -n "$WT" ]; then head=$(git -C "$WT" rev-parse HEAD 2>/dev/null); '
+                      'else head=$(cat "$FSD/final-head" 2>/dev/null); fi; echo "head=$head"; '
                       f'if git -C {bare} rev-parse --git-dir >/dev/null 2>&1; then echo bare=yes; '
                       f'echo "tip=$(git -C {bare} rev-parse -q --verify {shlex.quote("refs/heads/" + b)} 2>/dev/null)"; '
                       f'if [ -n "$head" ] && git -C {bare} cat-file -e "$head^{{commit}}" 2>/dev/null; then echo present=yes; '
@@ -3784,7 +3883,10 @@ def reclaim_check(cfg, rec, snapshot, host, *, single=False, force=False, a=None
         if referrers:
             return BLOCK_PLAN_REFERENCED, "待派登记中后续工作项仍引用该派单：" + "、".join(referrers), None, []
     if state in ("done", "dead") and artifacts.artifacts_pending(rec) and not unlaunched and not (single and force):
-        return BLOCK_ARTIFACTS_PENDING, "有声明的产物尚未拉回；先 rdispatch fetch JOB --artifacts（--force 可放弃）", None, []
+        text = "有声明的产物尚未拉回；先 rdispatch fetch JOB --artifacts（--force 可放弃）"
+        if warm.is_warm(rec):
+            text += "。" + warm.ARTIFACT_PIN_TEXT
+        return BLOCK_ARTIFACTS_PENDING, text, None, []
     if single:
         if state == "running" or (state == "starting" and not unlaunched):
             return BLOCK_RUNNING, "the job is still running; rdispatch stop it first", None, []
@@ -3804,8 +3906,14 @@ def reclaim_check(cfg, rec, snapshot, host, *, single=False, force=False, a=None
             info = native.request(host, "clean-check", {"job": j})
             orphan, dirty, head = False, str(info["dirty"]), info["head"]
         else:
-            w = f'"$ROOT/wt/{messages.job_id(j)}"'
-            r = ssh(host, f'if [ ! -e {w} ] || [ "$(git -C {w} rev-parse --show-toplevel 2>/dev/null)" = "$(cd {w} && pwd -P)" ]; then '
+            messages.job_id(j)
+            w = '"$WT"'
+            r = ssh(host, warm.resolve_sh(rec) +
+                          # 热槽位已被接手：读交接快照；快照也没有则按无法核验处理。
+                          'if [ -z "$WT" ]; then if [ -f "$FSD/final-head" ]; then '
+                          'echo "dirty=$(cat "$FSD/final-dirty" 2>/dev/null || echo 0)"; echo "head=$(cat "$FSD/final-head")"; '
+                          'else echo orphan; fi; '
+                          f'elif [ ! -e {w} ] || [ "$(git -C {w} rev-parse --show-toplevel 2>/dev/null)" = "$(cd {w} && pwd -P)" ]; then '
                           f'echo "dirty=$(git -C {w} status --porcelain 2>/dev/null | wc -l | tr -d " ")"; '
                           f'echo "head=$(git -C {w} rev-parse HEAD 2>/dev/null)"; else echo orphan; fi', check=False)
             fields = dict(line.partition("=")[::2] for line in (r.stdout or "").splitlines())
@@ -3853,11 +3961,30 @@ def reclaim_check(cfg, rec, snapshot, host, *, single=False, force=False, a=None
     except (OSError, ValueError, SystemExit, subprocess.SubprocessError) as error:
         return BLOCK_UNVERIFIABLE, f"核验或清理失败，保留未删除内容与登记：{error}", head, reasons
     included = rec.get("include_paths", [])
-    unexpected = [p for p in paths if not any(
-        item == "." or p == item or p.startswith(item.rstrip("/") + "/") for item in included)]
+    unexpected = [p for p in paths if not include_guard.covers(included, p)]
+    inside = [p for p in paths if include_guard.covers(included, p)]
+    if inside and rec.get("include_hashes") is not None and host["platform"] != "windows":
+        # --include 目录里只豁免内容与派单时一致的原输入；新增或改动的文件是执行方的成果，按未提交内容阻塞。
+        try:
+            unexpected += include_changed(host, rec, inside)
+        except (OSError, ValueError, subprocess.SubprocessError) as error:
+            return BLOCK_UNVERIFIABLE, f"核验 --include 输入内容失败，保留未删除内容与登记：{error}", head, reasons
     if unexpected:
         return BLOCK_DIRTY, f"存在非 --include 路径的未提交内容：{unexpected!r}", head, reasons
     return None, "", head, reasons
+
+
+def include_changed(host, rec, paths):
+    """目标机上逐个散列 --include 目录里的未提交文件，返回内容与派单记录不一致的路径。
+    热槽位已被接手（现场不在）时无内容可核对，也没有可再丢失的内容，沿用目录豁免。"""
+    reply = ssh(host, warm.resolve_sh(rec) + 'if [ -z "$WT" ]; then echo @@gone; exit 0; fi\ncd "$WT" || exit 1\n'
+                + include_guard.remote_hash_script(paths), check=False, timeout=120)
+    if not reply or reply.returncode:
+        raise ValueError("无法读取目标机上的 --include 文件")
+    lines = reply.stdout.splitlines()
+    if lines[:1] == ["@@gone"]:
+        return []
+    return include_guard.changed_paths(paths, rec["include_hashes"], lines)
 
 
 def plan_referrers(rec):
@@ -3971,6 +4098,13 @@ def cmd_keep(a, cfg):
         rec["keep_until"] = time.time() + a.hours * 3600
         print(f"{rec['job']}: 钉住到 {time.strftime('%Y-%m-%d %H:%M', time.localtime(rec['keep_until']))}，rdispatch clean --expired 不回收。")
     save_job(rec)
+    if warm.is_warm(rec):
+        # 热槽位：把钉住状态同步到目标机，其他控制端的领用判定也要尊重它。
+        host = job_host(cfg, rec)
+        if host["platform"] != "windows":
+            r = ssh(host, warm.pin_script(rec, until=rec.get("keep_until", 0)), check=False, timeout=30)
+            if r is None or r.returncode:
+                print("警告：未能把钉住状态同步到目标机，其他控制端可能仍会接手该热槽位。", file=sys.stderr)
 
 
 def slim_block(rec, snapshot):
@@ -3982,6 +4116,8 @@ def slim_block(rec, snapshot):
         return BLOCK_UNREACHABLE, "连接不可达"
     if state == "missing":
         return BLOCK_NOT_FINISHED, "目标机上没有该任务"
+    if warm.is_warm(rec):
+        return BLOCK_NOT_FINISHED, "热工作树槽位常驻构建缓存，不瘦身（槽位闲置超期由定时回收处理）"
     if not rec.get("regenerable_paths"):
         return BLOCK_NOT_FINISHED, "该任务没有声明 regenerable_paths（项目配置里未声明，或任务早于该功能）"
     return None, ""
@@ -3993,7 +4129,8 @@ def slim_worktree(host, rec, dry_run):
     if host["platform"] == "windows":
         reply = native.request(host, "slim", {"job": j, "paths": paths, "dry_run": dry_run})
         return reply["removed"], reply["skipped"]
-    wt, job_dir = f'"$ROOT/wt/{messages.job_id(j)}"', f'"$ROOT/jobs/{j}"'
+    messages.job_id(j)
+    wt, job_dir = warm.worktree_sh(rec), f'"$ROOT/jobs/{j}"'
     drop = ":" if dry_run else f'rm -f {job_dir}/setup.done'
     body = [f'WT={wt}; [ -d "$WT" ] || {{ echo "worktree 不存在" >&2; exit 1; }}; WR=$(cd "$WT" && pwd -P)',
             'skip() { printf "skipped\t%s\t%s\n" "$1" "$2"; }',
@@ -4124,11 +4261,18 @@ def remove_job(a, rec, host):
     if host["platform"] == "windows":
         native.request(host, "clean", {"job": j, "bare": bare, "branch": b, "delete_branch": delete_worker})
     else:
-        drop = (f'if git -C "$ROOT/{bare}" show-ref --verify --quiet {shlex.quote("refs/heads/" + b)}; then '
+        # 分支被空闲热槽位检出时 git 拒绝删除：先把槽位 detach 再删分支。
+        drop = (warm.detach_script(bare, b) +
+                f'if git -C "$ROOT/{bare}" show-ref --verify --quiet {shlex.quote("refs/heads/" + b)}; then '
                 f'git -C "$ROOT/{bare}" branch -q -D {shlex.quote(b)} || exit 1; fi; ') if delete_worker else ""
-        wt = f'"$ROOT/wt/{messages.job_id(j)}"'
-        # 登记已丢失或目录不可读写时 worktree remove 会失败：恢复权限，仍失败则删目录并 prune。
-        ssh(host, f'if [ -e {wt} ]; then '
+        messages.job_id(j)
+        if warm.is_warm(rec):
+            # 热槽位只释放领用并删日志，不删 worktree。
+            ssh(host, warm.release_script(rec) + f'{drop}rm -rf "$ROOT/jobs/{j}"')
+        else:
+            wt = warm.worktree_sh(rec)
+            # 登记已丢失或目录不可读写时 worktree remove 会失败：恢复权限，仍失败则删目录并 prune。
+            ssh(host, f'if [ -e {wt} ]; then '
                   f'git -C "$ROOT/{bare}" worktree remove --force {wt} 2>/dev/null || {{ '
                   f'chmod -R u+rwx {wt} 2>/dev/null; '
                   f'git -C "$ROOT/{bare}" worktree remove --force {wt} 2>/dev/null || {{ '
@@ -4587,6 +4731,7 @@ def main(argv=None, *, forwarded=None):
         p.add_argument("--test", action="store_true", help="run the project's quick test command (falls back to test_full / test)")
         p.add_argument("--test-full", action="store_true", help="run the project's full test command (queued as heavy)")
         p.add_argument("--heavy", action="store_true", help="hold a heavy slot while the command runs")
+        p.add_argument("--fresh", action="store_true", help="命令任务不用热工作树，新建冷 worktree（默认复用目标机上的常驻槽位）")
         p.add_argument("--host", help="目标机，或 auto；默认按会话派单默认值、[defaults] host、auto 取值")
         p.add_argument("--force-host", action="store_true", help="skip the load check for --host")
         p.add_argument("--tag", action="append", default=[], help="only machines with this tag (repeatable)")

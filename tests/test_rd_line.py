@@ -202,7 +202,8 @@ class LineTests(unittest.TestCase):
 
     def test_feature_off_blocks_new_lines_but_existing_lines_continue(self):
         record, _ = self.accepted_first()
-        self.cfg.cp.add_section("features")
+        if not self.cfg.cp.has_section("features"):
+            self.cfg.cp.add_section("features")
         self.cfg.cp.set("features", "line", "false")
         added, output = self.run_item("b")
         self.assertEqual(len(added), 1)

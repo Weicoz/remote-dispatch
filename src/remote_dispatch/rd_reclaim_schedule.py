@@ -1,7 +1,9 @@
-"""serve 定时回收：每小时对在线目标机检查 worktree 用量，超过 max_worktree_gb 时先瘦身，仍超限再按保留期从旧到新删除。
+"""serve 定时回收：每小时对配置了 max_worktree_gb 的在线目标机回收，默认开启。
 
-启用后前 7 天只生成计划（写入事件日志与 reclaim-schedule.json，看板和 /v1/reclaim 显示），不执行。
-删除只走 cli.reclaim_check 的统一判定（与 clean --expired 同一套阻塞原因），不会删被阻塞的派单；
+每次先回收「已签收且过期」的任务（与 clean --expired 同一判定 cli.reclaim_check + expiry_verdict）和闲置超过
+warm_idle_days 的热槽位，不论总用量是否超限；回收后仍超过上限，再对剩余任务按 regenerable_paths 瘦身。
+首次启用后前 7 天只生成计划（写入事件日志与 reclaim-schedule.json，看板和 /v1/reclaim 显示），不执行。
+删除只走统一判定，不会删被阻塞的派单；被领用或被 keep 钉住、产物未拉回的热槽位绝不回收；
 只处理当前用户 ID 的派单；不调用 git clean，不删未声明的文件。
 """
 import argparse
@@ -10,6 +12,7 @@ import subprocess
 import time
 
 from . import cli
+from . import rd_warm as warm
 from . import rd_events as events
 from . import rd_messages as messages
 from . import rd_reclaim_plan as store
@@ -45,7 +48,10 @@ def worktree_sizes(host, recs, user_id):
 
 
 def root_sizes(host):
+    # 热槽位（wt/_warm/<槽位>）逐个计入，键为 `_warm/<槽位>`。
     reply = cli.ssh(host, 'for d in "$ROOT"/wt/*; do [ -d "$d" ] || continue; '
+                          'if [ "${d##*/}" = _warm ]; then for s in "$d"/*; do [ -d "$s" ] || continue; '
+                          'printf "%s\\t_warm/%s\\n" "$(du -sk "$s" 2>/dev/null | cut -f1)" "${s##*/}"; done; continue; fi; '
                           'printf "%s\\t%s\\n" "$(du -sk "$d" 2>/dev/null | cut -f1)" "${d##*/}"; done',
                     check=False, timeout=600)
     sizes = {}
@@ -92,10 +98,15 @@ class ScheduledReclaim:
         # 起点只在首次启用时写入，serve 重启与反复调用都不重新计时。
         if not isinstance(data.get("enabled_at"), (int, float)):
             data["enabled_at"] = now
+        # 「未超限也回收过期任务与闲置槽位」是后加的行为，单独记启用时间：已启用的老用户升级后
+        # 这部分同样先 7 天只出计划，期间仍只按旧逻辑（超限才瘦身、再删除）。
+        if not isinstance(data.get("sweep_enabled_at"), (int, float)):
+            data["sweep_enabled_at"] = now
         data["last_run"] = now
         data.setdefault("hosts", {})
         store.write(self.service.state, data)
         execute = now >= data["enabled_at"] + store.PLAN_ONLY_SECONDS
+        sweep = now >= data["sweep_enabled_at"] + store.PLAN_ONLY_SECONDS
         plans = {}
         for host in config.hosts():
             if self.stopping():
@@ -107,7 +118,7 @@ class ScheduledReclaim:
                 # 离线目标机直接跳过，不报错。
                 if not cli.probe(host).get("reachable"):
                     continue
-                plan = self.host_run(config, host, limit, execute, now)
+                plan = self.host_run(config, host, limit, execute, now, sweep)
             except ERRORS:
                 continue
             if plan is not None:
@@ -169,39 +180,34 @@ class ScheduledReclaim:
             freed += kb
         return picked, blocked
 
-    def host_run(self, config, host, limit, execute, now):
-        name = host["name"]
-        recs = self.owned(name)
-        sizes = worktree_sizes(host, recs, self.service.user_id)
-        used = sum(sizes.values())
-        if used <= limit or self.stopping():
-            return None
-        states = cli.job_states(config, recs) if recs else {}
-        slims = self.slim_candidates(host, recs, states)
-        slimmed = {row["job"]: row["kb"] for row in slims}
-        picked, blocked = self.delete_candidates(config, host, recs, states, sizes, slimmed,
-                                                 used - sum(slimmed.values()) - limit)
-        actions = slims + picked
-        plan = dict(at=now, mode="execute" if execute else "plan", limit_gb=gb(limit), used_gb=gb(used),
-                    estimated_gb=gb(used - sum(row["kb"] for row in actions)),
-                    blocked=blocked, actions=actions)
-        self.emit("reclaim.planned", name, plan, blocked_count=len(blocked))
-        if not execute or self.stopping():
-            return plan
-        return self.execute(config, host, limit, plan, recs, states)
+    def idle_slots(self, host, recs, pinned):
+        """闲置超期且无人占用的热槽位；返回 (计划行, {行 job 名: 该槽位所在用户根目录的目标机})。
+        计划行沿用 job/action/kb 结构（事件契约不变），job 填 `_warm/<槽位名>`。"""
+        days = self.service.config.warm_idle_days()
+        scoped = cli.scoped_host(host, self.service.user_id)
+        roots = sorted({rec.get("worker_root") or scoped["workdir"] for rec in recs} or {scoped["workdir"]})
+        rows, hosts = [], {}
+        for root in roots:
+            where = dict(scoped, workdir=root)
+            reply = cli.ssh(where, warm.list_script(pinned, days), check=False, timeout=600)
+            for line in (reply.stdout or "").splitlines() if reply and reply.returncode == 0 else []:
+                slot, size, _, state, idle = (line.split("\t") + [""] * 5)[:5]
+                if state == "free" and idle == "1" and slot:
+                    key = "_warm/" + slot
+                    rows.append(dict(job=key, action="delete_slot", kb=int(size) if size.isdigit() else 0))
+                    hosts[key] = where
+        return rows, hosts
 
-    def execute(self, config, host, limit, plan, recs, states):
-        by_job = {rec["job"]: rec for rec in recs}
+    def legacy_execute(self, config, host, limit, plan, recs, states):
+        """sweep 安全期内的旧逻辑：只在超限时执行，先瘦身，仍超限再从旧到新删除已过期的派单。"""
         results = []
-        for row in [r for r in plan["actions"] if r["action"] == "slim"]:
+        for row in self.slim_candidates(host, recs, states):
             if self.stopping():
                 break
-            rec = by_job[row["job"]]
-            results.append(dict(row, **self.slim_one(config, rec["job"])))
+            results.append(dict(row, **self.slim_one(config, row["job"])))
         sizes = worktree_sizes(host, recs, self.service.user_id)
         after = sum(sizes.values())
         if after > limit and not self.stopping():
-            # 瘦身不够：重新核对状态，再从旧到新删除。
             fresh = cli.job_states(config, recs) if recs else {}
             picked, _ = self.delete_candidates(config, host, recs, fresh, sizes, {}, after - limit)
             for row in picked:
@@ -214,6 +220,73 @@ class ScheduledReclaim:
                   deleted_count=self.count(results, "delete"),
                   failed_count=sum(1 for r in results if not r["ok"]))
         return plan
+
+    def host_run(self, config, host, limit, execute, now, sweep=True):
+        """先回收已签收且过期的任务与闲置超期的热槽位（不论是否超限），超限时再对剩余任务额外瘦身。
+
+        sweep=False（新行为启用后的前 7 天）只把上述回收列成计划，实际仍只按旧逻辑在超限时处理。"""
+        name = host["name"]
+        recs = self.owned(name)
+        sizes = worktree_sizes(host, recs, self.service.user_id)
+        used = sum(sizes.values())
+        if self.stopping():
+            return None
+        states = cli.job_states(config, recs) if recs else {}
+        picked, blocked = self.delete_candidates(config, host, recs, states, sizes, {}, math.inf)
+        pinned = warm.pinned_jobs(recs, now)
+        idle, slot_hosts = self.idle_slots(host, recs, pinned)
+        gone = {row["job"] for row in picked}
+        slims = []
+        if used - sum(row["kb"] for row in picked + idle) > limit:
+            slims = self.slim_candidates(host, [rec for rec in recs if rec["job"] not in gone], states)
+        actions = picked + idle + slims
+        if not actions and used <= limit:
+            return None
+        plan = dict(at=now, mode="execute" if execute and sweep else "plan", limit_gb=gb(limit), used_gb=gb(used),
+                    estimated_gb=gb(used - sum(row["kb"] for row in actions)),
+                    blocked=blocked, actions=actions)
+        self.emit("reclaim.planned", name, plan, blocked_count=len(blocked))
+        if not execute or self.stopping():
+            return plan
+        if not sweep:
+            return self.legacy_execute(config, host, limit, plan, recs, states) if used > limit else plan
+        return self.execute(config, host, limit, plan, recs, slot_hosts, pinned)
+
+    def execute(self, config, host, limit, plan, recs, slot_hosts, pinned):
+        by_job = {rec["job"]: rec for rec in recs}
+        results = []
+        for row in [r for r in plan["actions"] if r["action"] == "delete"]:
+            if self.stopping():
+                break
+            results.append(dict(row, **self.delete_one(config, row["job"])))
+        for row in [r for r in plan["actions"] if r["action"] == "delete_slot"]:
+            if self.stopping():
+                break
+            results.append(dict(row, **self.reap_one(config, slot_hosts[row["job"]], row["job"].split("/", 1)[1], pinned)))
+        after = sum(worktree_sizes(host, recs, self.service.user_id).values())
+        if after > limit:
+            # 回收后仍超限：对没被删的任务瘦身（执行时 slim_one 在锁内重新判定）。
+            for row in [r for r in plan["actions"] if r["action"] == "slim"]:
+                if self.stopping():
+                    break
+                results.append(dict(row, **self.slim_one(config, by_job[row["job"]]["job"])))
+            after = sum(worktree_sizes(host, recs, self.service.user_id).values())
+        plan = dict(plan, results=results, after_gb=gb(after))
+        self.emit("reclaim.result", host["name"], plan, slimmed_count=self.count(results, "slim"),
+                  deleted_count=self.count(results, "delete") + self.count(results, "delete_slot"),
+                  failed_count=sum(1 for r in results if not r["ok"]))
+        return plan
+
+    def reap_one(self, config, where, slot, pinned):
+        """闲置槽位回收：目标机互斥内重新判定占用与闲置，先写交接快照再删 worktree。"""
+        try:
+            reply = cli.ssh(where, warm.reap_script(slot, pinned, config.warm_idle_days()), check=False, timeout=600)
+        except ERRORS:
+            return dict(ok=False, reason=cli.BLOCK_UNVERIFIABLE)
+        out = (reply.stdout or "").strip() if reply else ""
+        if reply and reply.returncode == 0 and out == "reaped":
+            return dict(ok=True)
+        return dict(ok=False, reason=out.partition(":")[2] or cli.BLOCK_UNVERIFIABLE)
 
     @staticmethod
     def count(results, action):

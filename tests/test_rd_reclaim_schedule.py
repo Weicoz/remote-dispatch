@@ -3,6 +3,7 @@
 import contextlib
 import io
 import json
+import os
 import threading
 import time
 import unittest
@@ -34,6 +35,10 @@ class ScheduleFixture(ReclaimFixture):
         self.git("add", ".")
         self.git("commit", "-qm", "big tracked file")
         self.services = []
+        # 命令任务默认确认后立即过期；默认不过期，需要过期的用例用 age() 回溯确认时间。
+        retain = patch.dict(os.environ, {"RD_RETAIN_COMMAND_HOURS": "10"})
+        retain.start()
+        self.addCleanup(retain.stop)
         # 选机探测替换为空闲读数，避免用例随本机真实负载（swap、load）被判离线而失败。
         idle = dict(reachable=True, memfree="80", disk="100", load1="0.1", ncpu="8", heavy="0")
         patcher = patch.object(rd, "probe", return_value=idle)
@@ -43,10 +48,15 @@ class ScheduleFixture(ReclaimFixture):
     def configure(self, limit=None, enabled=True):
         text = self.config_path.read_text(encoding="utf-8")
         text = text.replace("sync = direct\n", f"sync = direct\nmax_worktree_gb = {limit or self.limit}\n", 1)
-        if enabled:
-            text += "[features]\nscheduled_reclaim = true\n"
+        text = text.replace("[features]\n", "[features]\nscheduled_reclaim = " + ("true" if enabled else "false") + "\n", 1)
         self.config_path.write_text(text, encoding="utf-8")
         self.cfg = rd.Config()
+
+    def age(self, rec, hours=20):
+        """把回执确认时间回溯 hours 小时，使命令任务超过保留期。"""
+        old = time.time() - hours * 3600
+        for path in rd.result_path(rec, 1).parent.glob("r*.ack.json"):
+            os.utime(path, (old, old))
 
     def service(self):
         service = Service(self.cfg, self.root / f"serve{len(self.services)}.sock", poll_interval=3600)
@@ -125,23 +135,75 @@ class ExecuteTest(ScheduleFixture):
         service.reclaim.run_once(now=T0)
         return service.reclaim.run_once(now=T0 + 8 * DAY)
 
-    def test_over_limit_slims_first_then_deletes_oldest(self):
+    def test_over_limit_deletes_expired_first_then_slims_the_rest(self):
         old = self.dispatch(BUILD)
-        time.sleep(1.1)
         new = self.dispatch(BUILD)
-        # 瘦身后两个 worktree 仍各约 1.5 MB；上限 2.4 MB，需要再删最旧的一个。
+        self.age(old)
+        # 过期的 old 先删；剩下的 new 约 3 MB 仍超过 2.4 MB 上限，再瘦身。
         self.configure(limit="0.0023")
         plans = self.execute_at(self.service())
         results = plans["self"]["results"]
         self.assertEqual([(r["action"], r["job"]) for r in results],
-                         [("slim", old["job"]), ("slim", new["job"]), ("delete", old["job"])])
+                         [("delete", old["job"]), ("slim", new["job"])])
         self.assertTrue(all(r["ok"] for r in results), results)
         self.assertFalse(self.exists(old))
         self.assertTrue(self.exists(new))
         self.assertFalse((self.paths(new)[0] / "target").exists())
         result_event = self.event_rows("reclaim.result")[-1]["data"]
-        self.assertEqual((result_event["slimmed_count"], result_event["deleted_count"], result_event["failed_count"]), (2, 1, 0))
+        self.assertEqual((result_event["slimmed_count"], result_event["deleted_count"], result_event["failed_count"]), (1, 1, 0))
         json.dumps(result_event)
+
+    def test_expired_jobs_are_reclaimed_even_when_under_the_limit(self):
+        old = self.dispatch(BUILD)
+        fresh = self.dispatch(BUILD)
+        self.age(old)
+        self.configure(limit="5")
+        plans = self.execute_at(self.service())
+        self.assertEqual([(r["action"], r["job"], r["ok"]) for r in plans["self"]["results"]],
+                         [("delete", old["job"], True)])
+        self.assertFalse(self.exists(old))
+        self.assertTrue(self.exists(fresh))
+        self.assertTrue((self.paths(fresh)[0] / "target").exists())
+
+    def seed_old_user(self):
+        """老用户：早就启用过（enabled_at 很久以前），没有 sweep_enabled_at。"""
+        from remote_dispatch import rd_reclaim_plan as store
+        store.write(rd.STATE, dict(user_id="employee_a", enabled_at=T0 - 90 * DAY, hosts={}))
+
+    def test_sweep_of_expired_jobs_has_its_own_plan_only_week_for_existing_users(self):
+        old = self.dispatch(BUILD)
+        self.age(old)
+        self.seed_old_user()
+        self.configure(limit="5")
+        service = self.service()
+        plan = service.reclaim.run_once(now=T0)["self"]
+        self.assertEqual((plan["mode"], [(a["action"], a["job"]) for a in plan["actions"]]),
+                         ("plan", [("delete", old["job"])]))
+        self.assertTrue(self.exists(old))
+        self.assertEqual(service.reclaim.load()["sweep_enabled_at"], T0)
+        again = service.reclaim.run_once(now=T0 + 3 * DAY)["self"]
+        self.assertEqual(again["mode"], "plan")
+        self.assertTrue(self.exists(old))
+        done = service.reclaim.run_once(now=T0 + 8 * DAY)["self"]
+        self.assertEqual(done["mode"], "execute")
+        self.assertFalse(self.exists(old))
+
+    def test_existing_users_still_get_over_limit_enforcement_during_the_sweep_week(self):
+        rec = self.dispatch(BUILD)
+        self.seed_old_user()
+        self.configure(limit="0.0025")
+        plan = self.service().reclaim.run_once(now=T0)["self"]
+        self.assertEqual([(r["action"], r["ok"]) for r in plan["results"]], [("slim", True)])
+        self.assertFalse((self.paths(rec)[0] / "target").exists())
+
+    def test_expired_reclaim_under_limit_is_plan_only_during_first_week(self):
+        old = self.dispatch(BUILD)
+        self.age(old)
+        self.configure(limit="5")
+        plan = self.service().reclaim.run_once(now=T0)["self"]
+        self.assertEqual((plan["mode"], [(a["action"], a["job"]) for a in plan["actions"]]),
+                         ("plan", [("delete", old["job"])]))
+        self.assertTrue(self.exists(old))
 
     def test_slim_is_enough_when_it_brings_usage_under_limit(self):
         first = self.dispatch(BUILD)
@@ -155,6 +217,8 @@ class ExecuteTest(ScheduleFixture):
         blocked = self.dispatch(STRAY)
         time.sleep(1.1)
         clean = self.dispatch(BUILD)
+        self.age(blocked)
+        self.age(clean)
         self.configure(limit="0.0016")
         plans = self.execute_at(self.service())
         plan = plans["self"]
@@ -168,6 +232,8 @@ class ExecuteTest(ScheduleFixture):
         mine = self.dispatch(BUILD)
         theirs = self.dispatch(BUILD)
         rd.save_job(dict(rd.load_job(theirs["job"]), user_id="employee_b"))
+        self.age(mine)
+        self.age(theirs)
         self.configure(limit="0.0016")
         self.execute_at(self.service())
         self.assertTrue(self.exists(theirs))

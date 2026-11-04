@@ -90,6 +90,16 @@ test_full = <完整测试命令>
 
 小节名是 `origin` 地址的仓库名（没有 `origin` 时是目录名）。
 
+命令任务默认使用目标机上的热工作树（常驻 worktree，构建缓存跨任务保留），可选配置：
+
+```ini
+[project:myrepo]
+warm = off          ; 关闭本项目热工作树（默认开启；单次用 run --fresh）
+warm_slots = 2      ; 每台目标机每个用户常驻的槽位数，默认 2，0 等于关闭
+```
+
+整体开关写 `[features] warm_worktree = false`；闲置回收天数写 `[retention] warm_idle_days`（默认 7）。代理任务、`rdispatch gate` 全量门禁和 Windows 目标始终用冷 worktree。热槽位里 `setup` 仍每个任务执行一次，须能重复执行。机制与回收见 [缓存保留与回收](cache-retention.md)。
+
 - `setup` 在每个任务第一次启动前执行一次，失败则任务以 97 结束。新 worktree 没有依赖环境，不配这一项的话，代理第一件事就是自己摸索怎么装，既慢又不稳定。
 - `test_quick` 是 `rdispatch run --test` 跑的快测，`test_full` 是 `rdispatch run --test-full` 跑的全量测试。`--test-full` 一律按重命令排队；`--test` 默认也排队，加 `test_heavy = false` 可让快测不排队。
 - 旧的 `test` 继续有效，视同 `test_full`。各配置下的取值：
@@ -131,8 +141,10 @@ rdispatch run --cmd 'git log -1 --oneline' --host box2 --name smoke
 locks/                                      整机重命令排队锁
 users/<ID>/profiles/<指纹>/                  员工配置版本（不自动删除）
 users/<ID>/repos/<项目>-<仓库标识>.git        员工裸仓库
-users/<ID>/wt/<job>/                         任务 worktree
-users/<ID>/jobs/<job>/                       提示词、输出、退出码
+users/<ID>/wt/<job>/                         任务 worktree（冷）
+users/<ID>/wt/_warm/<项目>-<仓库标识>-<n>/    命令任务热工作树槽位（路径固定，构建缓存常驻）
+users/<ID>/warm/                             热槽位领用记录（<槽位>.claim/、<槽位>.gen）
+users/<ID>/jobs/<job>/                       提示词、输出、退出码（热槽位被接手时另有 final-state.json 等交接快照）
 users/<ID>/jobs/<job>/codex/                 任务独立配置与会话
 users/<ID>/bin/rd-heavy                      使用整机锁的排队命令
 ```
