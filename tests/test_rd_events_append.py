@@ -96,6 +96,30 @@ class UncommittedVisibilityTests(unittest.TestCase):
         self.assertEqual(rows[0]["data"]["load1"], 3)
         self.assertEqual([row["seq"] for row in log.read_after(0)], [1, 3])
 
+    def test_seq_not_reused_when_disk_is_full_and_hwm_file_cannot_be_written(self):
+        import errno
+        log = events.EventLog(self.state)
+        cursor = events.EventCursor(self.state)
+        log.publish("host.changed", dict(host="a", load1=1))
+        cursor.read()
+        seen = []
+
+        def bad(fd):
+            seen.extend(row["seq"] for row in cursor.read())
+            raise OSError(errno.ENOSPC, "No space")
+        real = Path.write_text
+
+        def full(path, *args, **kwargs):
+            if path.name.startswith(".events.hwm"):
+                raise OSError(errno.ENOSPC, "No space left")
+            return real(path, *args, **kwargs)
+        with patch.object(events.os, "fsync", bad), patch.object(Path, "write_text", full), \
+                self.assertRaises(ValueError):
+            log.publish("host.changed", dict(host="a", load1=2))
+        self.assertEqual(seen, [2])
+        log.publish("host.changed", dict(host="a", load1=3))
+        self.assertEqual([(row["seq"], row["data"]["load1"]) for row in cursor.read()], [(3, 3)])
+
     def test_reader_survives_corrupt_line_in_active_segment(self):
         log = events.EventLog(self.state)
         log.publish("job.created", dict(job="a"))

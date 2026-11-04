@@ -282,6 +282,7 @@ class LogIndex:
 
 
 _indexes = {}
+_high_water = {}
 _indexes_lock = threading.Lock()
 
 
@@ -408,8 +409,8 @@ class EventLog:
             try:
                 write_active(self.path, body)
             except BaseException:
-                # 读者可能已在 fsync 前读到这些行：它们的 seq 不得复用，先记高水位，再截回写前长度。
-                self.remember_high_water(rows[-1]["seq"])
+                # 读者可能已在 fsync 前读到这些行：它们的 seq 不得复用。先截回写前长度（磁盘满时
+                # 这一步才释放空间），再记高水位；进程内高水位不依赖文件写入是否成功。
                 index.reset()
                 try:
                     with self.path.open("r+b") as stream:
@@ -417,6 +418,7 @@ class EventLog:
                         os.fsync(stream.fileno())
                 except OSError:
                     pass
+                self.remember_high_water(rows[-1]["seq"])
                 raise
             if not size:
                 sync_directory(self.state)
@@ -428,12 +430,14 @@ class EventLog:
 
     def high_water(self):
         try:
-            return int(physical(self.state / "events.hwm").read_text())
-        except (FileNotFoundError, ValueError):
-            return 0
+            saved = int(physical(self.state / "events.hwm").read_text())
+        except (FileNotFoundError, ValueError, OSError):
+            saved = 0
+        return max(saved, _high_water.get(str(self.state), 0))
 
     def remember_high_water(self, seq):
-        """写失败后被撤回的 seq 上界；之后的批次从它之后编号。尽力写入。"""
+        """写失败后被撤回的 seq 上界；之后的批次从它之后编号。进程内必记，文件尽力写入（供其他进程）。"""
+        _high_water[str(self.state)] = max(seq, _high_water.get(str(self.state), 0))
         try:
             staging = self.state / ".events.hwm.tmp"
             staging.write_text(str(seq))
