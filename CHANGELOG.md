@@ -1,5 +1,9 @@
 # 变更记录
 
+## 0.4.1（2026-11-04）
+
+- **status 回退直查时多主机并行**：serve 缓存不命中（有任务刚派出或运行中快照过旧）时，`status` 按主机并行查询，总耗时取最慢的一台，不再逐台累加；单台主机行为不变。
+
 ## 0.4.0（2026-11-04）
 
 - **cli.py 按职责拆分**：命令实现拆到 `rd_cmd_run`、`rd_launch`、`rd_fingerprint`、`rd_artifact_transfer`、`rd_cmd_line`、`rd_status`、`rd_cmd_results`、`rd_cmd_resume`、`rd_cmd_clean`、`rd_cmd_admin`、`rd_cli_parser`，纯搬运，命令行为、输出与退出码不变；`cli` 继续导出所有名字，拆出去的代码引用 `cli` 里的名字一律写成 `cli.<名字>`，测试补丁继续有效。详见 `docs/code-layout.md`。

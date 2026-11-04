@@ -96,8 +96,16 @@ def job_states(cfg, recs):
             by_host[key] = (cli.job_host(cfg, r), [])
         by_host[key][1].append(r["job"])
     states = {}
-    for host, jobs in by_host.values():
-        states.update(cli.remote_state(host, jobs))
+    groups = list(by_host.values())
+    if len(groups) <= 1:
+        for host, jobs in groups:
+            states.update(cli.remote_state(host, jobs))
+    else:
+        # 各主机互不依赖：并行查询，总耗时取最慢的一台，而非逐台累加（Windows 主机超时可达 30 秒）。
+        from concurrent.futures import ThreadPoolExecutor
+        with ThreadPoolExecutor(max_workers=min(8, len(groups))) as pool:
+            for result in pool.map(lambda group: cli.remote_state(*group), groups):
+                states.update(result)
     for rec in recs:
         state = states.get(rec["job"], {})
         if rec.get("dispatch_state") == "preparation_failed" and state.get("state") in ("starting", "missing"):
