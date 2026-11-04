@@ -42,6 +42,10 @@ max_heavy = 1
 
 并发怎么定：**没有会话数上限**，一台机器同时能接几个任务由负载决定——每次派单前 `rdispatch` 都会实测负载、空闲内存和磁盘，超过 `max_load_per_core`、低于 `min_free_mem_pct` 或 `min_free_disk_gb` 就不派。交换区不参与接单判定：无论 swap 多满、换页多快都不拒绝派单，读数仍显示在 `hosts`、看板和 serve 指标里。`max_swap_io_mb_s`、`min_swap_free_gb`、`swap_active_mb_s` 已停用，旧配置照常加载但不生效；已用量超过 `max_swap_used_gb` 仍只提示。`max_heavy` 不是会话上限，它是重命令的排队口：经 `rd-heavy` 或 `--heavy` 跑的完整测试这类命令同一时刻只放行这么多个，其余排队等，避免几套完整测试同时把内存耗尽。先看项目一个测试进程占多少内存，乘以并发数，不能超过机器的空闲内存；16 GB 的机器一般是 1。
 
+### SSH 连接复用
+
+`ssh_opts` 默认是 `-o BatchMode=yes -o ConnectTimeout=8`。`rdispatch` 在加载目标机配置时，只要 `ssh_opts`（含默认值）里没有任何 `Control*` 选项，就追加 `-o ControlMaster=auto -o ControlPath=~/.ssh/rd-%C -o ControlPersist=60`：同一目标机的 ssh、git（`GIT_SSH_COMMAND`）与 rsync（`-e`）共用一条连接，握手从约 0.27 秒降到约 0.08 秒。`%C` 是定长哈希，socket 路径远低于 macOS 的 104 字节上限；`~/.ssh` 目录须存在。自己写了 `ControlMaster`、`ControlPath` 或 `ControlPersist` 时原样保留，写 `-o ControlMaster=no` 即关闭复用。Windows 发起方的 OpenSSH 不支持 ControlMaster，自动跳过。
+
 ## 3. 远端装好要用的东西
 
 - `git`。
@@ -135,4 +139,9 @@ users/<ID>/wt/<job>/                         任务 worktree
 users/<ID>/jobs/<job>/                       提示词、输出、退出码
 users/<ID>/jobs/<job>/codex/                 任务独立配置与会话
 users/<ID>/bin/rd-heavy                      使用整机锁的排队命令
+users/<ID>/lib/<摘要>/                       启动用公共脚本（按内容摘要复用，可随时删除）
 ```
+
+### 启动打包上传（POSIX 目标）
+
+launch 阶段把本轮所有启动文件（`cmd`、`prompt`、`run`、回执派单记录、`profile.json` 等）打成一个 tar 流，一次 ssh 解到 `$ROOT` 下的临时目录，逐个 `mv` 原子发布，并在同一次 ssh 里启动任务。公共脚本（`rd_messages.py`、`rd_cache.py`、`rd_profiles.py`、`bin/rd-heavy`）按内容摘要放在 `lib/<摘要>/`，已存在且大小一致就不重传；目标机上没有该摘要（首次派单或脚本更新）时，第一次 ssh 以退出码 87 退出，随后带脚本重试一次。命令任务 launch 阶段 ssh 调用由约 7 次降到 1 次，带员工配置的代理首轮由约 10 次降到 1 次（首次到该目标机多 1 次重试）。Windows 目标仍走原生 worker 逐文件上传。

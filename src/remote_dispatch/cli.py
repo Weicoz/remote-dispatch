@@ -13,6 +13,7 @@ import concurrent.futures
 import configparser
 import functools
 import hashlib
+import io
 import json
 import math
 import ntpath
@@ -97,6 +98,19 @@ DEFAULTS = {
     # worktree 总量上限（GB）；0 表示不限。仅 serve 定时回收使用，见 docs/cache-retention.md。
     "max_worktree_gb": "0",
 }
+
+# SSH 连接复用：同一目标机的多次 ssh/git/rsync 共用一条连接（握手约 0.27 秒 -> 复用约 0.08 秒）。
+# %C 是 40 位哈希，路径远低于 macOS 的 104 字节 socket 上限。
+SSH_MULTIPLEX_OPTS = "-o ControlMaster=auto -o ControlPath=~/.ssh/rd-%C -o ControlPersist=60"
+
+
+def with_ssh_multiplexing(opts):
+    """给 ssh_opts 追加连接复用；用户已写任一 Control* 选项（含 ControlMaster=no 关闭）时原样保留。
+    Windows 发起方的 OpenSSH 不支持 ControlMaster，也跳过。"""
+    if os.name == "nt" or "control" in opts.lower():
+        return opts
+    return (opts + " " + SSH_MULTIPLEX_OPTS).strip()
+
 
 # worktree 只被同一任务的 rdispatch resume 复用；保留时长按续跑可能性分级。
 # command：命令任务不能续跑；accepted：已合入或无新提交；unmerged：已取回未合入，最可能续跑。
@@ -337,6 +351,7 @@ class Config:
                 self.fail(f"[host:{name}] {key} 必须是有限的非负数。", 4)
             if key in ("warn_free_mem_pct", "warn_cpu_pct") and value > 100:
                 self.fail(f"[host:{name}] {key} 必须在 0 到 100 之间。", 4)
+        h["ssh_opts"] = with_ssh_multiplexing(h["ssh_opts"])
         if h["platform"] in ("macos", "linux"):
             h["platform"] = "posix"
         if h["platform"] not in ("posix", "windows"):
@@ -1658,22 +1673,85 @@ def native_init(host, rec, repo, sha, origin):
     rec["worker_root"] = result["root"]
 
 
+LIB_MISSING = 87  # 启动打包：远端公共脚本库缺失或大小不符，需要带上脚本重传
+
+
+def tar_stream(entries):
+    """entries: [(包内路径, bytes, 八进制权限字符串)] -> 已回绕到开头的临时文件（GNU tar 格式）。"""
+    stream = tempfile.TemporaryFile()
+    now = time.time()
+    with tarfile.open(fileobj=stream, mode="w", format=tarfile.GNU_FORMAT) as archive:
+        for name, data, mode in entries:
+            info = tarfile.TarInfo(name)
+            info.size, info.mode, info.mtime = len(data), int(mode, 8), now
+            archive.addfile(info, io.BytesIO(data))
+    stream.seek(0)
+    return stream
+
+
+def bundle_script(files, libs, start):
+    """一次 ssh 里完成：解包到 $ROOT 下的临时目录 -> 公共脚本库按摘要就位 -> 逐个原子 mv 发布 -> 启动。
+    files: [(相对 $ROOT 的路径, bytes, 权限)]；libs: [(目标相对路径, bytes, 权限)]，按内容摘要存放在 $ROOT/lib/<摘要>/。"""
+    q = shlex.quote
+    lines = ['set -e', 'mkdir -p "$ROOT"', 'T=$(mktemp -d "$ROOT/.up.XXXXXX")', "trap 'rm -rf \"$T\"' EXIT",
+             'tar -xpf - -C "$T"']
+    for dest, data, mode in libs:
+        name = posixpath.basename(dest)
+        lib = f'"$ROOT"/lib/{hashlib.sha256(data).hexdigest()[:16]}/{q(name)}'
+        lines.append(f'if [ ! -f {lib} ] || [ "$(wc -c < {lib} | tr -d " ")" != {len(data)} ]; then '
+                     f'if [ -f "$T"/.lib/{q(name)} ]; then mkdir -p "$(dirname {lib})" && mv -f "$T"/.lib/{q(name)} {lib}; '
+                     f'else exit {LIB_MISSING}; fi; fi')
+    for dest in sorted({posixpath.dirname(rel) for rel, _, _ in files + libs} - {""}):
+        lines.append(f'mkdir -p "$ROOT"/{q(dest)}')
+    for rel, _, _ in files:
+        lines.append(f'mv -f "$T"/{q(rel)} "$ROOT"/{q(rel)}')
+    for dest, data, mode in libs:
+        lib = f'"$ROOT"/lib/{hashlib.sha256(data).hexdigest()[:16]}/{q(posixpath.basename(dest))}'
+        target = f'"$ROOT"/{q(dest)}'
+        lines.append(f'cmp -s {lib} {target} 2>/dev/null || {{ cp {lib} {target}.new.$$ && chmod {mode} {target}.new.$$ '
+                     f'&& mv -f {target}.new.$$ {target}; }}')
+    lines.append(start)
+    return "\n".join(lines)
+
+
+def upload_and_start(host, files, libs, start):
+    """POSIX 启动打包：所有启动文件一次 tar 流上传并原子发布，同一次 ssh 里启动。
+    公共脚本先假定远端库里已有同摘要副本（不传）；缺失时返回 87，再带脚本重试一次。"""
+    for with_libs in (False, True):
+        entries = list(files) + ([(".lib/" + posixpath.basename(d), data, m) for d, data, m in libs] if with_libs else [])
+        with tar_stream(entries) as stream:
+            result = ssh(host, bundle_script(files, libs, start), check=False, stdin=stream)
+        if result.returncode == 0:
+            return
+        if result.returncode != LIB_MISSING or with_libs:
+            die(f"[{host['name']}] step failed ({result.returncode}):\n{(result.stderr or result.stdout).strip()}")
+
+
+def read_text_file(*parts):
+    with open(os.path.join(HERE, *parts), "rb") as stream:
+        return stream.read()
+
+
 def launch(host, rec, round_no, cmd_text, prompt_text, timeout):
     j = rec["job"]
+    windows = host["platform"] == "windows"
+    files, libs = [], []  # files：本任务专属；libs：跨任务公共脚本（按摘要复用）
     if rec.get("handoff_version"):
         if prompt_text is not None:
-            reporter = 'python3 "$RD_REPORTER"' if host["platform"] != "windows" else '& ' + native.ps_quote(host["python"]) + ' $env:RD_REPORTER'
+            reporter = 'python3 "$RD_REPORTER"' if not windows else '& ' + native.ps_quote(host["python"]) + ' $env:RD_REPORTER'
             prompt_text += ("\n\nRemote Dispatch 本轮交付约定：只完成本轮指令范围内工作，结果回传后等待发起方新指令。"
                            "执行中用 " + reporter + " progress --phase 阶段 --summary 脱敏摘要 记录状态；"
                            "收尾用 " + reporter + " result --outcome completed|partial|blocked|failed "
                            "--checks passed|failed|partial|not_run --summary 脱敏结果 --artifact 证据路径。"
                            "检查状态为执行方报告，最终验收由发起方判断；密码、私钥和敏感正文不写回执。\n")
-        with open(os.path.join(HERE, "rd_messages.py"), encoding="utf-8") as stream:
-            put_file(host, f"jobs/{j}/rd_messages.py", stream.read(), "600")
-        with open(os.path.join(HERE, "rd_cache.py"), encoding="utf-8") as stream:
-            put_file(host, f"jobs/{j}/rd_cache.py", stream.read(), "600")
-        put_file(host, f"jobs/{j}/reports/dispatch.r{round_no}.json", json.dumps(dict(job=j, round=round_no, initiator_session=rec.get("initiator_session"))), "600")
-    if host["platform"] == "windows":
+        libs += [(f"jobs/{j}/rd_messages.py", read_text_file("rd_messages.py"), "600"),
+                 (f"jobs/{j}/rd_cache.py", read_text_file("rd_cache.py"), "600")]
+        files.append((f"jobs/{j}/reports/dispatch.r{round_no}.json",
+                      json.dumps(dict(job=j, round=round_no, initiator_session=rec.get("initiator_session"))).encode(), "600"))
+    if windows:
+        # Windows 原生 worker：保持逐文件上传。
+        for rel, data, _ in libs + files:
+            native.request(host, "upload", {"relative": rel}, payload=data)
         spec = dict(rec, round=round_no, base=workline.round_base(rec, round_no), timeout=int(timeout), max_heavy=int(host["max_heavy"]),
                     auth_file=host["codex_auth_file"], env_file=host["env_file"],
                     rollout_stats=host.get("rollout_stats", "0"),
@@ -1681,17 +1759,15 @@ def launch(host, rec, round_no, cmd_text, prompt_text, timeout):
         native.request(host, "launch", {"spec": spec, "prompt": prompt_text})
         return
     if rec.get("profile"):
-        put_file(host, f"jobs/{j}/profile.json", json.dumps(rec["profile"]), "600")
-    if (rec.get("profile") or rec.get("isolated")) and not rec.get("profile_script_uploaded"):
-        with open(os.path.join(HERE, "rd_profiles.py"), encoding="utf-8") as stream:
-            put_file(host, f"jobs/{j}/rd_profiles.py", stream.read(), "600")
-        rec["profile_script_uploaded"] = True
-    put_file(host, f"jobs/{j}/cmd.r{round_no}.sh", cmd_text + "\n")
+        files.append((f"jobs/{j}/profile.json", json.dumps(rec["profile"]).encode(), "600"))
+    upload_profiles = (rec.get("profile") or rec.get("isolated")) and not rec.get("profile_script_uploaded")
+    if upload_profiles:
+        libs.append((f"jobs/{j}/rd_profiles.py", read_text_file("rd_profiles.py"), "600"))
+    files.append((f"jobs/{j}/cmd.r{round_no}.sh", (cmd_text + "\n").encode(), "644"))
     if prompt_text is not None:
-        put_file(host, f"jobs/{j}/prompt.r{round_no}.md", prompt_text)
-    put_file(host, f"jobs/{j}/run.r{round_no}.sh", build_run_script(host, rec, round_no, timeout), "755")
-    with open(os.path.join(HERE, "bin", "rd-heavy")) as f:
-        put_file(host, "bin/rd-heavy", f.read(), "755")
+        files.append((f"jobs/{j}/prompt.r{round_no}.md", prompt_text.encode(), "644"))
+    files.append((f"jobs/{j}/run.r{round_no}.sh", build_run_script(host, rec, round_no, timeout).encode(), "755"))
+    libs.append(("bin/rd-heavy", read_text_file("bin", "rd-heavy"), "755"))
     script = f'"$ROOT/jobs/{j}/run.r{round_no}.sh"'
     if host["launcher"] == "tmux":
         start = f"tmux new-session -d -s {shlex.quote('rd-' + j + '-r' + str(round_no))} sh {script}"
@@ -1699,7 +1775,9 @@ def launch(host, rec, round_no, cmd_text, prompt_text, timeout):
         start = f"nohup sh {script} > /dev/null 2>&1 < /dev/null &"
     else:
         die(f"[host:{host['name']}] launcher must be nohup or tmux")
-    ssh(host, f'rm -f "$ROOT/jobs/{j}/exit_code" "$ROOT/jobs/{j}/pid"; {start}')
+    upload_and_start(host, files, libs, f'rm -f "$ROOT/jobs/{j}/exit_code" "$ROOT/jobs/{j}/pid"; {start}')
+    if upload_profiles:
+        rec["profile_script_uploaded"] = True
 
 
 CACHE_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
