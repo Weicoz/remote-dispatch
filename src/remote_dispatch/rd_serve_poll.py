@@ -311,6 +311,8 @@ class Collector:
                 if service.generation(rec) != service.generation(saved):
                     return
                 snapshot = states.get(job, {"state": "unreachable"})
+                if snapshot.get("state") == "unreachable" and self.legacy_terminal(rec):
+                    return  # 升级补采遇到连不上的目标机：保留原终态快照，不改写成离线
                 number = int(snapshot.get("round") or 0) or rec["rounds"]
                 if number != rec["rounds"]:
                     # A delayed target may still expose the previous launch.
@@ -335,6 +337,13 @@ class Collector:
             return
         except RECOVERABLE as error:
             self.errors.failed(subject, "commit", error)
+
+    def legacy_terminal(self, rec):
+        service = self.service
+        with service.cache_lock:
+            return (rec["job"] not in service.complete_snapshots
+                    and service.snapshots.get(rec["job"], {}).get("state") in TERMINAL
+                    and service.generations.get(rec["job"]) == service.generation(rec))
 
     def collect_progress(self, config, rec, number, snapshot):
         job, subject = rec["job"], subject_of(rec["job"])

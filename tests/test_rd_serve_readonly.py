@@ -205,6 +205,53 @@ class CachedReadTests(unittest.TestCase):
                                                  user_id="fixture", config=str(self.config.resolve())))
         self.assertEqual(reply, dict(handled=False))
 
+    def legacy_format(self):
+        for path in (self.state / "serve-snapshots").glob("*.json"):
+            saved = json.loads(path.read_text())
+            saved.pop("raw_round", None)
+            saved["snapshot"] = {key: saved["snapshot"][key] for key in
+                                 ("state", "round", "exit", "head", "dirty", "started_at", "snapshot_at")
+                                 if key in saved["snapshot"]}
+            path.write_text(json.dumps(saved))
+
+    def acknowledged_legacy_service(self):
+        self.running = self.seed()
+        rec = cli.load_job("job-done")
+        cli.acknowledge_receipt(rec, cli.messages.read_json(cli.result_path(rec, 1)), "owner", "cli")
+        self.running.close()
+        self.legacy_format()
+        return rec
+
+    def test_legacy_acknowledged_job_is_collected_once_then_served_from_cache(self):
+        rec = self.acknowledged_legacy_service()
+        service = self.restart_service()
+        self.assertTrue(service.job_refresh_complete(rec))  # 升级补采一次后恢复降频
+        self.assertIn("job-done", service.complete_snapshots)
+        future = datetime.now(timezone.utc) + timedelta(hours=3)
+        service.cached_reads.clock = lambda: future.timestamp()
+        direct = self.run_cli("status", "job-done", "--json", serve=False)
+        with self.no_remote(service):
+            self.assertEqual(self.run_cli("status", "job-done", "--json"), direct)
+
+    def restart_service(self):
+        service = Service(cli.Config(), self.path, poll_interval=3600)
+        self.assertNotIn("job-done", service.complete_snapshots)
+        self.assertFalse(service.job_refresh_complete(cli.load_job("job-done")))
+        service.start()
+        self.addCleanup(service.close)
+        self.eventually(lambda: service.collector.last_cycle_seconds, bool)
+        self.eventually(lambda: "job-done" in service.complete_snapshots, bool)
+        return service
+
+    def test_legacy_job_on_unreachable_host_keeps_its_terminal_snapshot(self):
+        self.acknowledged_legacy_service()
+        self.states["job-done"] = dict(state="unreachable")
+        service = Service(cli.Config(), self.path, poll_interval=3600)
+        service.start()
+        self.addCleanup(service.close)
+        self.eventually(lambda: service.collector.last_cycle_seconds, bool)
+        self.assertEqual(service.snapshots["job-done"]["state"], "done")
+
     def test_options_the_cache_cannot_reproduce_stay_on_the_original_path(self):
         parser_args = type("Args", (), {})
         for command, flags in (("status", dict(job=None, json=False, details=True, unmerged=False, into=None,

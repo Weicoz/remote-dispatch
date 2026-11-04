@@ -661,7 +661,9 @@ class Service:
 
     def job_refresh_complete(self, rec):
         with self.cache_lock:
+            # 老格式（升级前落盘）的快照没有完整采集字段：补采一次后才算完成，之后降频。
             if (self.generations.get(rec["job"]) != self.generation(rec)
+                    or rec["job"] not in self.complete_snapshots
                     or self.snapshots.get(rec["job"], {}).get("state") not in ("done", "dead", "missing")):
                 return False
         query = self.query()

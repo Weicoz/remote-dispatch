@@ -317,7 +317,7 @@ serve 在线时，`rdispatch inbox`（默认 JSON 形态）与 `rdispatch status
 回退时 `inbox` 走原有 `/_cli/v1` 子进程执行，`status` 在 CLI 本地直跑。serve 不在线、请求失败或超时（5 秒）同样回退，因为只读命令没有副作用，可以放心重试。
 不走缓存的参数：`status` 带 `--details`、`--unmerged`、`--project`、`-C`，`inbox` 带 `--wait`、`--orphans`。
 重启后：`serve-snapshots/<job>.json` 现在落盘完整快照（经脱敏）和原始 `round`（`raw_round`），已签收的终态 job 不再轮询，靠它在重启后继续由缓存回答；
-老格式（只含显示子集、没有 `raw_round`）的快照只用于 HTTP 读接口，不作为 `inbox`/`status` 缓存依据，该 job 回退原路径，直到它被重新采集。
+老格式（只含显示子集、没有 `raw_round`）的快照只用于 HTTP 读接口，不作为 `inbox`/`status` 缓存依据，该 job 在升级后的首轮采集里补采一次（目标机连不上时保留原终态快照，不改写成离线），之后恢复降频；补采完成前回退原路径。
 快照里的采集时间不输出（直跑也没有）；`/v1/jobs`、`/v1/board` 等 HTTP 读接口仍通过 `snapshot_at` 暴露快照时间。
 
 ## 设备与配对 CLI（票 05）
