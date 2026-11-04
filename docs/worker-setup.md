@@ -44,7 +44,7 @@ max_heavy = 1
 
 ### 配置错误只影响出错的那台目标机
 
-已停用（`enabled` 不是 `1／true／yes`）的目标机不校验；已停用的 `max_swap_io_mb_s`、`min_swap_free_gb`、`swap_active_mb_s` 任何值都忽略。已启用的目标机有非法值（NaN、inf、负数、带单位的数字如 `min_free_disk_gb = 10G`、`timeout = 0` 等）时，该机显示为「配置无效」，不参与 `--host auto`／`--tag` 选机，显式 `--host` 退出码 4，`rdispatch hosts` 与 serve 的 `GET /v1/hosts`（`config_errors`）列出字段和原因；其他目标机照常使用。数字字段去掉单位只写数字。
+已停用（`enabled` 不是 `1／true／yes`）的目标机不校验；已停用的 `max_swap_io_mb_s`、`min_swap_free_gb`、`swap_active_mb_s` 任何值都忽略。已启用的目标机有非法值（NaN、inf、负数、带单位的数字如 `min_free_disk_gb = 10G`、`timeout = 0` 等）时，该机显示为「配置无效」，不参与 `--host auto`／`--tag` 选机，显式 `--host` 退出码 4，`rdispatch hosts` 与 serve 的 `GET /v1/hosts`（`config_errors`）列出字段和原因；其他目标机照常使用。已有在途任务的目标机即使配置写坏，任务的状态查询、收回执、停止和清理仍照常（不校验字段）；续跑和派新单才严格校验。serve 热重载时，只有「原来有效、改完变无效」的目标机会让这次重载整份回退并报错。数字字段去掉单位只写数字。
 
 ### SSH 连接复用
 

@@ -296,7 +296,7 @@ class Collector:
         try:
             # Disabling new dispatches must not freeze existing jobs.
             if (host is None and config.cp.has_section("host:" + name)
-                    and not service.host_poll_due(config.host(name))):
+                    and not service.host_poll_due(config.host(name, lenient=True))):
                 return {}
             batch = cli.job_states(config, group)
             states = {rec["job"]: batch.get(rec["job"], {"state": "unreachable"}) for rec in group}

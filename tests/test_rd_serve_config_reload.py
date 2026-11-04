@@ -163,14 +163,16 @@ class ConfigReloadTests(unittest.TestCase):
                         "启动配置没有出现在 /v1/hosts")
         before = self.request("/v1/hosts")[1]
 
-        self.write_config("[host:broken]\nplatform=posix\nworkdir=/tmp/worker\n")
+        # 在用的目标机被写坏（原来有效、现在无效）：整份回退，保留旧定义并报错。
+        # 新增的坏目标机则逐台隔离，不在此回退（见 InProcessReloadTests）。
+        self.write_config(self.host_config("stable", extra="timeout=0\n"))
         broken = self.eventually(lambda: self.request("/v1/version")[1]["config_reload"],
                                  lambda reload: reload["ok"] is False and reload["error"],
                                  "无效配置没有记录重载错误")
         failed_at = datetime.datetime.fromisoformat(broken["at"])
         self.assertIsNotNone(failed_at.tzinfo)
-        self.assertIn("broken", broken["error"])
-        self.assertIn("ssh", broken["error"])
+        self.assertIn("stable", broken["error"])
+        self.assertIn("timeout", broken["error"])
         hosts = self.request("/v1/hosts")[1]
         self.assertEqual([row["name"] for row in hosts["hosts"]], ["stable"])
         self.assertEqual(hosts["config_reload"], broken)
@@ -280,6 +282,54 @@ class ConfigReloadTests(unittest.TestCase):
         status, body = self.request("/v1/version")
         self.assertEqual(status, 200)
         self.assertTrue(body["config_reload"]["ok"])
+
+
+class InProcessReloadTests(unittest.TestCase):
+    setUp = serve_tests.ServeTests.setUp
+    seed = serve_tests.ServeTests.seed
+    start = serve_tests.ServeTests.start
+    eventually = serve_tests.ServeTests.eventually
+    request = serve_tests.ServeTests.request
+
+    def host_section(self, name, extra=""):
+        return f"\n[host:{name}]\nssh=local\nworkdir={self.root / 'worker'}\nsync=direct\n{extra}"
+
+    def snapshot_state(self, service):
+        return service.snapshots.get("fixture-job", {}).get("state")
+
+    def test_polling_survives_a_reload_when_an_in_flight_job_sits_on_an_invalid_host(self):
+        service = self.seed(running=True, extra_config="max_heavy=0\n")  # 启动时 target 已无效，job 仍在途
+        self.assertEqual(list(service.config.host_errors()), ["target"])
+        self.eventually(lambda: self.snapshot_state(service), lambda state: state == "running")
+        self.config.write_text(self.config.read_text() + self.host_section("added"), encoding="utf-8")
+        self.assertTrue(service.reload_config())
+        self.assertIn("added", [h["name"] for h in service.config.hosts()])
+        worker = self.root / "worker" / "users" / "fixture" / "jobs" / "fixture-job"
+        (worker / "pid").unlink()
+        (worker / "exit_code").write_text("0")
+        self.eventually(lambda: self.snapshot_state(service), lambda state: state == "done")
+        self.assertTrue(service.poller.is_alive())
+
+    def test_reload_accepts_good_edits_next_to_a_new_bad_host_or_a_changed_known_error(self):
+        service = self.seed(extra_config="")
+        base = self.config.read_text()
+        # 新增坏主机 + 同时新增好主机：好修改必须生效，坏主机逐主机隔离。
+        self.config.write_text(base + self.host_section("bad", "timeout=0\n") + self.host_section("good2"), encoding="utf-8")
+        self.assertTrue(service.reload_config())
+        self.assertEqual(sorted(h["name"] for h in service.config.hosts()), ["good2", "target"])
+        self.assertEqual(list(service.config.host_errors()), ["bad"])
+        # 已知坏主机的报错文本变化不算新错误，同时的好修改照样生效。
+        self.config.write_text(base + self.host_section("bad", "timeout=-5\n") + self.host_section("good2")
+                               + self.host_section("good3"), encoding="utf-8")
+        self.assertTrue(service.reload_config())
+        self.assertEqual(sorted(h["name"] for h in service.config.hosts()), ["good2", "good3", "target"])
+
+    def test_reload_still_rejects_a_host_that_was_valid_and_turns_invalid(self):
+        service = self.seed(extra_config="")
+        self.config.write_text(self.config.read_text() + "timeout=0\n", encoding="utf-8")
+        self.assertFalse(service.reload_config())
+        self.assertEqual([h["name"] for h in service.config.hosts()], ["target"])
+        self.assertFalse(service.config_reload["ok"])
 
 
 if __name__ == "__main__":

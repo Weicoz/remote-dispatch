@@ -59,6 +59,14 @@ class NetworkGateTests(Fixture):
         probe.assert_not_called()
         pick.assert_not_called()
 
+    def test_force_host_on_a_disabled_host_with_invalid_values_is_refused_like_pick_hosts(self):
+        with open(rd.CONFIG, "a") as stream:
+            stream.write("\n[host:old]\nssh=local\nworkdir=/tmp/old\nenabled=false\nmax_load_per_core=nan\n")
+        with patch.object(rd, "launch") as launch, self.assertRaises(SystemExit) as stop:
+            rd.cmd_run(self.t.args(force_host=True, host="old"), rd.Config())
+        self.assertEqual(stop.exception.code, 4)
+        launch.assert_not_called()
+
     def test_non_network_refusal_has_no_network_advice(self):
         busy = dict(info(), load1="99")
         errors = io.StringIO()
