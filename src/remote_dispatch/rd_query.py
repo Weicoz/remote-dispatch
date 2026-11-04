@@ -87,6 +87,11 @@ class Query:
             raise ValueError("该历史轮次尚无本地回执；先在原轮次收取结果。")
         if snapshot.get("state") not in ("done", "dead", "missing"):
             return None
+        # 派单还没登记 started 时，目标机上的 missing/dead 只是目录尚未建好或脚本尚未起，不是终态；
+        # 返回 None，免得假终态回执被缓存后，任务真完成也一直返回旧回执。launching 时 done 可信（exit_code 已写）。
+        stage = rec.get("dispatch_state")
+        if stage == "preparing" or (stage == "launching" and snapshot["state"] != "done"):
+            return None
         report = self.report(rec, number, "result") if snapshot["state"] == "done" and rec.get("handoff_version") else None
         code = snapshot.get("exit")
         receiver = rec.get("receiver_session")
@@ -111,16 +116,21 @@ class Query:
         return dict(receipt, **self.review(rec, number))
 
     def credential(self, rec, number, exit_code):
-        """本轮输出有明确认证失败时标记 credential_suspect 并附重新复制命令；读不到输出就不标记。"""
+        """本轮失败输出有明确认证失败时标记 credential_suspect 并附重新复制命令；
+        另识别已知的网络类、认证类失败，写 failure_hint 与 failure_note。读不到输出就不标记。"""
         if not (self.output and rec.get("agent")):
             return {}
         try:
             text = self.output(rec, number)
         except Exception:
             return {}
-        if not messages.credential_suspect(rec.get("agent"), text, exit_code):
-            return {}
-        return dict(credential_suspect=True, credential_hint=messages.refresh_auth_hint(rec["job"]))
+        fields = {}
+        if messages.credential_suspect(rec.get("agent"), text, exit_code):
+            fields.update(credential_suspect=True, credential_hint=messages.refresh_auth_hint(rec["job"]))
+        hint = messages.failure_hint(rec.get("agent"), text, exit_code)
+        if hint:
+            fields.update(failure_hint=hint[0], failure_note=hint[1])
+        return fields
 
     def measured(self, rec, number):
         """从本轮 harness 输出取实际模型与用量；任何读取失败都记「未记录」。"""

@@ -2640,7 +2640,10 @@ def pull_artifacts(cfg, rec):
                 results.append(native_artifact(host, job, repo, path, kind == "d"))
             else:
                 results.append(rsync_artifact(host, job, repo, path, kind == "d"))
-    rec["artifacts_state"] = dict(results=results, at=time.strftime("%Y-%m-%d %H:%M:%S"))
+    number = rec.get("rounds") or 1
+    state = dict(round=number, paths=list(paths), results=results, at=time.strftime("%Y-%m-%d %H:%M:%S"))
+    rec["artifacts_state"] = state  # 最近一次；按轮次的状态在 artifacts_rounds
+    rec.setdefault("artifacts_rounds", {})[str(number)] = state
     save_job(rec)
     return results
 
@@ -2706,13 +2709,13 @@ def auto_pull_artifacts(cfg, rec, snapshot):
     """任务已结束且尚未成功拉回时自动拉取一次；返回结果列表，无产物或不适用返回 None。"""
     if not rec.get("artifact_paths") or snapshot.get("state") not in ("done", "dead"):
         return None
-    if artifacts.artifacts_pending(rec) or not (rec.get("artifacts_state") or {}).get("results"):
+    if artifacts.artifacts_pending(rec) or not artifacts.round_state(rec).get("results"):
         try:
             return pull_artifacts(cfg, rec)
         except (OSError, SystemExit, subprocess.SubprocessError) as error:
             print(f"产物拉回未完成：{error}；稍后用 rdispatch fetch {rec['job']} --artifacts 重试。", file=sys.stderr)
             return None
-    return rec["artifacts_state"]["results"]
+    return artifacts.round_state(rec)["results"]
 
 
 def cmd_run(a, cfg):
@@ -2900,6 +2903,8 @@ def cmd_run(a, cfg):
         bare = f"repos/{project}-{repo_key}.git"
         rec["bare"] = bare
         rec["dispatch_state"] = "preparing"
+        # 登记到 started 之间持有任务锁：并发的收取、清理等写操作拿不到锁，不会在半成品状态上落盘。
+        stack.enter_context(wait_job_lock(job))
         projects.ProjectIndex(STATE, uid).register(rec)
         if plan_item:
             plan_store.attach_job(plan_item, job, after)
@@ -3980,6 +3985,7 @@ def cmd_clean_merged(a, cfg):
     return cmd_clean_batch(a, cfg, "merged")
 
 
+@locked_job
 def cmd_keep(a, cfg):
     rec = load_job(a.job)
     if rec.get("user_id") and rec["user_id"] != require_user():
