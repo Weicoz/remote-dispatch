@@ -65,7 +65,8 @@ class CachedReads:
                 snapshot = service.snapshots.get(job)
                 generation = service.generations.get(job)
                 raw = service.raw_rounds.get(job, "")
-            if snapshot is None or generation != service.generation(rec):
+                complete = job in service.complete_snapshots
+            if snapshot is None or generation != service.generation(rec) or not complete:
                 raise NotCached(job)
             if not service.collector.is_settled(rec):
                 taken = instant(snapshot.get("snapshot_at"))

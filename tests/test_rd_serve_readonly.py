@@ -163,6 +163,48 @@ class CachedReadTests(unittest.TestCase):
                                                  user_id="fixture", config=str(self.config.resolve())))
         self.assertEqual(reply, dict(handled=False))
 
+    def restart(self):
+        self.service_stop()
+        service = Service(cli.Config(), self.path, poll_interval=3600)
+        service.start()
+        self.addCleanup(service.close)
+        self.eventually(lambda: service.collector.last_cycle_seconds, bool)
+        return service
+
+    def service_stop(self):
+        self.running.close()
+
+    def test_acknowledged_job_is_still_served_from_cache_after_restart_with_identical_output(self):
+        self.running = self.seed()
+        rec = cli.load_job("job-done")
+        receipt = cli.messages.read_json(cli.result_path(rec, 1))
+        cli.acknowledge_receipt(rec, receipt, "owner", "cli")
+        self.running.collector.cycle(rd_serve.events.EventLog(self.state))
+        service = self.restart()
+        self.assertTrue(service.job_refresh_complete(rec))  # 重启后不再轮询它
+        future = datetime.now(timezone.utc) + timedelta(hours=3)
+        service.cached_reads.clock = lambda: future.timestamp()
+        for argv in (("status", "job-done", "--json"), ("status", "job-done")):
+            direct = self.run_cli(*argv, serve=False)
+            with self.no_remote(service):
+                cached = self.run_cli(*argv)
+            self.assertEqual(cached, direct, argv)
+
+    def test_snapshot_restored_in_the_old_subset_format_is_not_used_for_cached_output(self):
+        self.running = self.seed()
+        self.running.close()
+        path = self.state / "serve-snapshots" / "job-running.json"
+        saved = json.loads(path.read_text())
+        saved.pop("raw_round")
+        saved["snapshot"] = {key: saved["snapshot"][key] for key in ("state", "round", "exit", "snapshot_at")}
+        path.write_text(json.dumps(saved))
+        service = Service(cli.Config(), self.path, poll_interval=3600)  # 只恢复，不启动采集
+        self.assertNotIn("job-running", service.complete_snapshots)
+        self.assertIn("job-done", service.complete_snapshots)
+        reply = service.cached_reads.handle(dict(command="status", params=dict(job="job-running", json=False),
+                                                 user_id="fixture", config=str(self.config.resolve())))
+        self.assertEqual(reply, dict(handled=False))
+
     def test_options_the_cache_cannot_reproduce_stay_on_the_original_path(self):
         parser_args = type("Args", (), {})
         for command, flags in (("status", dict(job=None, json=False, details=True, unmerged=False, into=None,

@@ -126,7 +126,10 @@ class Collector:
     def is_settled(self, rec):
         """终态且回执已落盘、探测频率已降低的 job；只读查询可直接信任其缓存快照。"""
         entry = self.settled.get(rec["job"])
-        return bool(entry and entry[0] == self.service.generation(rec))
+        if entry and entry[0] == self.service.generation(rec):
+            return True
+        # 重启后：已签收的终态 job 不再轮询，靠落盘的完整快照继续可信。
+        return self.service.job_refresh_complete(rec)
 
     def settled_recently(self, rec):
         entry = self.settled.get(rec["job"])
@@ -357,8 +360,8 @@ class Collector:
         service = self.service
         # Persist only display data, so restart can serve the last
         # observation while the first remote collection is pending.
-        keep = ("state", "round", "exit", "head", "dirty", "started_at", "snapshot_at")
-        saved_snapshot = {key: snapshot[key] for key in keep if key in snapshot}
+        # 完整快照落盘（经脱敏），重启后只读缓存才能逐字复现 CLI 输出；老格式文件没有 raw_round，不作缓存依据。
+        saved_snapshot = dict(snapshot)
         with service.cache_lock:
             if not progress_ok:
                 progress = service.progress.get((rec["job"], number))  # 本轮没读到：沿用上一次的进度
@@ -367,10 +370,12 @@ class Collector:
                           if key in progress} if progress else None
         messages.atomic_json(service.state / "serve-snapshots" / (rec["job"] + ".json"),
             dict(user_id=service.user_id, generation=service.generation(rec),
-                 snapshot=service.redact(saved_snapshot), progress=service.redact(saved_progress)))
+                 snapshot=service.redact(saved_snapshot), raw_round=raw_round,
+                 progress=service.redact(saved_progress)))
         with service.cache_lock:
             service.snapshots[rec["job"]] = snapshot
             service.raw_rounds[rec["job"]] = raw_round  # 只读查询还原 CLI 直跑时的原始 round
+            service.complete_snapshots.add(rec["job"])
             service.generations[rec["job"]] = service.generation(rec)
             service.progress[(rec["job"], number)] = progress
             service.snapshot_version += 1

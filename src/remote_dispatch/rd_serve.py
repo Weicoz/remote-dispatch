@@ -408,6 +408,7 @@ class Service:
         self.generations = {}
         self.progress = {}
         self.raw_rounds = {}
+        self.complete_snapshots = set()  # 带完整采集字段（可供只读缓存逐字复现 CLI 输出）的快照
         self.restore_snapshots()
         self.host_last_seen = self.restore_host_last_seen()
         initial_hosts = self.config.hosts()
@@ -616,6 +617,9 @@ class Service:
                     continue
                 self.snapshots[path.stem] = snapshot
                 self.generations[path.stem] = tuple(generation)
+                if "raw_round" in saved:
+                    self.raw_rounds[path.stem] = saved["raw_round"]
+                    self.complete_snapshots.add(path.stem)
                 if progress:
                     self.progress[(path.stem, generation[0])] = progress
             except (OSError, ValueError, TypeError, KeyError):
