@@ -1,0 +1,197 @@
+"""serve 在线时 inbox/status 走进程内缓存：输出与 CLI 直跑一致，不起子进程、不碰 ssh。"""
+import contextlib
+import io
+import json
+import os
+import unittest
+from datetime import datetime, timedelta, timezone
+from unittest.mock import patch
+
+from remote_dispatch import cli
+from remote_dispatch import rd_serve
+from remote_dispatch.rd_serve import Service
+from tests import test_rd_serve as support
+
+
+class CachedReadTests(unittest.TestCase):
+    eventually = support.ServeTests.eventually
+
+    def setUp(self):
+        support.ServeTests.setUp(self)
+        self.config.write_text("[host:target]\nssh=local\nworkdir=%s/worker\nsync=direct\n" % self.root,
+                               encoding="utf-8")
+        for target in (patch.object(cli, "probe", lambda host: dict(host=host["name"], reachable=True)),
+                       patch.object(cli, "assess", lambda host, info: [])):
+            target.start()
+            self.addCleanup(target.stop)
+        self.states = {}
+        self.state_calls = []
+        stub = patch.object(cli, "job_states", self.job_states)
+        stub.start()
+        self.addCleanup(stub.stop)
+        self.absent = str(self.root / "absent.sock")
+
+    def job_states(self, cfg, recs):
+        self.state_calls.append([rec["job"] for rec in recs])
+        return {rec["job"]: dict(self.states.get(rec["job"], dict(state="running", round=str(rec["rounds"]))))
+                for rec in recs}
+
+    def job(self, name, state="done", owner="owner", **extra):
+        rec = dict(job=name, user_id="fixture", host="target", rounds=1, project="demo", origin="",
+                   initiator_session=owner, agent=None, sync="direct", base="base", branch="rd/" + name,
+                   created="2026-10-25 00:00:00", **extra)
+        cli.save_job(rec)
+        self.states[name] = dict(state=state, round="1", exit="0" if state == "done" else "",
+                                 head="base", dirty="0", observed_at="2026-10-25T00:00:01Z", last="工作中")
+        return rec
+
+    def serve(self):
+        service = Service(cli.Config(), self.path, poll_interval=3600)
+        service.start()
+        self.addCleanup(service.close)
+        self.eventually(lambda: service.collector.last_cycle_seconds, bool)
+        self.eventually(lambda: service.reports.ready.is_set(), bool)
+        return service
+
+    def run_cli(self, *argv, serve=True):
+        out, err = io.StringIO(), io.StringIO()
+        socket = str(self.path) if serve else self.absent
+        with patch.dict(os.environ, {"RD_SERVE_SOCKET": socket}), contextlib.redirect_stdout(out), \
+                contextlib.redirect_stderr(err):
+            try:
+                cli.main(list(argv))
+                code = 0
+            except SystemExit as exit_:
+                code = exit_.code or 0
+        return code, out.getvalue(), err.getvalue()
+
+    @contextlib.contextmanager
+    def no_remote(self, service):
+        """serve 路径下既不能起子进程执行命令，也不能触发 ssh 或批量状态查询。"""
+        before = len(self.state_calls)
+        with patch.object(Service, "execute", side_effect=AssertionError("子进程执行")), \
+                patch.object(cli, "ssh", side_effect=AssertionError("同步 ssh")):
+            yield
+        self.assertEqual(len(self.state_calls), before)
+
+    def seed(self):
+        self.job("job-done")
+        self.job("job-running", "running")
+        self.job("job-other", owner="other-owner")
+        return self.serve()
+
+    def test_status_text_and_json_match_direct_cli_without_remote_calls(self):
+        service = self.seed()
+        for argv in (("status",), ("status", "--json"), ("status", "job-done"), ("status", "job-running", "--json")):
+            with self.subTest(argv=argv):
+                direct = self.run_cli(*argv, serve=False)
+                with self.no_remote(service):
+                    cached = self.run_cli(*argv)
+                self.assertEqual(cached, direct)
+                self.assertEqual(cached[0], 0)
+                self.assertTrue(cached[1])
+
+    def test_inbox_matches_direct_cli_without_remote_calls_and_lists_unreachable(self):
+        self.job("job-gone", "unreachable")
+        service = self.seed()
+        self.states["job-gone"] = dict(state="unreachable")
+        direct = self.run_cli("inbox", "--initiator-session", "owner", serve=False)
+        with self.no_remote(service):
+            cached = self.run_cli("inbox", "--initiator-session", "owner")
+        self.assertEqual(cached, direct)
+        body = json.loads(cached[1])
+        self.assertEqual([row["job"] for row in body["results"]], ["job-done"])
+        self.assertEqual(body["initiator_session"], "owner")
+
+    def test_acknowledged_and_delegated_receipts_match_direct_cli(self):
+        service = self.seed()
+        receipt = json.loads(self.run_cli("result", "job-done", "--initiator-session", "owner", serve=False)[1])
+        self.assertEqual(self.run_cli("ack", "job-done", "--round", "1", "--receipt-id", receipt["receipt_id"],
+                                      "--initiator-session", "owner", "--acked-by", "someone-else", serve=False)[0], 0)
+        direct = self.run_cli("inbox", "--initiator-session", "owner", serve=False)
+        with self.no_remote(service):
+            cached = self.run_cli("inbox", "--initiator-session", "owner")
+        self.assertEqual(cached, direct)
+        self.assertTrue(json.loads(cached[1])["results"][0].get("delegated"))
+
+    def test_repeated_queries_are_fast_and_never_touch_the_remote(self):
+        service = self.seed()
+        with self.no_remote(service):
+            started = datetime.now()
+            for _ in range(20):
+                self.assertEqual(self.run_cli("status")[0], 0)
+            self.assertLess((datetime.now() - started).total_seconds(), 5)
+
+    def test_stale_snapshot_falls_back_to_the_direct_path(self):
+        service = self.seed()
+        self.job("job-late", "running")
+        # 新登记、尚无缓存快照：缓存路径放弃，由直跑路径查询。
+        before = len(self.state_calls)
+        code, out, err = self.run_cli("status", "job-late")
+        self.assertEqual(code, 0)
+        self.assertIn("job-late", out)
+        self.assertGreater(len(self.state_calls), before)
+        # 快照超过 2 个轮询周期：同样回退（直跑再次查询目标机）。
+        future = datetime.now(timezone.utc) + timedelta(seconds=3600 * 3)
+        service.cached_reads.clock = lambda: future.timestamp()
+        before = len(self.state_calls)
+        self.assertEqual(self.run_cli("status", "job-running")[0], 0)
+        self.assertGreater(len(self.state_calls), before)
+        reply = service.cached_reads.handle(dict(command="status", params=dict(job="job-running", json=False),
+                                                 user_id="fixture", config=str(self.config.resolve())))
+        self.assertEqual(reply, dict(handled=False))
+
+    def test_settled_terminal_job_is_served_from_cache_however_old(self):
+        service = self.seed()
+        record = cli.load_job("job-done")
+        self.assertTrue(service.collector.is_settled(record))
+        future = datetime.now(timezone.utc) + timedelta(days=3)
+        service.cached_reads.clock = lambda: future.timestamp()
+        reply = service.cached_reads.handle(dict(command="status", params=dict(job="job-done", json=False),
+                                                 user_id="fixture", config=str(self.config.resolve())))
+        self.assertTrue(reply["handled"])
+        self.assertIn("job-done", reply["stdout"])
+
+    def test_terminal_job_without_a_saved_receipt_falls_back_so_the_cli_can_collect_it(self):
+        self.job("job-done")
+        with patch.object(cli, "collect_result", side_effect=ValueError("暂不可用")), \
+                contextlib.redirect_stderr(io.StringIO()):
+            service = self.serve()
+            service.collector.cycle(rd_serve.events.EventLog(self.state))
+        # 回执没落盘，快照也不发布 -> 缓存路径必须放弃
+        reply = service.cached_reads.handle(dict(command="inbox", params=dict(initiator_session="owner"),
+                                                 user_id="fixture", config=str(self.config.resolve())))
+        self.assertEqual(reply, dict(handled=False))
+
+    def test_options_the_cache_cannot_reproduce_stay_on_the_original_path(self):
+        parser_args = type("Args", (), {})
+        for command, flags in (("status", dict(job=None, json=False, details=True, unmerged=False, into=None,
+                                              project=None, dir=None, top_dir=None)),
+                               ("status", dict(job=None, json=False, details=False, unmerged=True, into=None,
+                                              project=None, dir=None, top_dir=None)),
+                               ("status", dict(job=None, json=False, details=False, unmerged=False, into=None,
+                                              project="demo", dir=None, top_dir=None)),
+                               ("inbox", dict(wait=True, orphans=False, initiator_session="owner")),
+                               ("inbox", dict(wait=False, orphans=True, initiator_session="owner"))):
+            args = parser_args()
+            args.command = command
+            for key, value in flags.items():
+                setattr(args, key, value)
+            self.assertIsNone(rd_serve.cached_read_params(args), (command, flags))
+
+    def test_serve_offline_returns_none_so_direct_path_runs(self):
+        self.job("job-done")
+        code, out, err = self.run_cli("status", serve=False)
+        self.assertEqual(code, 0)
+        self.assertIn("job-done", out)
+
+    def test_rejects_other_user_or_config(self):
+        service = self.seed()
+        with self.assertRaises(ValueError):
+            service.cached_reads.handle(dict(command="status", params={}, user_id="someone", config=str(self.config)))
+        with self.assertRaises(ValueError):
+            service.cached_reads.handle(dict(command="status", params={}, user_id="fixture", config="/elsewhere"))
+
+
+if __name__ == "__main__":
+    unittest.main()

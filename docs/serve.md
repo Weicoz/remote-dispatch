@@ -300,6 +300,24 @@ PYTHONPATH=src python3 -m unittest discover -s tests -p 'test_*.py'
 真实 SSH 目标机的探测、报告收取与日志读取，以及 App 消费样例的集成由编排方端到端复测；
 实现会话不部署测试栈或重启现有服务。
 
+## 只读查询走 serve 缓存
+
+serve 在线时，`rdispatch inbox`（默认 JSON 形态）与 `rdispatch status`（文本和 `--json`）先问 serve：
+`POST /_cli/v1/read`，请求 `{command, params, user_id, config}`（`params`：inbox 为已解析的 `initiator_session`，status 为 `job`、`json`），
+响应 `{handled, exit_code, stdout, stderr}`。`handled=true` 时 CLI 原样写出 stdout/stderr 并以 `exit_code` 退出；
+输出格式与退出码和直跑一致（`tests/test_rd_serve_readonly.py` 逐项对照）。serve 用进程内已有的快照和本地回执文件在进程内生成输出，
+不起子进程、不同步 ssh、不碰目标机，响应通常在毫秒级。只做本机用户 ID 与配置路径校验，不需要写锁。
+
+选择：缓存缺失或过旧时**回退原路径**，不返回带「快照时间」的陈旧结果，保证输出始终等于直跑。回退条件：
+
+- 该 job 没有与当前 generation（轮次、目标机、worker_root）匹配的内存快照（刚登记，或 serve 刚重启、磁盘恢复的快照不算）；
+- 快照年龄超过 `2 × --poll-interval + 最近一轮采集耗时`，且该 job 不是「终态且回执已落盘」的降频 job（降频 job 的快照随终态不变，任意年龄都可信）；
+- `inbox` 涉及的终态 job 回执尚未落盘（CLI 直跑会在此收取，缓存路径不收取）。
+
+回退时 `inbox` 走原有 `/_cli/v1` 子进程执行，`status` 在 CLI 本地直跑。serve 不在线、请求失败或超时（5 秒）同样回退，因为只读命令没有副作用，可以放心重试。
+不走缓存的参数：`status` 带 `--details`、`--unmerged`、`--project`、`-C`，`inbox` 带 `--wait`、`--orphans`。
+快照里的采集时间不输出（直跑也没有）；`/v1/jobs`、`/v1/board` 等 HTTP 读接口仍通过 `snapshot_at` 暴露快照时间。
+
 ## 设备与配对 CLI（票 05）
 
 `device` 与 `pair` 子命令只经本机 Unix socket 调用 `GET /v1/devices`、

@@ -4839,6 +4839,8 @@ def main(argv=None, *, forwarded=None):
                 a.initiator_session = forwarded.get("initiator_session")
             if hasattr(a, "via"):
                 a.via = "serve"
+        elif a.command in rd_serve.CACHED_READS and (code := rd_serve.cached_read(a)) is not None:
+            raise SystemExit(code)
         elif a.command in rd_serve.WRITE_COMMANDS and not getattr(a, "wait", False):
             code = rd_serve.forward(a, list(sys.argv[1:] if argv is None else argv))
             if code is not None:

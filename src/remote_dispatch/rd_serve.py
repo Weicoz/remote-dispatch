@@ -34,6 +34,7 @@ from .rd_serve_sessions import Sessions
 from .rd_serve_logs import LogSnapshots
 from .rd_serve_progress import ProgressHistory
 from .rd_serve_poll import Collector
+from .rd_serve_readonly import CachedReads
 from .rd_serve_history import instant
 from .rd_host_metrics import host_metrics
 from .rd_reports import Reports, read_reports
@@ -45,6 +46,8 @@ from . import rd_reclaim_plan as reclaim_plan
 # 只允许 serve 子进程执行、不让 CLI 自动转发给 serve 的命令（suggest 仍由 CLI 直接运行）。
 FORWARD_ONLY = {"suggest"}
 RECLAIM_JOIN_SECONDS = 5
+# serve 在线且缓存可用时，直接由 serve 进程内生成输出的只读命令（见 rd_serve_readonly）。
+CACHED_READS = {"inbox", "status"}
 WRITE_COMMANDS = {"session-default", "run", "resume", "ack", "review", "stop", "project", "inbox", "keep", "clean", "plan"}
 SOCKET_NAME = "serve.sock"
 VERSION_ROUTE = "/v1/version"
@@ -170,6 +173,42 @@ def forward(args, argv):
         raise ValueError("cli_forward_failed: command may have run; check state before retrying") from error
 
 
+def cached_read_params(args):
+    """CLI 已解析的参数里，缓存路径能原样复现的子集；带筛选、--details、--wait 等返回 None。"""
+    if args.command == "inbox":
+        if getattr(args, "wait", False) or getattr(args, "orphans", False):
+            return None
+        owner = cli.initiator_session(args)
+        return dict(initiator_session=owner) if owner else None
+    if args.command == "status":
+        if (getattr(args, "unmerged", False) or getattr(args, "into", None) or getattr(args, "project", None)
+                or cli.get_dir(args) or getattr(args, "details", False)):
+            return None
+        return dict(job=args.job, json=bool(args.json))
+    return None
+
+
+def cached_read(args):
+    """serve 在线时由它用缓存生成只读命令输出；返回退出码，None 表示回退到原路径。
+
+    只读且无副作用，所以任何失败（离线、请求失败、缓存不足）都回退，不报错。
+    """
+    params = cached_read_params(args)
+    if params is None:
+        return None
+    try:
+        status, reply = serve_call("POST", "/_cli/v1/read", dict(
+            command=args.command, params=params, user_id=cli.require_user(),
+            config=str(Path(cli.CONFIG).resolve())), timeout=5)
+    except (ServeUnavailable, ServeFailed, OSError, ValueError):
+        return None
+    if status != 200 or not isinstance(reply, dict) or not reply.get("handled"):
+        return None
+    sys.stdout.write(reply["stdout"])
+    sys.stderr.write(reply["stderr"])
+    return reply["exit_code"]
+
+
 def execute_cli():
     """Child owned by serve: isolate cwd, stdio and initiator context per command."""
     request = json.load(sys.stdin)
@@ -257,7 +296,7 @@ class Handler(BaseHTTPRequestHandler):
             if (self.server.service.project_routes.post(self)
                     or self.server.service.sessions.handle_post(self)):
                 return
-            if self.path != "/_cli/v1":
+            if self.path not in ("/_cli/v1", "/_cli/v1/read"):
                 return self.server.service.writes.handle(self)
             if self.headers.get("Transfer-Encoding") or self.headers.get_content_type() != "application/json":
                 raise ValueError("invalid_request")
@@ -265,6 +304,9 @@ class Handler(BaseHTTPRequestHandler):
             if not 0 < length <= MAX_REQUEST_BYTES:
                 raise ValueError("invalid_request")
             request = json.loads(self.rfile.read(length))
+            if self.path == "/_cli/v1/read":
+                # 只读命令：用进程内缓存直接生成输出，不起子进程、不碰目标机。
+                return self.json(200, self.server.service.cached_reads.handle(request))
             self.json(200, self.server.service.execute(request))
         except (ValueError, TypeError, KeyError, UnicodeError):
             self.json(400, {"error": {"reason": "invalid_cli_request"}})
@@ -365,6 +407,7 @@ class Service:
         self.snapshots = {}
         self.generations = {}
         self.progress = {}
+        self.raw_rounds = {}
         self.restore_snapshots()
         self.host_last_seen = self.restore_host_last_seen()
         initial_hosts = self.config.hosts()
@@ -383,6 +426,7 @@ class Service:
         self.sessions = Sessions(self)
         self.reports = Reports(self)
         self.collector = Collector(self)
+        self.cached_reads = CachedReads(self)
         self.log_snapshots = LogSnapshots(self)
         for host in self.config.hosts():
             for key, value in host.items():

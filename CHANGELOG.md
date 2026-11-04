@@ -2,6 +2,7 @@
 
 ## 未发布
 
+- **`inbox`／`status` 走 serve 缓存**：serve 在线时，CLI 经新增的本机接口 `POST /_cli/v1/read` 让 serve 用进程内快照与本地回执文件在进程内生成输出，不起子进程、不同步 ssh；输出格式和退出码与直跑一致（逐项对照测试）。快照缺失、超过 2 个轮询周期（终态降频 job 除外）或终态回执未落盘时回退原路径；`--details`、`--unmerged`、`--project`、`-C`、`inbox --wait`、`--orphans` 不走缓存。详见 `docs/serve.md`。
 - **serve 轮询链路修复**：回执与进度的错误边界分离，终态回执先收取落盘，进度／历史补采失败只记日志、不再阻断回执或快照发布；`find_session` 与 `remote_report` 的远端调用补上 30 秒超时（会话查找超时记 `session` 阶段并下轮重试），不再可能永久卡住并持有 job 锁；采集按目标机分工作单元有界并发（`[serve] poll_concurrency`，默认 4），慢机只拖住自己；终态且回执已落盘的 job 降频探测（`max(8 × 轮询周期, 60)` 秒），未签收仍可见；错误日志按 (对象, 阶段, 异常类型) 聚合，首次与恢复各一行，重复每 10 分钟汇总，取代逐次的 `poll_unavailable`。详见 `docs/serve.md`。
 - **事件存储改为追加写并限制历史**：活动段改为单次 `O_APPEND` + fsync 追加，不再每次整段重写；崩溃半行读取时忽略、下次写入前修复。`only_if_changed` 去重与派单详情的 `progress_events` 改用进程内索引（`EventLog.read_job`），不再扫描全部历史；serve 启动时预热。历史段总量受 `RD_EVENT_LOG_MAX_ARCHIVES`（默认 5 段）限制，轮转后删除最旧段；游标早于保留范围时从最早保留事件返回，SSE 另发 `: cursor_expired oldest_seq=N` 注释行。`seq` 与对外契约不变。详见 `docs/events.md`。
 - **通知通道隔离**：汇报提醒通道各自独立线程与待发队列，慢通道（macOS `osascript` 最长 15 秒）不再拖住其他通道；连续失败 3 次熔断 300 秒（`circuit_open`），到期放行探测；队列上限 50，超限丢弃最旧（`queue_overflow`）并限频记日志；汇报投递线程池由 4 增至 8。详见 `docs/reports.md`。

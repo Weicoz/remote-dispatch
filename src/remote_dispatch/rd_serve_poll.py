@@ -111,6 +111,7 @@ class Collector:
         self.concurrency = concurrency_setting(service.config.cp)
         self.pool = None
         self.settled = {}
+        self.last_cycle_seconds = 0.0
         self.seen_lock = threading.Lock()
 
     def close(self):
@@ -142,6 +143,13 @@ class Collector:
 
     # 一轮采集 -------------------------------------------------------------
     def cycle(self, log):
+        started = self.clock()
+        try:
+            self.run_cycle(log)
+        finally:
+            self.last_cycle_seconds = self.clock() - started
+
+    def run_cycle(self, log):
         service = self.service
         config = service.config  # 一轮一个配置代：重载不得混入半轮
         enabled_hosts = config.hosts()
@@ -291,6 +299,7 @@ class Collector:
                 if number != rec["rounds"]:
                     # A delayed target may still expose the previous launch.
                     return
+                raw_round = snapshot.get("round") if "round" in snapshot else None
                 snapshot = dict(snapshot, round=str(number), snapshot_at=messages.utc_now())
                 log.observe_job(rec, snapshot)
                 # 1. 终态回执优先落盘；失败时保留旧快照，下一轮重试。
@@ -303,7 +312,7 @@ class Collector:
                 self.errors.ok(subject, "session")
                 # 2. 进度与历史补采：失败单独记录，不影响回执和快照发布。
                 progress, progress_ok = self.collect_progress(config, rec, number, snapshot)
-                self.publish(rec, number, snapshot, progress, progress_ok)
+                self.publish(rec, number, snapshot, progress, progress_ok, raw_round)
                 self.mark(rec, snapshot)
         except JobBusy:
             return
@@ -344,7 +353,7 @@ class Collector:
         self.errors.ok(subject, "history")
         return progress, True
 
-    def publish(self, rec, number, snapshot, progress, progress_ok):
+    def publish(self, rec, number, snapshot, progress, progress_ok, raw_round):
         service = self.service
         # Persist only display data, so restart can serve the last
         # observation while the first remote collection is pending.
@@ -361,6 +370,7 @@ class Collector:
                  snapshot=service.redact(saved_snapshot), progress=service.redact(saved_progress)))
         with service.cache_lock:
             service.snapshots[rec["job"]] = snapshot
+            service.raw_rounds[rec["job"]] = raw_round  # 只读查询还原 CLI 直跑时的原始 round
             service.generations[rec["job"]] = service.generation(rec)
             service.progress[(rec["job"], number)] = progress
             service.snapshot_version += 1
