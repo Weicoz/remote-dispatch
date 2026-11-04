@@ -161,7 +161,8 @@ dsh_auth_file = ~/.dsh/.credentials.yaml
 
 - 只做派单与取回，不代替你验收；检查状态是执行方自报，最终验收由发起方判断。
 - 凭据文件只在目标机读取，复制进任务目录后 `chmod 600`，不写回执、不进日志。
-- 删除远端 worktree 需要显式 `rdispatch clean`，默认保留未提交与未取回的成果。
+- 删除远端 worktree 需要显式 `rdispatch clean`，默认保留未提交与未取回的成果。serve 定时回收默认开启（`[features] scheduled_reclaim = false` 关闭）：只在配置了 `max_worktree_gb` 的目标机上回收已签收且过期的派单，首次启用后前 7 天只出计划。
+- 命令任务默认复用目标机上的常驻热工作树（`[project:x] warm = off` 或 `run --fresh` 关闭），构建缓存跨任务保留；`rdispatch gate` 与代理任务始终用冷 worktree。见 [缓存保留与回收](docs/cache-retention.md)。
 - 不自动跳过宿主账号的权限边界；`rdispatch` 不提升权限、不改系统配置。
 
 ## 附带技能

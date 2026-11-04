@@ -89,6 +89,8 @@ serve 后台观察必须显式走写入口，不能在查询回调里偷偷采�
 
 POSIX 运行脚本与 Windows 原生 runner 都写 `jobs/<job>/timing.rN`，`finish` 合入回执。缺失或损坏的字段不写，查询时视为未记录。
 
+首次落盘的回执另带工作树字段（旧派单记录没有 `worktree` 字段时不附带）：`worktree_mode`（`warm`／`cold`），热槽位任务另有 `warm_reused`（布尔，是否复用了已有槽位）与 `warm_prev_commit`（接手前槽位的 HEAD，新建槽位时没有）。机制见 [缓存保留与回收](cache-retention.md)。
+
 查询只读本地已保存的回执（经 `inbox`、`result`、续跑或清理收取后才有），不连接目标机：
 
 ```bash
