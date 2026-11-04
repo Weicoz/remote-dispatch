@@ -163,14 +163,16 @@ class ConfigReloadTests(unittest.TestCase):
                         "启动配置没有出现在 /v1/hosts")
         before = self.request("/v1/hosts")[1]
 
-        self.write_config("[host:broken]\nplatform=posix\nworkdir=/tmp/worker\n")
+        # 在用的目标机被写坏（原来有效、现在无效）：整份回退，保留旧定义并报错。
+        # 新增的坏目标机则逐台隔离，不在此回退（见 InProcessReloadTests）。
+        self.write_config(self.host_config("stable", extra="timeout=0\n"))
         broken = self.eventually(lambda: self.request("/v1/version")[1]["config_reload"],
                                  lambda reload: reload["ok"] is False and reload["error"],
                                  "无效配置没有记录重载错误")
         failed_at = datetime.datetime.fromisoformat(broken["at"])
         self.assertIsNotNone(failed_at.tzinfo)
-        self.assertIn("broken", broken["error"])
-        self.assertIn("ssh", broken["error"])
+        self.assertIn("stable", broken["error"])
+        self.assertIn("timeout", broken["error"])
         hosts = self.request("/v1/hosts")[1]
         self.assertEqual([row["name"] for row in hosts["hosts"]], ["stable"])
         self.assertEqual(hosts["config_reload"], broken)
