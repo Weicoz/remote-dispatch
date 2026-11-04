@@ -1181,12 +1181,16 @@ def result_path(rec, number):
     return query.result_path(STATE, rec, number)
 
 
+REMOTE_READ_TIMEOUT = 30  # serve 轮询路径上的每次远端读取都必须有界，不得无限等待并占住派单锁
+
+
 def remote_report(host, rec, number, kind):
     relative = "reports/" + kind + ".r" + str(messages.round_id(number)) + ".json"
     if host["platform"] == "windows" or kind == "progress":
-        return native.request(host, "report-read", dict(job=rec["job"], round=number, kind=kind))
+        return native.request(host, "report-read", dict(job=rec["job"], round=number, kind=kind),
+                              timeout=REMOTE_READ_TIMEOUT)
     path = '"$ROOT/jobs/' + messages.job_id(rec["job"]) + '/' + relative + '"'
-    reply = ssh(host, f'if [ -L {path} ]; then exit 4; fi; if [ -f {path} ]; then head -c {messages.MAX_BYTES + 1} {path}; fi', check=False, timeout=30)
+    reply = ssh(host, f'if [ -L {path} ]; then exit 4; fi; if [ -f {path} ]; then head -c {messages.MAX_BYTES + 1} {path}; fi', check=False, timeout=REMOTE_READ_TIMEOUT)
     if reply is None or reply.returncode:
         raise ValueError("无法读取远端回执；连接错误不代表任务失败。")
     if not reply.stdout.strip():
@@ -3298,13 +3302,24 @@ def cmd_logs(a, cfg):
     sys.stdout.write(r.stdout if r.returncode == 0 else f"(no {name} yet)\n")
 
 
+class SessionLookupError(ValueError):
+    """读取目标机会话日志超时或失败；调用方下一轮重试，不把它当作「没有会话」。"""
+
+
 def find_session(host, rec, agent):
     if host["platform"] == "windows":
-        output = native.request(host, "sessions", {"job": rec["job"], "round": rec.get("rounds", 1)})
+        try:
+            output = native.request(host, "sessions", {"job": rec["job"], "round": rec.get("rounds", 1)},
+                                    timeout=REMOTE_READ_TIMEOUT)
+        except subprocess.TimeoutExpired:
+            raise SessionLookupError("会话查找超时") from None
         matched = re.search(agent["session_regex"], output)
         return matched.group(1) if matched else None
     number = messages.round_id(rec.get("rounds", 1))
-    r = ssh(host, f'head -c 200000 "$ROOT/jobs/{rec["job"]}/stdout.r{number}.log" 2>/dev/null', check=False)
+    r = ssh(host, f'head -c 200000 "$ROOT/jobs/{rec["job"]}/stdout.r{number}.log" 2>/dev/null', check=False,
+            timeout=REMOTE_READ_TIMEOUT)
+    if r is None:
+        raise SessionLookupError("会话查找超时")
     m = re.search(agent["session_regex"], r.stdout or "")
     return m.group(1) if m else None
 

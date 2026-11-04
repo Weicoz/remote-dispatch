@@ -33,6 +33,7 @@ from . import rd_harness_stats
 from .rd_serve_sessions import Sessions
 from .rd_serve_logs import LogSnapshots
 from .rd_serve_progress import ProgressHistory
+from .rd_serve_poll import Collector
 from .rd_serve_history import instant
 from .rd_host_metrics import host_metrics
 from .rd_reports import Reports, read_reports
@@ -381,6 +382,7 @@ class Service:
         self.sensitive = set()
         self.sessions = Sessions(self)
         self.reports = Reports(self)
+        self.collector = Collector(self)
         self.log_snapshots = LogSnapshots(self)
         for host in self.config.hosts():
             for key, value in host.items():
@@ -464,6 +466,7 @@ class Service:
         if self.poller is not None:
             self.poller.join()
             self.poller = None
+        self.collector.close()
         if self.reclaim_poller is not None:
             # 回收线程可能卡在 ssh/du；它是守护线程，超时后放弃等待。
             self.reclaim_poller.join(timeout=RECLAIM_JOIN_SECONDS)
@@ -760,138 +763,11 @@ class Service:
             pass
         while not self.stop.is_set():
             self.wake.clear()
-            # One config generation per cycle: a reload mid-cycle must not
-            # publish a host list computed from the previous configuration.
-            config = self.config
-            hosts = []
-            available, attempted = set(), set()
-            enabled_hosts = config.hosts()
-            enabled_names = {host["name"] for host in enabled_hosts}
-            for host in enabled_hosts:
-                if self.stop.is_set():
-                    break
-                if not self.host_poll_due(host):
-                    hosts.extend(row for row in self.hosts if row["name"] == host["name"])
-                    continue
-                attempted.add(host["name"])
-                try:
-                    info = cli.probe(host)
-                    if info.get("reachable"):
-                        available.add(host["name"])
-                        self.host_last_seen[host["name"]] = messages.utc_now()
-                        try:
-                            messages.atomic_json(self.state / "serve-host-last-seen.json", self.host_last_seen)
-                        except (OSError, ValueError):
-                            print("rdispatch: 无法保存目标机最后在线时间。", file=sys.stderr)
-                    else:
-                        self.host_poll_failed(host["name"])
-                    full = bool(info.get("reachable") and cli.assess(host, info))
-                    log.observe_host(host, info, full=full)
-                    hosts.append(self.host_row(host, reachable=bool(info.get("reachable")), full=full,
-                                               probed=True, metrics=host_metrics(host, info),
-                                               **{key: info.get(key) for key in
-                                                  ("load1", "ncpu", "cpu_pct", "memfree", "disk",
-                                                   "disk_total", "running", "heavy")}))
-                except (ValueError, OSError, SystemExit, subprocess.SubprocessError):
-                    self.host_poll_failed(host["name"])
-                    hosts.append(self.host_row(host, probed=True))
-                    print("rdispatch: poll_unavailable: cannot probe a host", file=sys.stderr)
-            with self.cache_lock:
-                if self.config is config:
-                    self.hosts = hosts
             try:
-                records = [rec for rec in self.records() if not self.job_refresh_complete(rec)]
-            except (ValueError, OSError, SystemExit):
-                records = []
-                print("rdispatch: poll_unavailable: cannot read jobs", file=sys.stderr)
-            # Remote collection is batched, outside per-job locks. Validate the
-            # generation again under lock before publishing any returned data.
-            states = {}
-            by_host = {}
-            for rec in records:
-                by_host.setdefault(rec["host"], []).append(rec)
-            for name in available - by_host.keys():
-                self.host_poll_recovered(name)
-            for name, group in by_host.items():
-                if self.stop.is_set():
-                    break
-                if name in enabled_names and name not in available:
-                    if name in attempted:
-                        states.update({rec["job"]: {"state": "unreachable"} for rec in group})
-                    continue
-                try:
-                    # Disabling new dispatches must not freeze existing jobs.
-                    if (name not in enabled_names and config.cp.has_section("host:" + name)
-                            and not self.host_poll_due(config.host(name))):
-                        continue
-                    batch = cli.job_states(config, group)
-                    states.update({rec["job"]: batch.get(rec["job"], {"state": "unreachable"})
-                                   for rec in group})
-                    if any(batch.get(rec["job"], {}).get("state", "unreachable") == "unreachable" for rec in group):
-                        self.host_poll_failed(name)
-                    else:
-                        self.host_poll_recovered(name)
-                except (ValueError, OSError, SystemExit, subprocess.SubprocessError):
-                    self.host_poll_failed(name)
-                    states.update({rec["job"]: {"state": "unreachable"} for rec in group})
-                    print("rdispatch: poll_unavailable: cannot collect host jobs", file=sys.stderr)
-            for saved in records:
-                if saved["job"] not in states:
-                    continue
-                if self.stop.is_set():
-                    break
-                try:
-                    # Lock before reloading: a resume must not mix old and new round data.
-                    with self.job_guard(saved["job"]), JobLock(self.state, saved["job"]):
-                        rec = cli.load_job(saved["job"])
-                        if self.generation(rec) != self.generation(saved):
-                            continue
-                        snapshot = states.get(rec["job"], {"state": "unreachable"})
-                        number = int(snapshot.get("round") or 0) or rec["rounds"]
-                        if number != rec["rounds"]:
-                            # A delayed target may still expose the previous launch.
-                            continue
-                        snapshot = dict(snapshot, round=str(number), snapshot_at=messages.utc_now())
-                        progress = cli.remote_report(cli.job_host(config, rec), rec, number, "progress") if rec.get("handoff_version") and snapshot.get("state") in ("running", "done") else None
-                        log.observe_job(rec, snapshot)
-                        history = ProgressHistory(self)
-                        if progress is not None:
-                            history.collect(rec, number, progress)
-                        if rec.get("handoff_version") and snapshot.get("state") in ("running", "done"):
-                            for prior in range(1, number):
-                                saved_history = history.saved(rec, prior)
-                                if saved_history is None or not saved_history.get("final"):
-                                    source = dict(rec)
-                                    if saved_history:
-                                        _, source["host"], source["worker_root"] = saved_history["generation"]
-                                        if source["worker_root"] is None:
-                                            source.pop("worker_root")
-                                        if source["host"] != rec["host"]:
-                                            source.pop("worker_platform", None)
-                                            source.pop("worker_python", None)
-                                    history.collect(rec, prior, cli.remote_report(
-                                        cli.job_host(config, source), source, prior, "progress"), final=True)
-                        cli.collect_result(config, rec, snapshot)
-                        # Persist only display data, so restart can serve the last
-                        # observation while the first remote collection is pending.
-                        saved_snapshot = {key: snapshot[key] for key in
-                                          ("state", "round", "exit", "head", "dirty", "started_at", "snapshot_at")
-                                          if key in snapshot}
-                        saved_progress = {key: progress[key] for key in
-                                          ("schema", "job", "round", "kind", "phase", "summary", "artifacts", "updated_at")
-                                          if key in progress} if progress else None
-                        messages.atomic_json(self.state / "serve-snapshots" / (rec["job"] + ".json"),
-                            dict(user_id=self.user_id, generation=self.generation(rec),
-                                 snapshot=self.redact(saved_snapshot), progress=self.redact(saved_progress)))
-                        with self.cache_lock:
-                            self.snapshots[rec["job"]] = snapshot
-                            self.generations[rec["job"]] = self.generation(rec)
-                            self.progress[(rec["job"], number)] = progress
-                            self.snapshot_version += 1
-                except JobBusy:
-                    continue
-                except (ValueError, OSError, SystemExit, subprocess.SubprocessError):
-                    print("rdispatch: poll_unavailable: cannot collect a job", file=sys.stderr)
+                # 按目标机分工作单元并发采集；阶段错误聚合记录，见 rd_serve_poll。
+                self.collector.cycle(log)
+            except Exception as error:  # 一轮的意外缺陷不得终止后台轮询
+                self.collector.errors.failed("poll", "cycle", error)
             try:
                 rd_harness_stats.observe(self)
                 self.project_routes.observe()

@@ -916,6 +916,22 @@ SSH、结果／进度收取不会占用这个线程。本地写操作仍会唤�
 配合本地终态回执和匹配的收取确认后，停止历史派单的状态／进度／回执远程探测；
 新轮次或执行位置改变后重新查询。未确认的回执继续刷新，保留现有收取语义。
 
+### 后台采集：并发、错误边界与日志
+
+- 每个目标机一个工作单元（探测、批量取状态、逐个 job 加锁提交），单元之间并发，上限 `[serve] poll_concurrency`（默认 4，无效值按默认）。
+  一台慢机只拖住自己；它的主机行在探测完成后立即发布，不等本机 job 采集。单机内 job 仍串行，与 CLI 写入共用同一把 job 锁。
+- 终态回执先收取落盘，再补采进度；进度与历史轮次补采失败只记日志，不阻断回执，也不阻止快照发布（沿用上一次的进度）。
+  回执收取失败则保留旧快照，下一轮重试。
+- 所有轮询路径上的远端调用都有超时：`remote_state` 30 秒、`remote_report` 与会话查找（`find_session`）30 秒（`cli.REMOTE_READ_TIMEOUT`）、
+  探测 25 秒。会话查找超时抛 `SessionLookupError`，记为 `session` 阶段错误，回执留到下一轮重试，不再无限等待并占住 job 锁。
+- 终态（`done/dead/missing`）且本轮回执已落盘的 job 降频：每 `max(8 × --poll-interval, 60)` 秒才重新探测一次；
+  未签收仍在 `inbox`、`/v1/jobs` 中可见。新轮次或执行位置改变（generation 变化）立即恢复正常频率。已签收的终态 job 仍按原规则不再探测。
+- 错误日志（`serve.err.log`）按 (对象, 阶段, 异常类型) 聚合：
+  `poll_error: job=<id>|host=<name> stage=<state|probe|progress|history|result|session|commit> error=<类名> reason=<简短原因>` 首次立即记一行；
+  同一键重复出错只计数，每 10 分钟记一行 `poll_error_repeated: … count=<N> over=<秒>s`；
+  同一对象与阶段恢复时记 `poll_recovered: … after=<N> failures`。原因经脱敏、单行、最长 120 字，超时只写时长，不含命令行、回执正文或凭据。
+  取代原先每次失败一行的 `poll_unavailable`。
+
 不可达的 host 不再逐条查询历史派单；探测或批量状态查询失败后，按现有 poll 周期的
 1、2、4、8、16 倍退避（上限 16 倍）。连续三次失败后处于熔断等待，期限到时允许探测；
 成功后在同一轮立即查询派单并清除退避。禁用 host 的新派单不影响既有派单的刷新；
