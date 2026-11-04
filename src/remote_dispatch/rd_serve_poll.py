@@ -90,6 +90,14 @@ class PollErrors:
                 entry["last"], entry["logged"] = now, entry["count"]
         self.say(line)
 
+    def forget_missing(self, jobs, hosts):
+        """已删除的 job、已移除的目标机不再有恢复事件：清掉它们残留的错误条目。"""
+        with self.lock:
+            for key in [key for key in self.active
+                        if key[0].startswith("job=") and key[0][4:] not in jobs
+                        or key[0].startswith("host=") and key[0][5:] not in hosts]:
+                del self.active[key]
+
     def ok(self, subject, stage):
         with self.lock:
             keys = [key for key in self.active if key[0] == subject and key[1] == stage]
@@ -158,7 +166,12 @@ class Collector:
         enabled_hosts = config.hosts()
         enabled = {host["name"]: host for host in enabled_hosts}
         try:
-            records = [rec for rec in service.records()
+            everything = service.records()
+            self.errors.forget_missing({rec["job"] for rec in everything},
+                                       {host["name"] for host in enabled_hosts} | {rec["host"] for rec in everything})
+            for job in [job for job in self.settled if job not in {rec["job"] for rec in everything}]:
+                del self.settled[job]
+            records = [rec for rec in everything
                        if not service.job_refresh_complete(rec) and not self.settled_recently(rec)]
         except RECOVERABLE as error:
             records = []
@@ -184,6 +197,7 @@ class Collector:
                 name = pending.pop(future)
                 try:
                     row = future.result()
+                    self.errors.ok("host=" + name, "unit")
                 except Exception as error:  # 单元内部缺陷不得拖垮轮询线程
                     self.errors.failed("host=" + name, "unit", error)
                     row = None
@@ -195,9 +209,8 @@ class Collector:
                     future.cancel()
         if service.stop.is_set():
             return
-        with service.cache_lock:
-            if service.config is config:
-                service.hosts = [rows[host["name"]] for host in enabled_hosts if host["name"] in rows]
+        # 与 publish_host 一样合并现有行：某机单元失败时，已发布的主机行不得被删。
+        self.publish_host(config, enabled_hosts, rows)
 
     def publish_host(self, config, enabled_hosts, rows):
         service = self.service
@@ -317,6 +330,7 @@ class Collector:
                 progress, progress_ok = self.collect_progress(config, rec, number, snapshot)
                 self.publish(rec, number, snapshot, progress, progress_ok, raw_round)
                 self.mark(rec, snapshot)
+            self.errors.ok(subject, "commit")
         except JobBusy:
             return
         except RECOVERABLE as error:

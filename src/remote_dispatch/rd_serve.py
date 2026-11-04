@@ -814,6 +814,7 @@ class Service:
             try:
                 # 按目标机分工作单元并发采集；阶段错误聚合记录，见 rd_serve_poll。
                 self.collector.cycle(log)
+                self.collector.errors.ok("poll", "cycle")
             except Exception as error:  # 一轮的意外缺陷不得终止后台轮询
                 self.collector.errors.failed("poll", "cycle", error)
             try:

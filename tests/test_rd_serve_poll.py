@@ -59,6 +59,14 @@ class PollErrorsTests(unittest.TestCase):
         again = self.lines(lambda: self.errors.failed("job=j1", "state", error))
         self.assertEqual(len(again), 1)
 
+    def test_deleted_job_entries_are_forgotten_and_commit_stage_recovers(self):
+        self.lines(lambda: self.errors.failed("job=gone", "commit", ValueError("x")))
+        self.lines(lambda: self.errors.failed("host=old", "unit", ValueError("x")))
+        self.errors.forget_missing(set(), set())
+        self.assertEqual(self.errors.active, {})
+        self.lines(lambda: self.errors.failed("job=j1", "commit", ValueError("x")))
+        self.assertIn("poll_recovered", self.lines(lambda: self.errors.ok("job=j1", "commit"))[0])
+
     def test_reason_never_includes_command_line_or_secrets(self):
         timeout = subprocess.TimeoutExpired(["ssh", "-i", "SECRET-KEY", "host"], 30)
         line = self.lines(lambda: self.errors.failed("job=j1", "state", timeout))[0]
@@ -251,6 +259,25 @@ class CollectorTests(unittest.TestCase):
         with patch.object(cli, "job_states", self.job_states):
             self.cycle(service)
         self.assertEqual(service.snapshots["job-next"]["state"], "running")
+
+
+class HostRowTests(CollectorTests):
+    def test_unit_crash_keeps_already_published_host_rows(self):
+        self.job("job-a", "fast")
+        service = self.service()
+        self.cycle(service)
+        before = {row["name"] for row in service.hosts}
+        self.assertEqual(before, {"fast", "slow"})
+        original = service.collector.unit
+
+        def crashing(config, log, name, enabled_hosts, enabled, group):
+            if name == "slow":
+                raise KeyError("缺陷")
+            return original(config, log, name, enabled_hosts, enabled, group)
+        with patch.object(service.collector, "unit", crashing):
+            text = self.cycle(service)
+        self.assertEqual({row["name"] for row in service.hosts}, before)
+        self.assertIn("host=slow stage=unit error=KeyError", text)
 
 
 class RemoteTimeoutTests(unittest.TestCase):

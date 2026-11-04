@@ -425,11 +425,16 @@ class EventLog:
 
     def prune(self):
         """归档段超过上限时删除最旧的；删除失败不影响已提交的事件。"""
+        removed = False
         for path in self.archives()[:-self.max_archives]:
             try:
                 path.unlink()
+                removed = True
             except OSError:
                 pass
+        if removed:
+            # 内存索引里属于已清理历史段的位置和最新值一并丢弃：重置后下次使用时按保留的日志重建。
+            self.index().reset()
 
     def segment_files(self):
         """[(段首 seq, 路径)]，按时间从旧到新；空文件和读不到的段跳过。"""

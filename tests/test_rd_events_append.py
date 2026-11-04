@@ -168,6 +168,21 @@ class IndexTests(unittest.TestCase):
         # 游标仍在保留范围内时无缺口。
         self.assertEqual([row["seq"] for row in log.read_after(7)], [8])
 
+    def test_index_drops_entries_of_pruned_segments(self):
+        log = events.EventLog(self.state, max_bytes=300, max_archives=1)
+        rec = dict(job="old", user_id="u", rounds=1, host="h")
+        log.observe_job(rec, dict(state="running", round="1"), dict(phase="p", summary="s", updated_at="t"))
+        log.warm()
+        self.assertIn("old", log.index().jobs)
+        for number in range(30):
+            log.append("job.created", dict(job="filler%d" % number))
+        self.assertEqual(log.read_job("old"), [])
+        index = log.index()
+        with index.lock:
+            index.sync(log)
+            self.assertNotIn("old", index.jobs)
+            self.assertNotIn(events.identity("job.state_changed", dict(job="old", user_id="u")), index.latest)
+
     def test_archive_limit_is_configurable_and_validated(self):
         with patch.dict(os.environ, {"RD_EVENT_LOG_MAX_ARCHIVES": "3"}):
             self.assertEqual(events.EventLog(self.state).max_archives, 3)
