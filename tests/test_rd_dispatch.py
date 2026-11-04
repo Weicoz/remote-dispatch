@@ -244,6 +244,35 @@ class DispatchTests(unittest.TestCase):
         native.run_job(str(spec_file))
         self.assertEqual((directory / "stdout.r1.log").read_text().strip(), self.base)
 
+    def native_receipt(self, code, **spec_changes):
+        rec = self.dispatch()
+        code_key = f"{code}-{len(list(self.root.glob('native-job-*')))}"
+        directory, wt = self.root / f"native-job-{code_key}", self.root / f"native-wt-{code_key}"
+        for folder in (directory, wt, self.root / f"native-bin-{code_key}"):
+            folder.mkdir()
+        (directory / "prompt.r1.md").write_text("")
+        command = f'"{sys.executable}" -c "import sys; sys.exit({code})"'
+        spec = dict(rec, round=1, user_id="employee_a", timeout=20, max_heavy=1, heavy=False, cmd=command,
+                    directory=str(directory), wt=str(wt), bin=str(self.root / f"native-bin-{code_key}"),
+                    lock_dir=str(self.root / "locks"), sync="direct", profile=None, handoff_version=1)
+        spec.update(spec_changes)
+        spec_file = self.root / f"spec-{code_key}.json"
+        spec_file.write_text(json.dumps(spec))
+        self.addCleanup(os.chdir, os.getcwd())
+        native.run_job(str(spec_file))
+        return json.loads((directory / "reports" / "result.r1.json").read_text()), command
+
+    def test_windows_native_test_job_reports_checks_from_exit_code(self):
+        for code, checks in ((0, "passed"), (3, "failed")):
+            with self.subTest(code=code):
+                report, command = self.native_receipt(code, test=True, agent=None)
+                self.assertEqual((report["checks"], report["test_command"]), (checks, command))
+
+    def test_windows_native_plain_command_and_agent_checks_stay_not_reported(self):
+        self.assertEqual(self.native_receipt(0, test=False, agent=None)[0]["checks"], "not_reported")
+        report, _ = self.native_receipt(0, test=True, agent="codex")
+        self.assertEqual(report["checks"], "not_reported")
+
     def test_project_history_survives_clean_with_dispatch_count_and_times(self):
         with patch.object(rd.time, "strftime", side_effect=lambda fmt: "2026-10-24 10:00:00" if fmt == "%Y-%m-%d %H:%M:%S" else "20261024-100000"):
             first = self.dispatch(project="app")

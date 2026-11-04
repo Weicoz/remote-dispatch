@@ -491,7 +491,8 @@ def run_job(spec_file):
         if spec.get("handoff_version"):
             (directory / ("exit.r" + str(spec["round"]))).write_text(str(rc), encoding="utf-8")
             try:
-                messages.finish(directory, spec["job"], spec["round"], rc, agent=spec.get("agent"))
+                messages.finish(directory, spec["job"], spec["round"], rc, agent=spec.get("agent"),
+                                test_command=spec.get("cmd") if spec.get("test") and not spec.get("agent") else None)
             except (ValueError, OSError):
                 (directory / ("report.r" + str(spec["round"]) + ".log")).write_text("结果回执生成失败；原执行退出码保留。", encoding="utf-8")
         (directory / "exit_code").write_text(str(rc), encoding="utf-8")
