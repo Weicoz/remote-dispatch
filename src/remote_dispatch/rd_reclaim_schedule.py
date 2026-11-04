@@ -98,10 +98,15 @@ class ScheduledReclaim:
         # 起点只在首次启用时写入，serve 重启与反复调用都不重新计时。
         if not isinstance(data.get("enabled_at"), (int, float)):
             data["enabled_at"] = now
+        # 「未超限也回收过期任务与闲置槽位」是后加的行为，单独记启用时间：已启用的老用户升级后
+        # 这部分同样先 7 天只出计划，期间仍只按旧逻辑（超限才瘦身、再删除）。
+        if not isinstance(data.get("sweep_enabled_at"), (int, float)):
+            data["sweep_enabled_at"] = now
         data["last_run"] = now
         data.setdefault("hosts", {})
         store.write(self.service.state, data)
         execute = now >= data["enabled_at"] + store.PLAN_ONLY_SECONDS
+        sweep = now >= data["sweep_enabled_at"] + store.PLAN_ONLY_SECONDS
         plans = {}
         for host in config.hosts():
             if self.stopping():
@@ -113,7 +118,7 @@ class ScheduledReclaim:
                 # 离线目标机直接跳过，不报错。
                 if not cli.probe(host).get("reachable"):
                     continue
-                plan = self.host_run(config, host, limit, execute, now)
+                plan = self.host_run(config, host, limit, execute, now, sweep)
             except ERRORS:
                 continue
             if plan is not None:
@@ -193,8 +198,33 @@ class ScheduledReclaim:
                     hosts[key] = where
         return rows, hosts
 
-    def host_run(self, config, host, limit, execute, now):
-        """先回收已签收且过期的任务与闲置超期的热槽位（不论是否超限），超限时再对剩余任务额外瘦身。"""
+    def legacy_execute(self, config, host, limit, plan, recs, states):
+        """sweep 安全期内的旧逻辑：只在超限时执行，先瘦身，仍超限再从旧到新删除已过期的派单。"""
+        results = []
+        for row in self.slim_candidates(host, recs, states):
+            if self.stopping():
+                break
+            results.append(dict(row, **self.slim_one(config, row["job"])))
+        sizes = worktree_sizes(host, recs, self.service.user_id)
+        after = sum(sizes.values())
+        if after > limit and not self.stopping():
+            fresh = cli.job_states(config, recs) if recs else {}
+            picked, _ = self.delete_candidates(config, host, recs, fresh, sizes, {}, after - limit)
+            for row in picked:
+                if self.stopping():
+                    break
+                results.append(dict(row, **self.delete_one(config, row["job"])))
+            after = sum(worktree_sizes(host, recs, self.service.user_id).values())
+        plan = dict(plan, results=results, after_gb=gb(after))
+        self.emit("reclaim.result", host["name"], plan, slimmed_count=self.count(results, "slim"),
+                  deleted_count=self.count(results, "delete"),
+                  failed_count=sum(1 for r in results if not r["ok"]))
+        return plan
+
+    def host_run(self, config, host, limit, execute, now, sweep=True):
+        """先回收已签收且过期的任务与闲置超期的热槽位（不论是否超限），超限时再对剩余任务额外瘦身。
+
+        sweep=False（新行为启用后的前 7 天）只把上述回收列成计划，实际仍只按旧逻辑在超限时处理。"""
         name = host["name"]
         recs = self.owned(name)
         sizes = worktree_sizes(host, recs, self.service.user_id)
@@ -212,12 +242,14 @@ class ScheduledReclaim:
         actions = picked + idle + slims
         if not actions and used <= limit:
             return None
-        plan = dict(at=now, mode="execute" if execute else "plan", limit_gb=gb(limit), used_gb=gb(used),
+        plan = dict(at=now, mode="execute" if execute and sweep else "plan", limit_gb=gb(limit), used_gb=gb(used),
                     estimated_gb=gb(used - sum(row["kb"] for row in actions)),
                     blocked=blocked, actions=actions)
         self.emit("reclaim.planned", name, plan, blocked_count=len(blocked))
         if not execute or self.stopping():
             return plan
+        if not sweep:
+            return self.legacy_execute(config, host, limit, plan, recs, states) if used > limit else plan
         return self.execute(config, host, limit, plan, recs, slot_hosts, pinned)
 
     def execute(self, config, host, limit, plan, recs, slot_hosts, pinned):

@@ -165,6 +165,37 @@ class ExecuteTest(ScheduleFixture):
         self.assertTrue(self.exists(fresh))
         self.assertTrue((self.paths(fresh)[0] / "target").exists())
 
+    def seed_old_user(self):
+        """老用户：早就启用过（enabled_at 很久以前），没有 sweep_enabled_at。"""
+        from remote_dispatch import rd_reclaim_plan as store
+        store.write(rd.STATE, dict(user_id="employee_a", enabled_at=T0 - 90 * DAY, hosts={}))
+
+    def test_sweep_of_expired_jobs_has_its_own_plan_only_week_for_existing_users(self):
+        old = self.dispatch(BUILD)
+        self.age(old)
+        self.seed_old_user()
+        self.configure(limit="5")
+        service = self.service()
+        plan = service.reclaim.run_once(now=T0)["self"]
+        self.assertEqual((plan["mode"], [(a["action"], a["job"]) for a in plan["actions"]]),
+                         ("plan", [("delete", old["job"])]))
+        self.assertTrue(self.exists(old))
+        self.assertEqual(service.reclaim.load()["sweep_enabled_at"], T0)
+        again = service.reclaim.run_once(now=T0 + 3 * DAY)["self"]
+        self.assertEqual(again["mode"], "plan")
+        self.assertTrue(self.exists(old))
+        done = service.reclaim.run_once(now=T0 + 8 * DAY)["self"]
+        self.assertEqual(done["mode"], "execute")
+        self.assertFalse(self.exists(old))
+
+    def test_existing_users_still_get_over_limit_enforcement_during_the_sweep_week(self):
+        rec = self.dispatch(BUILD)
+        self.seed_old_user()
+        self.configure(limit="0.0025")
+        plan = self.service().reclaim.run_once(now=T0)["self"]
+        self.assertEqual([(r["action"], r["ok"]) for r in plan["results"]], [("slim", True)])
+        self.assertFalse((self.paths(rec)[0] / "target").exists())
+
     def test_expired_reclaim_under_limit_is_plan_only_during_first_week(self):
         old = self.dispatch(BUILD)
         self.age(old)

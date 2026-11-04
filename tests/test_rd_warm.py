@@ -452,5 +452,178 @@ class IncludeGuardTest(WarmFixture):
             self.assertTrue(self.rows()[rec["job"]]["reclaimable"])
 
 
+class ReviewFixesTest(WarmFixture):
+    """独立审查员第 1 轮发现的问题：先复现，再修。"""
+
+    def make_bare(self, branches=4):
+        bare = self.root / "worker" / "users" / "employee_a" / "repos" / "x.git"
+        bare.parent.mkdir(parents=True, exist_ok=True)
+        subprocess.run(["git", "init", "-q", "--bare", str(bare)], check=True)
+        for index in range(branches):
+            self.git("push", "-q", str(bare), f"HEAD:refs/heads/b{index}")
+        return rd.scoped_host(rd.Config().host("self"), "employee_a")
+
+    def claim(self, host, index, slots=1):
+        script = warm.claim_script(f'mkdir -p "$ROOT/jobs/j{index}" "$ROOT/wt"\n', "repos/x.git", f"j{index}",
+                                   f"b{index}", "p-key", slots, [])
+        return warm.parse_result(rd.ssh(host, script).stdout)
+
+    def unlock(self, path):
+        subprocess.run(["chmod", "-R", "u+rwx", str(path)], check=False, capture_output=True)
+
+    # P0-1
+    def test_unwritable_job_dir_aborts_takeover_and_keeps_tracked_changes(self):
+        first = self.dispatch("echo precious >> tracked.txt")
+        directory = self.worker(first) / "jobs" / first["job"]
+        os.chmod(directory, 0o500)
+        self.addCleanup(os.chmod, directory, 0o755)
+        second = self.dispatch("true")
+        self.assertEqual(warm.parse_field(second)[0], "cold")
+        self.assertEqual(second["warm_cold_reason"], "snapshot_failed")
+        self.assertIn("precious", (self.slot_path(first) / "tracked.txt").read_text())
+        self.assertEqual(sorted(p.name for p in directory.glob("final-*")), [])
+        self.assertEqual(rd.worktree_changes(self.host(first), first)[0], first["base"])
+
+    # P0-2
+    def test_preparing_claim_stays_busy_while_heartbeat_runs_even_after_long_prep(self):
+        host = self.make_bare()
+        with patch.object(warm, "HEARTBEAT_SECONDS", 1), patch.object(warm, "HEARTBEAT_STALE_SECONDS", 4):
+            first = self.claim(host, 0)
+            self.assertEqual(first["mode"], "warm")
+            at = Path(host["workdir"]) / "warm" / (first["slot"] + ".claim") / "at"
+            at.write_text(str(int(time.time()) - 7200) + "\n")
+            time.sleep(2.5)
+            self.assertGreater(int(at.read_text()), time.time() - 4)
+            second = self.claim(host, 1)
+            self.assertEqual((second["mode"], second.get("reason")), ("cold", "slots_full"))
+
+    def test_preparer_gone_means_heartbeat_stops_and_stale_claim_can_be_taken(self):
+        host = self.make_bare()
+        with patch.object(warm, "HEARTBEAT_SECONDS", 1), patch.object(warm, "HEARTBEAT_MAX_SECONDS", 1), \
+             patch.object(warm, "HEARTBEAT_STALE_SECONDS", 4):
+            first = self.claim(host, 0)
+            at = Path(host["workdir"]) / "warm" / (first["slot"] + ".claim") / "at"
+            time.sleep(2.5)  # 心跳只跑一圈就停（模拟准备者消失）
+            at.write_text(str(int(time.time()) - 60) + "\n")
+            second = self.claim(host, 1)
+            self.assertEqual((second["mode"], second["slot"]), ("warm", first["slot"]))
+
+    def test_unreadable_heartbeat_counts_as_busy(self):
+        host = self.make_bare()
+        first = self.claim(host, 0)
+        claim = Path(host["workdir"]) / "warm" / (first["slot"] + ".claim")
+        (claim / "at").write_text("garbage\n")
+        (claim / "job").write_text("j0\n")
+        second = self.claim(host, 1)
+        self.assertEqual(second["mode"], "cold")
+
+    # P1-3
+    def test_ignored_include_file_does_not_leak_to_next_job(self):
+        (self.repo / ".gitignore").write_text("build/\nlocal.cfg\n")
+        self.git("add", ".")
+        self.git("commit", "-qm", "ignore local.cfg")
+        (self.repo / "local.cfg").write_text("A-secret\n")
+        first = self.dispatch("cat local.cfg > a.out", include=["local.cfg"])
+        (self.repo / "local.cfg").unlink()
+        second = self.dispatch("if [ -e local.cfg ]; then echo leaked > seen.txt; else echo none > seen.txt; fi")
+        self.assertEqual(self.slot_path(first), self.slot_path(second))
+        self.assertEqual((self.slot_path(second) / "seen.txt").read_text(), "none\n")
+
+    # P1-4
+    def test_unremovable_untracked_dir_is_repaired_and_slot_stays_consistent(self):
+        first = self.dispatch("mkdir -p junk/sub; touch junk/sub/f; chmod 000 junk/sub")
+        self.addCleanup(self.unlock, self.slot_path(first) / "junk")
+        second = self.dispatch("true")
+        self.assertEqual(warm.parse_field(second)[0], "warm")
+        self.assertFalse((self.slot_path(second) / "junk").exists())
+        self.assertEqual(self.sh(second, f'git -C "{self.slot_path(second)}" symbolic-ref --short HEAD').strip(), second["branch"])
+        self.assertEqual(self.state(first)["head"], first["base"])
+
+    # P1-5
+    def test_nested_git_repo_is_removed_between_jobs(self):
+        self.dispatch("git init -q nested; echo x > nested/f")
+        second = self.dispatch("git status --porcelain > st.txt")
+        self.assertFalse((self.slot_path(second) / "nested").exists())
+        self.assertNotIn("nested", (self.slot_path(second) / "st.txt").read_text())
+        self.assertEqual(self.state(second)["dirty"], "1")  # 只有 st.txt 自己
+
+    # P2-6
+    def test_dead_or_empty_stale_mutex_is_reclaimed(self):
+        host = self.make_bare()
+        mutex = Path(host["workdir"]) / "warm" / ".mutex"
+        mutex.mkdir(parents=True)
+        (mutex / "pid").write_text("999999\n")
+        self.assertEqual(self.claim(host, 0, slots=2)["mode"], "warm")
+        mutex.mkdir(exist_ok=True)
+        old = time.time() - 600
+        os.utime(mutex, (old, old))
+        self.assertEqual(self.claim(host, 1, slots=2)["mode"], "warm")
+        self.assertFalse(mutex.exists())
+
+    # P2-7
+    def test_target_side_pin_markers_protect_slots_from_other_controllers(self):
+        first = self.dispatch("true")
+        directory = self.worker(first) / "jobs" / first["job"]
+        (directory / "pinned").write_text("")
+        second = self.dispatch("true")
+        self.assertNotEqual(second["worktree"].split("#")[0], first["worktree"].split("#")[0])
+        (directory / "pinned").unlink()
+        (directory / "pinned-until").write_text(str(int(time.time()) + 3600) + "\n")
+        third = self.dispatch("true")
+        self.assertNotEqual(third["worktree"].split("#")[0], first["worktree"].split("#")[0])
+        (directory / "pinned-until").write_text(str(int(time.time()) - 5) + "\n")
+        self.wait_done(second)
+        fourth = self.dispatch("true")
+        self.assertIn(fourth["worktree"].split("#")[0], {first["worktree"].split("#")[0], second["worktree"].split("#")[0]})
+
+    def test_keep_writes_and_clears_pin_on_target(self):
+        first = self.dispatch("true")
+        pin = self.worker(first) / "jobs" / first["job"] / "pinned-until"
+        rd.cmd_keep(argparse.Namespace(job=first["job"], hours=2), self.cfg)
+        self.assertGreater(int(pin.read_text()), time.time() + 3600)
+        rd.cmd_keep(argparse.Namespace(job=first["job"], hours=0), self.cfg)
+        self.assertFalse(pin.exists())
+
+    # P2-8
+    def test_artifact_pull_after_takeover_reports_taken_instead_of_pulling_wrong_files(self):
+        first = self.dispatch("mkdir -p out; echo mine > out/a.txt", artifact=["out"])
+        self.assertTrue((self.worker(first) / "jobs" / first["job"] / "pinned").exists())
+        (self.worker(first) / "jobs" / first["job"] / "pinned").unlink()
+        with patch.object(warm, "pinned_jobs", return_value=[]):  # 控制端侧的钉住也撤掉，模拟另一个控制端
+            self.dispatch("mkdir -p out; echo theirs > out/a.txt")
+        results = rd.pull_artifacts(self.cfg, rd.load_job(first["job"]))
+        self.assertEqual(results[0]["status"], "skipped")
+        self.assertIn("接手", results[0]["error"])
+        self.assertFalse((self.repo / "out").exists())
+
+    def test_pulling_all_artifacts_clears_the_pin(self):
+        first = self.dispatch("mkdir -p out; echo mine > out/a.txt", artifact=["out"])
+        pin = self.worker(first) / "jobs" / first["job"] / "pinned"
+        self.assertTrue(pin.exists())
+        results = rd.pull_artifacts(self.cfg, rd.load_job(first["job"]))
+        self.assertEqual(results[0]["status"], "fetched")
+        self.assertFalse(pin.exists())
+        self.assertEqual((self.repo / "out" / "a.txt").read_text(), "mine\n")
+
+    # P2-9
+    def test_preparation_failure_releases_the_claim(self):
+        self.write_config("setup = true")
+        with patch.object(rd, "put_file", side_effect=RuntimeError("upload broke")), self.assertRaises(RuntimeError):
+            self.start("true")
+        failed = rd.all_jobs()[0]
+        self.assertEqual(failed["dispatch_state"], "preparation_failed")
+        name = warm.parse_field(failed)[1]
+        self.assertFalse((self.worker(failed) / "warm" / f"{name}.claim").exists())
+
+    # P2-10
+    def test_broken_slot_without_snapshot_is_kept_and_job_goes_cold(self):
+        first = self.dispatch("echo work > stray.txt")
+        slot = self.slot_path(first)
+        (slot / ".git").unlink()
+        second = self.dispatch("true")
+        self.assertEqual((warm.parse_field(second)[0], second["warm_cold_reason"]), ("cold", "slot_invalid"))
+        self.assertEqual((slot / "stray.txt").read_text(), "work\n")
+
+
 if __name__ == "__main__":
     unittest.main()

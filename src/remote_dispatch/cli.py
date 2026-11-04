@@ -2622,9 +2622,14 @@ def pull_artifacts(cfg, rec):
         else:
             probe = "".join(f'if [ -d {shlex.quote(p)} ]; then echo "d {p}"; elif [ -e {shlex.quote(p)} ]; then echo "f {p}"; '
                             f'else echo "m {p}"; fi\n' for p in paths)
-            r = ssh(host, f'cd {warm.worktree_sh(rec)} 2>/dev/null || {{ echo W; exit 0; }}\n{probe}', check=False, timeout=60)
+            # 热槽位代次不一致（已被后来的任务接手）时 WT 为空：不拉，避免拉到别的任务的文件。
+            r = ssh(host, warm.resolve_sh(rec) + 'if [ -z "$WT" ]; then echo T; exit 0; fi\n'
+                          f'cd "$WT" 2>/dev/null || {{ echo W; exit 0; }}\n{probe}', check=False, timeout=60)
             if r is not None and r.returncode == 0:
                 for line in r.stdout.splitlines():
+                    if line == "T":
+                        kinds = {p: "t" for p in paths}
+                        break
                     if line == "W":
                         kinds = {p: "w" for p in paths}
                         break
@@ -2638,6 +2643,8 @@ def pull_artifacts(cfg, rec):
             results.append(dict(path=path, status="error", error="无法连接目标机核对路径"))
         elif kind == "x":
             results.append(dict(path=path, status="error", error="目标机路径含符号链接或越界，已拒绝"))
+        elif kind == "t":
+            results.append(dict(path=path, status="skipped", error="工作树已被后来的任务接手，产物不可再拉"))
         elif kind in ("m", "w"):
             results.append(dict(path=path, status="missing", error="目标机 worktree 里没有该路径"))
         else:
@@ -2650,6 +2657,9 @@ def pull_artifacts(cfg, rec):
                 results.append(rsync_artifact(host, job, repo, path, kind == "d", worktree=warm.job_worktree(rec)))
     rec["artifacts_state"] = dict(results=results, at=time.strftime("%Y-%m-%d %H:%M:%S"))
     save_job(rec)
+    if warm.is_warm(rec) and host["platform"] != "windows" and not artifacts.artifacts_pending(rec):
+        # 产物已处理完，解除目标机上的钉住标记，槽位可被接手。
+        ssh(host, warm.pin_script(rec, artifacts=False), check=False, timeout=30)
     return results
 
 
@@ -2749,6 +2759,9 @@ def place_worktree(cfg, host, rec, a, proj, repo_key, prefix):
         ssh(host, cold)
     warm.apply_result(rec, fields, job)
     save_job(rec)
+    if warm.is_warm(rec) and rec.get("artifact_paths"):
+        # 产物在槽位里：拉回前其他控制端的领用也不能接手。
+        ssh(host, warm.pin_script(rec, artifacts=True))
 
 
 def cmd_run(a, cfg):
@@ -2986,6 +2999,10 @@ def cmd_run(a, cfg):
 
                 if a.include:
                     ssh(host, f'tar -xf - -C {warm.worktree_sh(rec)}', stdin=included)
+                    unpacked = [p for p in include_paths if p != "."]
+                    if warm.is_warm(rec) and unpacked:
+                        # 记下解包路径：下次领用前连被 .gitignore 忽略的文件一起清掉。
+                        ssh(host, warm.record_unpacked_script(rec), stdin_data="\n".join(unpacked) + "\n")
                 if wip:
                     with tempfile.TemporaryFile() as patch_file:
                         patch_file.write(wip)
@@ -3035,6 +3052,10 @@ def cmd_run(a, cfg):
                 if rec["dispatch_state"] == "preparing":
                     rec["dispatch_state"] = "preparation_failed"
                     save_job(rec)
+                    if warm.is_warm(rec) and host["platform"] != "windows":
+                        # 准备失败不占着热槽位（尚未启动才释放）；释放失败不掩盖原错误。
+                        with contextlib.suppress(Exception, SystemExit):
+                            ssh(host, warm.release_unstarted_script(rec), check=False, timeout=30)
                     print(f"rdispatch: 准备失败，job 已登记：{job}；核对后用 rdispatch clean {job} --force --delete-branch 清理本任务。", file=sys.stderr)
                 else:
                     print(f"rdispatch: 启动结果待核实，job 已登记：{job}；先用 rdispatch status {job} 检查。", file=sys.stderr)
@@ -4061,6 +4082,13 @@ def cmd_keep(a, cfg):
         rec["keep_until"] = time.time() + a.hours * 3600
         print(f"{rec['job']}: 钉住到 {time.strftime('%Y-%m-%d %H:%M', time.localtime(rec['keep_until']))}，rdispatch clean --expired 不回收。")
     save_job(rec)
+    if warm.is_warm(rec):
+        # 热槽位：把钉住状态同步到目标机，其他控制端的领用判定也要尊重它。
+        host = job_host(cfg, rec)
+        if host["platform"] != "windows":
+            r = ssh(host, warm.pin_script(rec, until=rec.get("keep_until", 0)), check=False, timeout=30)
+            if r is None or r.returncode:
+                print("警告：未能把钉住状态同步到目标机，其他控制端可能仍会接手该热槽位。", file=sys.stderr)
 
 
 def slim_block(rec, snapshot):
