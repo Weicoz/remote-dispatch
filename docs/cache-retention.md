@@ -34,6 +34,7 @@ rdispatch clean --expired              # 只回收过期且安全的 worktree
 - **交接快照**：槽位被下一个任务接手（或闲置回收）前，必须完整写出（`final-state.json`、补丁文件等逐项校验）；写不出（任务目录不可写、磁盘满等）就不接手、不回收，槽位保持原状，该任务退回冷 worktree（`warm_cold_reason=snapshot_failed`）。内容：把上一个任务最终的 head、未提交统计、未跟踪文件清单（`git ls-files -o --exclude-standard`）和 `git diff --binary HEAD` 补丁写进 `$ROOT/jobs/<上一任务>/final-state.json`、`final-status.z`、`final-untracked.txt`、`final.patch`；补丁超过 20 MB 不存，`patch_over_limit` 为 true，只留统计。之后该任务的状态、回收判定读这份快照，不读槽位现场。
 - **记录**：派单记录 `worktree` 字段为 `cold:<相对路径>` 或 `warm:<槽位名>#<代次>`；旧记录没有该字段，按 `wt/<job>` 冷处理。回执新增 `worktree_mode`（`warm`/`cold`）、`warm_reused`、`warm_prev_commit`。
 - **回收**：`clean <job>` 对热槽位任务只释放领用并删日志，不删槽位；`--delete-branch` 遇分支被槽位检出时先把槽位 `checkout --detach`。`clean --slim` 不处理热槽位。槽位计入 `max_worktree_gb`，被领用、钉住的槽位绝不回收；空闲超过 `warm_idle_days`（`[retention] warm_idle_days`，环境变量 `RD_RETAIN_WARM_IDLE_DAYS`，默认 7 天）的槽位由 serve 定时回收删除，删前先写交接快照。
+- **降级场景**：领用脚本里需要解析输出的 git 调用固定 `LC_ALL=C`，不受本地化影响，也不改用户命令的环境。仓库含子模块且相邻任务的 gitlink 不同、或 LFS smudge 结果不幂等时，领用后 `git status --porcelain` 可能不为空，硬校验会废弃该槽位并退冷 worktree（`dirty_after_claim`）。这是降级，不影响正确性，只是失去该项目的缓存复用。
 - **产物占用槽位**：声明了 `--artifact` 的热槽位任务，产物未成功拉回前槽位一直被占用（防丢产物）。`status`、`board`、`clean --expired --dry-run` 都会写明「热槽位因产物未拉回被占用」和解除办法：`rdispatch fetch JOB --artifacts`（拉回或确认缺失即解除），或 `rdispatch clean JOB --force` 放弃产物。
 - **限制**：同一任务的 `setup` 仍每个任务执行一次（在槽位里运行，应写成可重复执行）。`fingerprint` 在槽位内执行。
 

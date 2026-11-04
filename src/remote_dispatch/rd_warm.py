@@ -282,7 +282,7 @@ rd_cold() {
 # 只对 git clean 报错的未跟踪路径放开权限（路径本身及其下内容；上级目录只加目录权限，不递归），
 # 不碰跟踪文件，避免把 100644 变成 100755。$1 是 clean 的 stderr 文件。
 rd_fix_clean() {
-  sed -n -e "s/^warning: could not open directory '\(.*\)': .*/\1/p" -e 's/^warning: failed to remove \(.*\): .*/\1/p' "$1" | while IFS= read -r fp; do
+  LC_ALL=C sed -n -e "s/^warning: could not open directory '\(.*\)': .*/\1/p" -e 's/^warning: failed to remove \(.*\): .*/\1/p' "$1" | while IFS= read -r fp; do
     fp=${fp%/}
     case "$fp" in ''|/*|..|../*|*/../*|*/..) continue;; esac
     d=$fp
@@ -332,7 +332,8 @@ if [ -d "$W" ] && [ "$(git -C "$W" rev-parse --show-toplevel 2>/dev/null)" = "$(
   fi
   git -C "$W" checkout -q -f "$BRANCH" >/dev/null 2>&1 || { rd_discard; rd_cold checkout_failed; }
   rd_tries=0
-  while ! git -C "$W" clean -ffdq >/dev/null 2>"$WARM/.clean.$$"; do
+  # LC_ALL=C 只作用于要解析输出的 git 调用，保证警告文本不被本地化。
+  while ! LC_ALL=C git -C "$W" clean -ffdq >/dev/null 2>"$WARM/.clean.$$"; do
     rd_tries=$((rd_tries + 1))
     [ "$rd_tries" -gt 3 ] && { rm -f "$WARM/.clean.$$"; rd_discard; rd_cold clean_failed; }
     rd_fix_clean "$WARM/.clean.$$"

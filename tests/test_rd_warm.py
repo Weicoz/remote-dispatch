@@ -635,10 +635,15 @@ class ReviewFixesTest(WarmFixture):
         with patch.object(warm, "HEARTBEAT_SECONDS", 30), patch.object(warm, "HEARTBEAT_STALE_SECONDS", 4):
             first = self.claim(host, 0)
             claim = Path(host["workdir"]) / "warm" / (first["slot"] + ".claim")
-            for _ in range(50):
-                if (claim / "hb.pid").exists():
+            # 心跳先写 hb.pid 再刷新 at：等 at 被心跳刷新过一次（mtime 不早于 hb.pid）再改旧，避免被首轮覆盖。
+            for _ in range(100):
+                if (claim / "hb.pid").exists() and not (claim / "at.tmp").exists() \
+                        and (claim / "at").stat().st_mtime_ns >= (claim / "hb.pid").stat().st_mtime_ns:
                     break
                 time.sleep(0.1)
+            else:
+                self.fail("心跳未在 10 秒内刷新 at")
+            time.sleep(0.2)
             pid = int((claim / "hb.pid").read_text())
             self.addCleanup(lambda: subprocess.run(["kill", str(pid)], capture_output=True))
             (claim / "at").write_text(str(int(time.time()) - 7200) + "\n")
