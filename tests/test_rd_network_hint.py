@@ -89,6 +89,23 @@ class FailureHintTests(unittest.TestCase):
         self.assertIsNone(messages.failure_hint("codex", chatter, 1))
         self.assertIsNone(messages.failure_hint(None, row("error", "tls handshake"), 1))
 
+    def test_transient_reconnect_followed_by_other_final_failure_is_not_network(self):
+        text = "\n".join([row("error", "Reconnecting... 1/5 (error sending request) waiting for network"),
+                          json.dumps({"type": "turn.failed", "error": {"message": "context window exceeded"}})])
+        self.assertIsNone(query.Query.failure_hint_for("codex", text, 1))
+
+    def test_only_the_last_failure_event_decides(self):
+        old = row("error", "tls handshake failed")
+        final = json.dumps({"type": "turn.failed", "error": {"message": "disk quota exceeded"}})
+        self.assertIsNone(query.Query.failure_hint_for("codex", old + "\n" + final, 1))
+        later = row("error", "workspace routing discovery failed")
+        self.assertEqual(query.Query.failure_hint_for("codex", final + "\n" + later, 1)[0], "network_unreachable")
+
+    def test_reconnect_lines_are_ignored_even_when_last(self):
+        text = row("error", "workspace routing discovery failed") + "\n" + \
+            row("error", "Reconnecting... 2/5 (error sending request) waiting for network")
+        self.assertEqual(query.Query.failure_hint_for("codex", text, 1)[0], "network_unreachable")
+
     def test_credential_detection_is_unchanged(self):
         self.assertTrue(messages.credential_suspect("codex", row("error", "401 Unauthorized"), 1))
         self.assertFalse(messages.credential_suspect("codex", row("error", "401 Unauthorized"), 0))

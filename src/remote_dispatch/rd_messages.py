@@ -178,19 +178,48 @@ NETWORK_NEEDLES = ("workspace routing discovery failed", "tls handshake", "ssl h
                    "network is unreachable", "dns error", "failed to lookup address", "could not resolve host")
 
 
-def failure_hint(agent, text, exit_code):
-    """失败输出的已知原因提示：返回 (kind, 中文说明) 或 None。只在非零退出时判定。
-    认证失败优先（auth_failed），其次网络类（network_unreachable）；其余不标记。"""
+def final_failure(agent, text, skip=None):
+    """本轮输出里最后一条失败事件的小写文本（最后一条 turn.failed 或 error）；skip(文本) 为真的事件（如瞬时重连）不算。
+    没有 JSON 事件时，退回输出末尾 20 行里最后一条非空纯文本行。"""
+    if agent == "dsh":
+        return text.lower()
+    last = None
+    for line in text.splitlines():
+        try:
+            row = json.loads(line)
+        except ValueError:
+            continue
+        if not isinstance(row, dict):
+            continue
+        message = None
+        if row.get("type") == "error":
+            message = str(row.get("message", ""))
+        elif row.get("type") == "turn.failed" and isinstance(row.get("error"), dict):
+            message = str(row["error"].get("message", ""))
+        elif row.get("event") == "result" and isinstance(row.get("result"), dict) and row["result"].get("error"):
+            message = str(row["result"]["error"])
+        if message is not None and not (skip and skip(message)):
+            last = message.lower()
+    if last is not None:
+        return last
+    for line in reversed(text.splitlines()[-20:]):
+        if line.strip() and not line.lstrip().startswith("{") and not (skip and skip(line)):
+            return line.lower()
+    return None
+
+
+def failure_hint(agent, text, exit_code, skip=None):
+    """失败输出的已知原因提示：返回 (kind, 中文说明) 或 None。只在非零退出时判定，且只看最后一条失败事件，
+    先前被重试掉的瞬时错误不算。认证失败优先（auth_failed），其次网络类（network_unreachable）。"""
     if not agent or not text or exit_code in (None, "", 0, "0"):
         return None
-    if credential_suspect(agent, text, exit_code):
+    final = final_failure(agent, text, skip)
+    if not final:
+        return None
+    if any(needle in final for needle in AUTH_NEEDLES.get(agent, ())):
         return "auth_failed", "疑似认证失效：目标机上的登录凭据被服务端拒绝；见 credential_hint 的续跑命令。"
-    errors = error_texts(agent, text)
-    if agent != "dsh":  # 非 JSON 的尾部文本行（纯文本错误输出）也看
-        tail = [line for line in text.splitlines()[-20:] if line.strip() and not line.lstrip().startswith("{")]
-        errors += [line.lower() for line in tail]
     for needle in NETWORK_NEEDLES:
-        if any(needle in error for error in errors):
+        if needle in final:
             return "network_unreachable", ("疑似网络不可达：目标机访问模型服务失败（" + needle + "）；"
                                           "先用 rdispatch hosts 看该机网络探针，恢复后再续跑，或换主机重派。")
     return None

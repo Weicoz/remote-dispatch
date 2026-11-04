@@ -8,6 +8,7 @@ import json
 from pathlib import Path
 
 from . import rd_line as workline
+from . import rd_health as health
 from . import rd_messages as messages
 from . import rd_usage as usage
 from .rd_projects import ProjectIndex, project_fields
@@ -127,10 +128,15 @@ class Query:
         fields = {}
         if messages.credential_suspect(rec.get("agent"), text, exit_code):
             fields.update(credential_suspect=True, credential_hint=messages.refresh_auth_hint(rec["job"]))
-        hint = messages.failure_hint(rec.get("agent"), text, exit_code)
+        hint = self.failure_hint_for(rec.get("agent"), text, exit_code)
         if hint:
             fields.update(failure_hint=hint[0], failure_note=hint[1])
         return fields
+
+    @staticmethod
+    def failure_hint_for(agent, text, exit_code):
+        """瞬时重连（Reconnecting… waiting for network）不算失败事件，复用 rd_health 的同一判定。"""
+        return messages.failure_hint(agent, text, exit_code, skip=health.reconnect_line)
 
     def measured(self, rec, number):
         """从本轮 harness 输出取实际模型与用量；任何读取失败都记「未记录」。"""
