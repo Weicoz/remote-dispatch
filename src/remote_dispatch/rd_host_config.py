@@ -81,9 +81,16 @@ def parse_cache_dirs(text, root):
     return items
 
 
+# 已停用的接单判定字段：任何值都忽略，不校验（旧配置里常有空值）。
+DEPRECATED_FIELDS = ("max_swap_io_mb_s", "min_swap_free_gb", "swap_active_mb_s")
 TRUE_VALUES = ("1", "true", "yes")
 FALSE_VALUES = ("0", "false", "no")
 NUMERIC_PREFIXES = ("max_", "min_", "warn_", "swap_")
+
+
+def is_enabled(value):
+    """读取路径上的 enabled 宽松解析：1/true/yes 为启用，其余（off、空值、false、no、0 等）一律视为停用。"""
+    return str(value).strip().lower() in TRUE_VALUES
 
 
 def parse_bool(value, field="enabled"):
@@ -108,7 +115,8 @@ def validate_field(field, value):
         raise InvalidField(field)
 
 
-def validate(values):
+def validate(values, *, lenient=False):
+    """完整校验一台目标机的有效配置。lenient=True（读取路径）不校验 enabled：它走宽松解析。"""
     for field in ("ssh", "workdir"):
         if not values.get(field, "").strip():
             raise InvalidField(field, "host_field_required")
@@ -116,6 +124,8 @@ def validate(values):
                            ("platform", ("posix", "macos", "linux", "windows")),
                            ("enabled", ("1", "0", "true", "false", "yes", "no")),
                            ("launcher", ("nohup", "tmux"))):
+        if lenient and field == "enabled":
+            continue
         value = values[field].strip().lower() if field == "enabled" else values[field]
         if value not in allowed:
             raise InvalidField(field)
@@ -129,6 +139,8 @@ def validate(values):
     except ValueError as error:
         raise InvalidField("cache_dirs", detail=str(error)) from None
     for field in DEFAULTS:
+        if field in DEPRECATED_FIELDS:
+            continue
         if field.startswith(NUMERIC_PREFIXES) or field == "timeout":
             try:
                 if field == "max_worktree_gb" and not str(values[field]).strip():
@@ -137,11 +149,11 @@ def validate(values):
                 if field in ("max_heavy", "timeout"):
                     int(values[field])  # Match the launcher's integer-string parser.
             except (ValueError, OverflowError):
-                raise InvalidField(field) from None
+                raise InvalidField(field, detail=str(values[field])) from None
             if (not math.isfinite(number) or number < 0
                     or field.endswith("_pct") and number > 100
                     or field in ("max_heavy", "timeout") and number < 1):
-                raise InvalidField(field)
+                raise InvalidField(field, detail=str(values[field]))
 
 
 def parse(text):

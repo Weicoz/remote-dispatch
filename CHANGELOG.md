@@ -2,6 +2,8 @@
 
 ## 未发布
 
+- **一台目标机的配置错误只影响它自己**：`enabled` 读取时宽松解析（`1／true／yes` 启用，`off`、空值、`false`、`no`、`0` 等一律停用，保持旧行为），已停用的目标机不做校验；已停用的接单字段 `max_swap_io_mb_s`、`min_swap_free_gb`、`swap_active_mb_s` 任何值都忽略。已启用的目标机有非法值（NaN、inf、负数、`10G` 这类带单位的数字、`timeout = 0` 等）时标记为「配置无效」：从 `--host auto`／`--tag` 候选排除，显式 `--host` 退出码 4 并指出字段与修改建议（带单位的值提示「去掉单位」），`rdispatch hosts` 与 serve 的 `GET /v1/hosts`（新增 `config_errors`）显示该错误，其他目标机与 serve 照常运行。serve 启动时同样隔离；热重载时若某台**已在用**的目标机被写坏，仍整份保留旧配置并报错（继续监控该机上的在途任务，不让它悄悄消失），启动时已存在的无效目标机不阻塞其他修改的重载。
+- **指纹核对的 setup 计入超时预算**：派单前指纹核对同步跑的 setup 耗时从随后启动任务的 `timeout` 里扣除（至少 1 秒），setup 加主体总时长不再最多翻倍。Windows 原生 runner 的 setup 超时与 setup 失败（97）现在也写结果回执，`--test` 的 `checks` 按失败处理，与 POSIX 一致。
 - **setup 纳入超时预算**：setup 与主体共用 `--timeout`／`timeout` 同一预算：setup 卡住会在预算用完时被终止，退出码 124，回执 `report.timeout_phase` 为 `setup`；setup 用掉一部分时间后主体只拿剩余时间（至少 1 秒），主体超时 `timeout_phase` 为 `body`。setup 失败仍是退出码 97。POSIX 运行脚本与 Windows 原生 runner 都按此处理。
 - **配置读取与 CRUD 共用校验**：`Config.host` 改调 `rd_host_config.validate`，读取路径也拒绝 NaN、inf、负数和越界百分比（此前 `max_load_per_core=nan` 读取接受、写入拒绝，会放过高负载门禁），`sync`、`launcher`、`enabled`、`platform` 等枚举与布尔统一解析；`DEFAULTS` 移到 `rd_defaults`、`parse_cache_dirs` 移到 `rd_host_config`，`cli` 继续导出。serve 重载遇到无效配置仍保留旧配置。
 - **网络不可达的拒绝原因与失败提示**：派单前的目标机网络探针（模型服务与 Codex 端点）不通时，`run` 仍退出码 3 拒绝，现在写明具体原因（TLS 握手失败、超时、DNS 解析失败等）并建议换主机或稍后重试，`--host auto` 自动跳过该机、全部不通时逐机列出，`--force-host` 跳过检查。代理任务失败回执新增 `failure_hint`（`network_unreachable`／`auth_failed`）与中文说明 `failure_note`：扫描本轮输出里的 `workspace routing discovery failed`、TLS 握手、连接超时／重置、DNS、401 等已知模式，识别不了不标记；`result`、`inbox`、`board` 显示。判定集中在 `rd_messages.failure_hint()`。详见 `docs/agents.md`。

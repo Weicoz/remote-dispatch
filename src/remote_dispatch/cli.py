@@ -215,8 +215,11 @@ def run(cmd, check=True, capture=True, **kw):
 
 # ---------------------------------------------------------------- config
 
+UNIT_VALUE = re.compile(r"\s*[-+]?\d+(?:\.\d+)?\s*[A-Za-z%]+\s*")
+
+
 def host_field_message(error):
-    """InvalidField 转成读取路径上的中文报错。"""
+    """InvalidField 转成读取路径上的中文报错，带修改建议。"""
     field = error.field
     if error.reason == "host_field_required":
         return f"缺少 {field}；" + ("填 user@address，或把 ssh 设为 local 以在本机派发。" if field == "ssh" else "请填写。")
@@ -229,11 +232,20 @@ def host_field_message(error):
     if field in ("sync", "launcher", "enabled"):
         allowed = {"sync": "origin 或 direct", "launcher": "nohup 或 tmux", "enabled": "1、0、true、false、yes 或 no"}[field]
         return f"{field} 必须是 {allowed}。"
+    shown = f"{field} = {error.detail!r}" if error.detail != "" else f"{field} 为空"
+    if UNIT_VALUE.fullmatch(error.detail or ""):
+        return f"{shown} 带了单位；请去掉单位，只写数字（例如 10）。"
     if field in ("max_heavy", "timeout"):
-        return f"{field} 必须是不小于 1 的整数。"
+        return f"{shown} 无效；必须是不小于 1 的整数。"
     if field.endswith("_pct"):
-        return f"{field} 必须是 0 到 100 之间的有限数。"
-    return f"{field} 必须是有限的非负数（不接受 NaN、inf 和负数）；max_worktree_gb 留空或 0 表示不限。"
+        return f"{shown} 无效；必须是 0 到 100 之间的有限数。"
+    return f"{shown} 无效；必须是有限的非负数（不接受 NaN、inf 和负数）；max_worktree_gb 留空或 0 表示不限。"
+
+
+class HostConfigError(Exception):
+    def __init__(self, message, code=4):
+        super().__init__(message)
+        self.code = code
 
 
 class ConfigError(Exception):
@@ -327,18 +339,27 @@ class Config:
         value = os.environ.get("RD_NETWORK_STALL_SECONDS") or self.cp.get("monitor", "network_stall_seconds", fallback="600")
         return health.positive_seconds(value, "RD_NETWORK_STALL_SECONDS / [monitor] network_stall_seconds")
 
-    def host(self, name):
+    def host(self, name, *, check_disabled=False):
+        """按名取目标机。启用的主机完整校验，配置无效时报错（退出码 4）；已停用的主机不校验，
+        旧任务仍能解析其所在主机。check_disabled=True（显式 --host 派单）时已停用的主机也校验。"""
+        try:
+            return self._build_host(name, check_disabled=check_disabled)
+        except HostConfigError as error:
+            self.fail(str(error), error.code)
+
+    def _build_host(self, name, *, check_disabled=False):
         sec = self._section("host", name)
         if sec is None:
-            self.fail(f"no [host:{name}] in {CONFIG}")
+            raise HostConfigError(f"no [host:{name}] in {CONFIG}", 1)
         h = dict(DEFAULTS)
         if self.cp.has_section("defaults"):
             h.update(self.cp["defaults"])
         h.update(sec)
-        try:
-            host_checks.validate(h)  # 读取路径与 CRUD 共用同一套完整校验
-        except host_checks.InvalidField as error:
-            self.fail(f"[host:{name}] {host_field_message(error)}", 4)
+        if host_checks.is_enabled(h["enabled"]) or check_disabled:
+            try:
+                host_checks.validate(h, lenient=True)  # 读取路径与 CRUD 共用同一套完整校验
+            except host_checks.InvalidField as error:
+                raise HostConfigError(f"[host:{name}] 配置无效：{host_field_message(error)}", 4) from None
         h["ssh_opts"] = with_ssh_multiplexing(h["ssh_opts"])
         if h["platform"] in ("macos", "linux"):
             h["platform"] = "posix"
@@ -349,9 +370,31 @@ class Config:
         h["probe_agent"] = getattr(self, "probe_agent", "codex")
         return h
 
+    def host_names(self):
+        return [s.split(":", 1)[1] for s in self.cp.sections() if s.startswith("host:")]
+
     def hosts(self):
-        names = [s.split(":", 1)[1] for s in self.cp.sections() if s.startswith("host:")]
-        return [h for h in map(self.host, names) if host_checks.parse_bool(h["enabled"])]
+        """已启用且配置有效的目标机。一台主机的配置错误只影响它自己：无效的启用主机被排除（见 host_errors），
+        已停用的主机不校验。"""
+        result = []
+        for name in self.host_names():
+            try:
+                h = self._build_host(name)
+            except HostConfigError:
+                continue
+            if host_checks.is_enabled(h["enabled"]):
+                result.append(h)
+        return result
+
+    def host_errors(self):
+        """{主机名: 报错文本}：已启用但配置无效的目标机。"""
+        errors = {}
+        for name in self.host_names():
+            try:
+                self._build_host(name)
+            except HostConfigError as error:
+                errors[name] = str(error)
+        return errors
 
     def project(self, name):
         section = self._section("project", name) or {}
@@ -1021,7 +1064,7 @@ def pick_host(cfg, name, tags):
 def pick_hosts(cfg, name, tags):
     """按优先顺序返回可接单的目标机候选；显式目标机只返回它自己。"""
     if name and name != "auto":
-        host = cfg.host(name)
+        host = cfg.host(name, check_disabled=True)
         info = probe(host)
         why = assess(host, info)
         print(fmt_probe(host, info, why))
@@ -1035,7 +1078,9 @@ def pick_hosts(cfg, name, tags):
         local = [h["name"] for h in matching if is_local(h)]
         if local:
             die(f"auto 不会选择本机目标（{', '.join(local)} 配置为 ssh = local）；本机派单请显式 --host {local[0]}。", 4)
-        die(f"no enabled host{' with tags ' + ','.join(tags) if tags else ''} in {CONFIG}")
+        bad = cfg.host_errors()
+        die(f"no enabled host{' with tags ' + ','.join(tags) if tags else ''} in {CONFIG}"
+            + ("".join("\n" + text for text in bad.values()) if bad else ""))
     free, refused = [], []
     for host, info in probe_all(hosts):
         why = assess(host, info)
@@ -2577,7 +2622,8 @@ def compare_fingerprint(local, remote, host_name):
 
 
 def check_fingerprint(host, rec, command, local, timeout, setup_timeout):
-    """同步完成后先在目标机跑 setup（落 setup.done，启动脚本随后跳过），再执行指纹并与本机比较。"""
+    """同步完成后先在目标机跑 setup（落 setup.done，启动脚本随后跳过），再执行指纹并与本机比较。
+    返回 setup 这一步实际耗时（秒）：setup 与主体共用同一超时预算，调用方要从 launch 的 timeout 里扣掉。"""
     job = rec["job"]
     # host["timeout"] 来自 config.ini，是字符串；ssh/win_ps 需要数值
     setup_timeout = int(setup_timeout) if setup_timeout not in (None, "") else None
@@ -2588,6 +2634,7 @@ def check_fingerprint(host, rec, command, local, timeout, setup_timeout):
                  "$s=Get-Content -Raw (Join-Path $d 'setup.ps1'); "
                  "& powershell.exe -NoProfile -NonInteractive -Command $s *> (Join-Path $d 'setup.log'); "
                  "if($LASTEXITCODE -ne 0){ exit $LASTEXITCODE }; New-Item -ItemType File (Join-Path $d 'setup.done') -Force | Out-Null }")
+        began = time.monotonic()
         r = win_ps(host, setup, setup_timeout)
     else:
         setup = (f'D="$ROOT/jobs/{job}"; [ -f "$D/setup.sh" ] || exit 0; [ -f "$D/setup.done" ] && exit 0\n'
@@ -4244,10 +4291,15 @@ def remove_job(a, rec, host):
 
 def cmd_hosts(a, cfg):
     hosts = cfg.hosts()
-    if not hosts:
+    errors = cfg.host_errors()
+    if not hosts and not errors:
         die(f"no hosts configured. Add a [host:NAME] section to {CONFIG}")
     for host, info in probe_all(hosts):
         print(fmt_probe(host, info, assess(host, info)))
+    for name, text in errors.items():
+        print(f"{name:<12} 配置无效  {text}")
+    if errors and not hosts:
+        sys.exit(4)
 
 
 def cmd_doctor(a, cfg):

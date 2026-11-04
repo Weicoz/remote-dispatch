@@ -42,6 +42,10 @@ max_heavy = 1
 
 并发怎么定：**没有会话数上限**，一台机器同时能接几个任务由负载决定——每次派单前 `rdispatch` 都会实测负载、空闲内存和磁盘，超过 `max_load_per_core`、低于 `min_free_mem_pct` 或 `min_free_disk_gb` 就不派。交换区不参与接单判定：无论 swap 多满、换页多快都不拒绝派单，读数仍显示在 `hosts`、看板和 serve 指标里。`max_swap_io_mb_s`、`min_swap_free_gb`、`swap_active_mb_s` 已停用，旧配置照常加载但不生效；已用量超过 `max_swap_used_gb` 仍只提示。`max_heavy` 不是会话上限，它是重命令的排队口：经 `rd-heavy` 或 `--heavy` 跑的完整测试这类命令同一时刻只放行这么多个，其余排队等，避免几套完整测试同时把内存耗尽。先看项目一个测试进程占多少内存，乘以并发数，不能超过机器的空闲内存；16 GB 的机器一般是 1。
 
+### 配置错误只影响出错的那台目标机
+
+已停用（`enabled` 不是 `1／true／yes`）的目标机不校验；已停用的 `max_swap_io_mb_s`、`min_swap_free_gb`、`swap_active_mb_s` 任何值都忽略。已启用的目标机有非法值（NaN、inf、负数、带单位的数字如 `min_free_disk_gb = 10G`、`timeout = 0` 等）时，该机显示为「配置无效」，不参与 `--host auto`／`--tag` 选机，显式 `--host` 退出码 4，`rdispatch hosts` 与 serve 的 `GET /v1/hosts`（`config_errors`）列出字段和原因；其他目标机照常使用。数字字段去掉单位只写数字。
+
 ### SSH 连接复用
 
 `ssh_opts` 默认是 `-o BatchMode=yes -o ConnectTimeout=8`。`rdispatch` 在加载目标机配置时，只要 `ssh_opts`（含默认值）里没有任何 `Control*` 选项，就追加 `-o ControlMaster=auto -o ControlPath=~/.ssh/rd-%C -o ControlPersist=60 -o ServerAliveInterval=10 -o ServerAliveCountMax=3`（后两项让 master 建好后目标机休眠或换网时约 30 秒内断开，而不是挂到 TCP 重传超时）：同一目标机的 ssh、git（`GIT_SSH_COMMAND`）与 rsync（`-e`）共用一条连接，握手从约 0.27 秒降到约 0.08 秒。`%C` 是定长哈希，socket 路径远低于 macOS 的 104 字节上限；`~/.ssh` 目录须存在。自己写了 `ControlMaster`、`ControlPath` 或 `ControlPersist` 时原样保留，写 `-o ControlMaster=no` 即关闭复用。Windows 发起方的 OpenSSH 不支持 ControlMaster，自动跳过。

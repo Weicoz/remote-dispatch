@@ -18,7 +18,7 @@
   配置未变化时重复读取保持同一个启动加载时间。接口只读内存状态；
   样例由 `tests/test_rd_serve_version.py` 经真实 serve 子进程校验。
 
-- `hosts.json` / `hosts-populated.json`：空列表与已配置目标机。配置顺序固定；
+- `hosts.json` / `hosts-populated.json`：空列表与已配置目标机。响应另有可选 `config_errors`（`[{name, error}]`）：已启用但配置无效、因此不在 `hosts` 里的目标机（新增字段）。配置顺序固定；
   响应顶层另带 `config_reload`，与 `version.json` 同形，成功和失败都返回；
   它是客户端可忽略的新增字段，合同版本保持 1。
   票 03 起由真实 serve 子进程在临时配置变化后验证。
