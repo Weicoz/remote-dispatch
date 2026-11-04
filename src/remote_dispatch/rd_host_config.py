@@ -8,17 +8,18 @@ import hashlib
 import math
 import os
 from pathlib import Path
+import posixpath
 import re
 import tempfile
 import uuid
 
-from . import cli
+from .rd_defaults import DEFAULTS
 
 
 SESSION_ACCESS = "/v1/config/session-access"
 COLLECTION = "/v1/config/hosts"
 ROUTE = re.compile(r"/v1/config/hosts(?:/([A-Za-z0-9._-]+))?")
-PUBLIC_FIELDS = set(cli.DEFAULTS) - {"env_file", "codex_auth_file", "dsh_auth_file", "agy_auth_file", "ssh_opts"}
+PUBLIC_FIELDS = set(DEFAULTS) - {"env_file", "codex_auth_file", "dsh_auth_file", "agy_auth_file", "ssh_opts"}
 PUBLIC_FIELDS.add("ssh")
 NAME = re.compile(r"[A-Za-z0-9._-]{1,128}")
 FIELD = re.compile(r"[a-z][a-z0-9_]*")
@@ -26,8 +27,73 @@ TERMINAL_STATES = ("done", "dead", "missing")
 
 
 class InvalidField(ValueError):
-    def __init__(self, field, reason="invalid_host_field"):
-        self.field, self.reason = field, reason
+    def __init__(self, field, reason="invalid_host_field", detail=""):
+        self.field, self.reason, self.detail = field, reason, detail
+
+
+CACHE_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+
+
+def _cache_norm(path):
+    path = path.replace("\\", "/")
+    if path.startswith("$HOME"):
+        path = "~" + path[5:]
+    return path
+
+
+def _cache_absolute(path):
+    return path.startswith(("/", "~")) or bool(re.match(r"[A-Za-z]:/", path))
+
+
+def parse_cache_dirs(text, root):
+    """解析 cache_dirs；返回 [(环境变量名, 目录, 是否绝对)]。声明不合法或落在 worktree 内时抛 ValueError。
+
+    root 是用户 ID 级（或共享）根目录；worktree 位于 root/wt、root/users/<ID>/wt 下。
+    """
+    items, seen = [], set()
+    for part in (text or "").split(";"):
+        part = part.strip()
+        if not part:
+            continue
+        name, sep, path = part.partition("=")
+        name, path = name.strip(), path.strip()
+        if not sep or not CACHE_NAME.fullmatch(name) or not path:
+            raise ValueError(f"项必须是 NAME=目录：{part}")
+        if name in seen:
+            raise ValueError(f"环境变量重复声明：{name}")
+        seen.add(name)
+        norm = _cache_norm(path)
+        if ".." in norm.split("/"):
+            raise ValueError(f"{name} 的目录不得含 ..：{path}")
+        absolute = _cache_absolute(norm)
+        if absolute and "{user}" not in norm:
+            raise ValueError(f"{name} 的绝对目录必须含 {{user}}，按用户 ID 分开：{path}")
+        if absolute:
+            expanded = posixpath.normpath(norm.replace("{user}", "user"))
+            base = posixpath.normpath(_cache_norm(root))
+            if re.match(r"[A-Za-z]:/", base):
+                expanded, base = expanded.lower(), base.lower()
+            if expanded.startswith(base.rstrip("/") + "/"):
+                rest = expanded[len(base.rstrip("/")) + 1:].split("/")
+                if rest[0] == "wt" or (rest[0] == "users" and len(rest) > 2 and rest[2] == "wt"):
+                    raise ValueError(f"{name} 的目录落在 worktree 内：{path}")
+        items.append((name, path, absolute))
+    return items
+
+
+TRUE_VALUES = ("1", "true", "yes")
+FALSE_VALUES = ("0", "false", "no")
+NUMERIC_PREFIXES = ("max_", "min_", "warn_", "swap_")
+
+
+def parse_bool(value, field="enabled"):
+    """布尔配置的统一解析：1/true/yes 与 0/false/no（不区分大小写）；其他值抛 InvalidField。"""
+    text = str(value).strip().lower()
+    if text in TRUE_VALUES:
+        return True
+    if text in FALSE_VALUES:
+        return False
+    raise InvalidField(field)
 
 
 def validate_name(name):
@@ -50,7 +116,7 @@ def validate(values):
                            ("platform", ("posix", "macos", "linux", "windows")),
                            ("enabled", ("1", "0", "true", "false", "yes", "no")),
                            ("launcher", ("nohup", "tmux"))):
-        value = values[field].lower() if field == "enabled" else values[field]
+        value = values[field].strip().lower() if field == "enabled" else values[field]
         if value not in allowed:
             raise InvalidField(field)
     if values["ssh"] == "local":
@@ -59,12 +125,14 @@ def validate(values):
         if not values["workdir"].startswith(("/", "~", "$HOME")):
             raise InvalidField("workdir")
     try:
-        cli.parse_cache_dirs(values.get("cache_dirs", ""), values["workdir"])
-    except ValueError:
-        raise InvalidField("cache_dirs") from None
-    for field in cli.DEFAULTS:
-        if field.startswith(("max_", "min_", "warn_", "swap_")) or field == "timeout":
+        parse_cache_dirs(values.get("cache_dirs", ""), values["workdir"])
+    except ValueError as error:
+        raise InvalidField("cache_dirs", detail=str(error)) from None
+    for field in DEFAULTS:
+        if field.startswith(NUMERIC_PREFIXES) or field == "timeout":
             try:
+                if field == "max_worktree_gb" and not str(values[field]).strip():
+                    values = dict(values, max_worktree_gb="0")  # 留空表示不限
                 number = float(values[field])
                 if field in ("max_heavy", "timeout"):
                     int(values[field])  # Match the launcher's integer-string parser.
@@ -83,7 +151,7 @@ def parse(text):
 
 
 def effective(cp, name):
-    values = dict(cli.DEFAULTS)
+    values = dict(DEFAULTS)
     if cp.has_section("defaults"):
         values.update(cp["defaults"])
     values.update(cp["host:" + name])

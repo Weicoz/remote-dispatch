@@ -322,7 +322,7 @@ class PollWake(threading.Event):
 
 
 class Service:
-    def __init__(self, config, socket_path=None, *, poll_interval=15, push_sender=None):
+    def __init__(self, config, socket_path=None, *, poll_interval=15, push_sender=None, state=None):
         self.config = config
         self.host_config = HostConfigRoutes(self)
         self.config_path = self.host_config.path
@@ -333,7 +333,7 @@ class Service:
             # Startup already read the config; a transient stat failure must not
             # turn into a traceback. The reload loop records the next failure.
             self.config_stamp = None
-        self.state = Path(cli.STATE).resolve()
+        self.state = Path(state or cli.STATE).resolve()  # 状态目录可显式传入，缺省仍取 cli.STATE
         self.user_id = cli.require_user()
         # 启动时已成功读完配置；后续自动重载在成功或失败后更新同一结构。
         self.config_reload = self.reload_status(config.loaded_at)

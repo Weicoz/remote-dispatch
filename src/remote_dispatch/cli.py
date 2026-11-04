@@ -61,43 +61,9 @@ STATE = os.environ.get("RD_STATE") or os.path.expanduser("~/.local/state/remote-
 HERE = os.path.dirname(os.path.abspath(__file__))
 CONFIG_REQUEST_TIMEOUT = 30
 
-DEFAULTS = {
-    "workdir": "~/remote-dispatch",
-    "sync": "origin",
-    "launcher": "nohup",
-    "path": "$HOME/.local/bin:$HOME/.kimi-code/bin:/opt/homebrew/bin:/usr/local/bin",
-    "ssh_opts": "-o BatchMode=yes -o ConnectTimeout=8",
-    "env_file": "",
-    # 缓存目录声明：NAME=目录，多项用分号分隔。相对目录落在用户根目录的 cache/ 下；
-    # 绝对目录必须含 {user}（展开为用户 ID），且不得落在任何 worktree 内。空表示不注入。
-    "cache_dirs": "",
-    "codex_auth_file": "",
-    "dsh_auth_file": "",
-    "agy_auth_file": "~/.gemini/antigravity-cli/antigravity-oauth-token",
-    "platform": "posix",
-    "python": "python",
-    "max_cpu_pct": "85",
-    "warn_cpu_pct": "70",
-    "tags": "",
-    "enabled": "true",
-    "max_heavy": "1",
-    "max_load_per_core": "1.5",
-    "min_free_mem_pct": "10",
-    "min_free_disk_gb": "10",
-    "warn_load_per_core": "1.0",
-    "warn_free_mem_pct": "20",
-    "warn_free_disk_gb": "20",
-    # 交换区已用量只反映历史累积（macOS 不主动回收冷页），超过它只提示不拦；
-    # 拦派单看换页速率：持续高速换页，或交换区快用尽且仍在换页。
-    "max_swap_used_gb": "15",
-    # 已停用：下面三项仍可加载，但不再参与接单判定
-    "max_swap_io_mb_s": "10",
-    "min_swap_free_gb": "1",
-    "swap_active_mb_s": "1",
-    "timeout": "3600",
-    # worktree 总量上限（GB）；0 表示不限。仅 serve 定时回收使用，见 docs/cache-retention.md。
-    "max_worktree_gb": "0",
-}
+from .rd_defaults import DEFAULTS  # 重新导出，保持 cli.DEFAULTS 兼容
+from . import rd_host_config as host_checks
+from .rd_host_config import parse_cache_dirs  # 重新导出，保持 cli.parse_cache_dirs 兼容
 
 # SSH 连接复用：同一目标机的多次 ssh/git/rsync 共用一条连接（握手约 0.27 秒 -> 复用约 0.08 秒）。
 # %C 是 40 位哈希，路径远低于 macOS 的 104 字节 socket 上限。
@@ -237,6 +203,27 @@ def run(cmd, check=True, capture=True, **kw):
 
 # ---------------------------------------------------------------- config
 
+def host_field_message(error):
+    """InvalidField 转成读取路径上的中文报错。"""
+    field = error.field
+    if error.reason == "host_field_required":
+        return f"缺少 {field}；" + ("填 user@address，或把 ssh 设为 local 以在本机派发。" if field == "ssh" else "请填写。")
+    if field == "cache_dirs":
+        return f"cache_dirs {error.detail}"
+    if field == "platform":
+        return "platform 必须是 macos、linux、posix 或 windows；本机目标（ssh 为 local）只支持 POSIX。"
+    if field == "workdir":
+        return "本机目标（ssh 为 local）的 workdir 必须是绝对路径或 ~ 开头；相对路径会随发起目录漂移。"
+    if field in ("sync", "launcher", "enabled"):
+        allowed = {"sync": "origin 或 direct", "launcher": "nohup 或 tmux", "enabled": "1、0、true、false、yes 或 no"}[field]
+        return f"{field} 必须是 {allowed}。"
+    if field in ("max_heavy", "timeout"):
+        return f"{field} 必须是不小于 1 的整数。"
+    if field.endswith("_pct"):
+        return f"{field} 必须是 0 到 100 之间的有限数。"
+    return f"{field} 必须是有限的非负数（不接受 NaN、inf 和负数）；max_worktree_gb 留空或 0 表示不限。"
+
+
 class ConfigError(Exception):
     """配置无效；strict 模式供 serve 重载时保留旧配置而不是退出进程。"""
 
@@ -337,45 +324,22 @@ class Config:
             h.update(self.cp["defaults"])
         h.update(sec)
         try:
-            limit = float(h.get("max_worktree_gb") or 0)
-        except (TypeError, ValueError):
-            limit = -1
-        if not math.isfinite(limit) or limit < 0:
-            self.fail(f"[host:{name}] max_worktree_gb 必须是有限的非负数（GB）；0 或留空表示不限。", 4)
-        for key in ("warn_load_per_core", "warn_free_mem_pct", "warn_free_disk_gb", "warn_cpu_pct"):
-            try:
-                value = float(h[key])
-            except (TypeError, ValueError):
-                value = -1
-            if not math.isfinite(value) or value < 0:
-                self.fail(f"[host:{name}] {key} 必须是有限的非负数。", 4)
-            if key in ("warn_free_mem_pct", "warn_cpu_pct") and value > 100:
-                self.fail(f"[host:{name}] {key} 必须在 0 到 100 之间。", 4)
+            host_checks.validate(h)  # 读取路径与 CRUD 共用同一套完整校验
+        except host_checks.InvalidField as error:
+            self.fail(f"[host:{name}] {host_field_message(error)}", 4)
         h["ssh_opts"] = with_ssh_multiplexing(h["ssh_opts"])
         if h["platform"] in ("macos", "linux"):
             h["platform"] = "posix"
-        if h["platform"] not in ("posix", "windows"):
-            self.fail("platform 必须是 macos、linux、posix 或 windows。")
         if h["platform"] == "windows":
             h["path"] = sec.get("path", "")
-        if not h.get("ssh"):
-            self.fail(f"[host:{name}] 缺少 ssh；填 user@address，或把 ssh 设为 local 以在本机派发。")
-        if h["ssh"] == "local" and h["platform"] == "windows":
-            self.fail(f"[host:{name}] 本机派发只支持 POSIX；Windows 目标必须通过 SSH。")
-        if h["ssh"] == "local" and not h["workdir"].startswith(("/", "~", "$HOME")):
-            self.fail(f"[host:{name}] 本机目标（ssh 为 local）的 workdir 必须是绝对路径或 ~ 开头；相对路径会随发起目录漂移。")
         h["rollout_stats"] = "1" if self.rollout_stats() else "0"
-        try:
-            parse_cache_dirs(h.get("cache_dirs", ""), h["workdir"])
-        except ValueError as error:
-            self.fail(f"[host:{name}] cache_dirs {error}", 4)
         h["name"] = name
         h["probe_agent"] = getattr(self, "probe_agent", "codex")
         return h
 
     def hosts(self):
         names = [s.split(":", 1)[1] for s in self.cp.sections() if s.startswith("host:")]
-        return [h for h in map(self.host, names) if h["enabled"].lower() in ("1", "true", "yes")]
+        return [h for h in map(self.host, names) if host_checks.parse_bool(h["enabled"])]
 
     def project(self, name):
         section = self._section("project", name) or {}
@@ -1839,56 +1803,6 @@ def launch(host, rec, round_no, cmd_text, prompt_text, timeout):
     upload_and_start(host, files, libs, f'rm -f "$ROOT/jobs/{j}/exit_code" "$ROOT/jobs/{j}/pid"; {start}')
     if upload_profiles:
         rec["profile_script_uploaded"] = True
-
-
-CACHE_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
-
-
-def _cache_norm(path):
-    path = path.replace("\\", "/")
-    if path.startswith("$HOME"):
-        path = "~" + path[5:]
-    return path
-
-
-def _cache_absolute(path):
-    return path.startswith(("/", "~")) or bool(re.match(r"[A-Za-z]:/", path))
-
-
-def parse_cache_dirs(text, root):
-    """解析 cache_dirs；返回 [(环境变量名, 目录, 是否绝对)]。声明不合法或落在 worktree 内时抛 ValueError。
-
-    root 是用户 ID 级（或共享）根目录；worktree 位于 root/wt、root/users/<ID>/wt 下。
-    """
-    items, seen = [], set()
-    for part in (text or "").split(";"):
-        part = part.strip()
-        if not part:
-            continue
-        name, sep, path = part.partition("=")
-        name, path = name.strip(), path.strip()
-        if not sep or not CACHE_NAME.fullmatch(name) or not path:
-            raise ValueError(f"项必须是 NAME=目录：{part}")
-        if name in seen:
-            raise ValueError(f"环境变量重复声明：{name}")
-        seen.add(name)
-        norm = _cache_norm(path)
-        if ".." in norm.split("/"):
-            raise ValueError(f"{name} 的目录不得含 ..：{path}")
-        absolute = _cache_absolute(norm)
-        if absolute and "{user}" not in norm:
-            raise ValueError(f"{name} 的绝对目录必须含 {{user}}，按用户 ID 分开：{path}")
-        if absolute:
-            expanded = posixpath.normpath(norm.replace("{user}", "user"))
-            base = posixpath.normpath(_cache_norm(root))
-            if re.match(r"[A-Za-z]:/", base):
-                expanded, base = expanded.lower(), base.lower()
-            if expanded.startswith(base.rstrip("/") + "/"):
-                rest = expanded[len(base.rstrip("/")) + 1:].split("/")
-                if rest[0] == "wt" or (rest[0] == "users" and len(rest) > 2 and rest[2] == "wt"):
-                    raise ValueError(f"{name} 的目录落在 worktree 内：{path}")
-        items.append((name, path, absolute))
-    return items
 
 
 def cache_env(host, uid):
