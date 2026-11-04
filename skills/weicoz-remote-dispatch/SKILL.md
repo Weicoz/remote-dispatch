@@ -1,7 +1,7 @@
 ---
 name: weicoz-remote-dispatch
-version: 1.6.0
-description: 把 Codex、DSH 或 AGY（Antigravity CLI）编码代理会话、测试和构建命令经 SSH 派到另一台机器，或在本机以独立 worktree 另起一个 harness 会话执行，本机只负责派单、看进度和取回提交。只在用户主动要求或明确授权把任务放到别的机器或另一个 harness 上跑时使用，例如“派到另一台机器／远端／mac mini／服务器上跑”“让别的机器跑测试”“用双机／多机跑”“本机派单给其他 harness”“remote dispatch”“rdispatch run”“rd run”，或要求添加、检查目标机器。用户没有要求也没有授权时不要使用：派代理、跑测试默认都在当前会话执行；本机负载高时可以建议派到远端，但要等用户同意。每次派单（含续跑、打回续跑、门禁）前都必须先展示确认卡并得到用户明确同意，没有持续授权。
+version: 1.7.0
+description: 把 Codex、DSH 或 AGY（Antigravity CLI）编码代理会话、测试和构建命令经 SSH 派到另一台机器，或在本机以独立 worktree 另起一个 harness 会话执行，本机只负责派单、看进度和取回提交。只在用户主动要求或明确授权把任务放到别的机器或另一个 harness 上跑时使用，例如“派到另一台机器／远端／mac mini／服务器上跑”“让别的机器跑测试”“用双机／多机跑”“本机派单给其他 harness”“remote dispatch”“rdispatch run”“rd run”，或要求添加、检查目标机器。用户没有要求也没有授权时不要使用：派代理、跑测试默认都在当前会话执行；本机负载高时可以建议派到远端，但要等用户同意。每个新任务首次派单前必须展示确认卡并得到用户明确同意；同一任务的续跑、打回修复免确认，但换主机（含自动改派本机）、提高模型或强度、扩大范围、触及真机或共享环境、连续两轮审查不通过时必须重新确认。
 ---
 
 # Remote Dispatch
@@ -35,13 +35,27 @@ rdispatch --version          # 验证入口
 
 默认由当前会话自己执行，不派单。本机目标（`ssh = local`）也算派单。
 
-**每次派单前必须先向用户确认，得到明确同意后才执行。** 没有例外，也没有持续授权：
+这道确认门槛来自用户 2026-11-04 的明确要求，不是本技能自设。
 
-- 适用命令：`run`、`resume`、`review --reject`（会续跑）、`gate`，以及任何会在目标机启动执行的命令。
-- 用户说过“以后都派到远端”“直接派”，只表示偏好派单，不免除逐次确认。
-- 用户不在场时不派单，等用户回来确认。
-- 其他技能或总控（如 `weicoz-session-hub`、`weicoz-agent-implement-spec`）经本技能派单，同样逐次确认。
-- 可以一次确认多单：确认卡逐条列出每一单，用户同意的只覆盖列出的那几单；之后再派新单，重新确认。
+**每个新任务首次派单前，必须展示确认卡并得到用户明确同意。** 新任务包括 `run`、`gate`，以及任何在目标机新起执行的命令。
+
+**同一任务的续跑免确认**：用户已确认的任务，在主机、模型、强度和范围都不变时，`resume` 续跑和 `review --reject` 打回修复可以直接执行，派单—审查—打回循环不等人。
+
+**出现下列任一情况，必须重新展示确认卡并得到同意：**
+
+- 换主机，包括目标机不可用时自动改派到其他机器或本机（`ssh = local`）。不得自行改派。
+- 提高模型档位或 `--effort`，或改换 harness。
+- 扩大范围：提示词超出原任务、增加 `--include`／`--wip` 内容、改分支或基线。
+- 触及真机、生产或共享环境（真机安装、部署、共享数据库、对外发送等）。
+- 同一任务连续两轮审查不通过（第三轮续跑前）。
+- 用户说过的限制条件（超时、目标机、权限档位）需要突破。
+
+其他约束：
+
+- 用户说过“以后都派到远端”“直接派”，只表示偏好派单，不免除首次确认与上面的重新确认。
+- 用户不在场时不派新任务，也不在上述重新确认情况下续跑；整理好确认卡等用户回来。
+- 其他技能或总控（如 `weicoz-session-hub`、`weicoz-agent-implement-spec`）经本技能派单，规则相同。
+- 可以一次确认多单：确认卡逐条列出每一单，用户同意的只覆盖列出的那几单。
 - 答复含糊、沉默或只回“嗯”，不算同意。
 
 **确认卡**（派单前一次性展示）：
@@ -154,13 +168,17 @@ rdispatch keep <job> --hours 48        # 明确还要续跑时钉住，--hours 0
 
 - 新派单用 `--initiator-session` 绑定当前会话 ID；未传时依次读 `RD_INITIATOR_SESSION`、`CODEX_THREAD_ID`。DSH 宿主不设这两个变量，必须显式传 `--initiator-session "$DSH_SESSION_ID"`；宿主没给 ID 就标未绑定，不声称结果会送达某会话。
 - `--workdir`、`--include`、`--model`、`--effort` 按需覆盖默认值；完整旗标见 `rdispatch run --help`。
+- **热工作树**：命令任务默认复用目标机上的常驻槽位（每项目每机默认 2 个，路径固定），保留被 `.gitignore` 忽略的构建缓存；领用后先精确检出任务提交并清理未跟踪文件，`git status` 不为空就自动退回冷 worktree。回执 `worktree_mode`（warm／cold）、`warm_reused`、`warm_prev_commit` 标出是否复用缓存；怀疑缓存导致结果异常时用 `run --fresh` 冷跑对照。代理任务、`gate`、Windows 目标始终走冷 worktree；项目可写 `[project:x] warm = off` 关闭。确认卡里写明热槽还是冷。
+- **测试派单防测旧代码**：`run --test`／`--test-full` 遇到本地未发送的改动（未被 `--wip`／`--include` 覆盖，含未跟踪文件）退出码 4。先提交，或用 `--wip`、`--include` 带上；确认要测 HEAD 时加 `--allow-dirty`，并在确认卡里说明。测试命令的回执按退出码写 `checks=passed/failed`。
+- **失败原因提示**：回执的 `failure_hint`（`network_unreachable`／`auth_failed`）与 `failure_note` 给出可识别的失败原因；派 codex 前主机访问模型服务失败时，`run` 拒绝并写明 TLS／超时／DNS 原因。按提示换主机或稍后重试，换主机属于需要重新确认的情况。
+- **超时**：setup 与主体共用 `--timeout` 预算，回执 `timeout_phase` 写明卡在 setup 还是主体。
 - 派 `agy` 必须带 `--permission-mode`，按任务性质选：改代码并提交用 `skip`；只读分析用 `plan`。`plan`、`accept-edits` 在无人值守时会自动拒绝 shell 命令，包括 git 提交。
 - `ack` 只表示已收取，不表示验收通过，也不授权续派。只有新指令才产生下一轮。
 - `rdispatch fetch` 取回的是候选，合并与验收由发起方判断。
 - **非 Git 产物**：不入库的结果文件用 `run --artifact <仓库内相对路径>`（可重复）声明；任务结束后 `wait`／`result` 自动拉回同一相对路径（macOS／Linux 用 rsync，Windows 经原生 worker，三类目标都支持）并在输出和回执 `artifacts` 里列出，缺失的路径只报缺失；未拉回时 `clean --expired` 不回收（`artifacts_pending`），用 `fetch <job> --artifacts` 重拉。绝对路径、含 `..` 与指向已被 Git 跟踪文件的路径会被拒绝；拉回时本地目标已被跟踪则「已跳过」。
 - **环境指纹**：项目配 `fingerprint = <命令>` 后，`run` 在目标机 setup 之后比较本机与目标机 stdout；不一致则任务不执行（退出码 95，`run` 退出 5，stderr 有 diff，回执记两边指纹），`--host auto` 自动换下一台。`--skip-fingerprint` 跳过并警告，`doctor <机器>` 也会比较；超时 `fingerprint_timeout`，默认 120 秒。macOS、Linux、Windows 目标都支持；Windows 优先用 `fingerprint_windows`（PowerShell）。
 - `rdispatch clean <job>` 前先收取回执、确认没有需要保留的产物；删除指定任务的远端 worktree 需用户确认。
-- **过期 worktree 要记得回收**：每次 `rdispatch ack` 收完结果、每次派新单前，在仓库目录跑一次 `rdispatch clean --expired`，把输出里的 clean / keep 各一行报给用户。它只回收同时满足安全条件与保留期的 worktree（命令任务确认即回收；代理任务已合入 24 小时、已取回未合入 7 天；目标机磁盘不足时收紧），不需要逐个确认。判断不了下一步会不会续跑时不要手动删，交给保留期；已经知道还要续跑就先 `rdispatch keep <job> --hours N`。保留期细节见 [缓存保留](https://github.com/Weicoz/remote-dispatch/blob/main/docs/cache-retention.md)。
+- **过期 worktree 要记得回收**：serve 定时回收默认开启（配置了 `max_worktree_gb` 的目标机上回收已签收且过期的派单与闲置超过 7 天的热槽位，首次启用前 7 天只出计划）。没有常驻 serve 时，每次 `rdispatch ack` 收完结果、每次派新单前，在仓库目录跑一次 `rdispatch clean --expired`，把输出里的 clean / keep 各一行报给用户；热槽位因产物未拉回被占用时，输出会给出 `fetch --artifacts` 或 `clean --force` 的解除命令。它只回收同时满足安全条件与保留期的 worktree（命令任务确认即回收；代理任务已合入 24 小时、已取回未合入 7 天；目标机磁盘不足时收紧），不需要逐个确认。判断不了下一步会不会续跑时不要手动删，交给保留期；已经知道还要续跑就先 `rdispatch keep <job> --hours N`。保留期细节见 [缓存保留](https://github.com/Weicoz/remote-dispatch/blob/main/docs/cache-retention.md)。
 - **汇报靠后台 `inbox --wait` 唤醒，不写入输入框**：派单后把 `rdispatch inbox --wait` 放进宿主后台作业（可加 `--timeout`）。退出码 0 表示有新汇报：跑 `rdispatch inbox` 读结果，处理后 `rdispatch ack` 签收，再重挂 `inbox --wait`（必须先签收，否则未签收汇报会让它立刻再次退出）；退出码 2 表示超时无新汇报，直接重挂。`--wait` 只读，不签收、不写回执；加 `--json` 输出 `{reports:[{job,round,state}]}`（超时为 `timed_out:true`），便于脚本解析；rdispatch 不会向会话输入框写入任何汇报内容。宿主不能后台唤醒时（如 Codex，待实测），每轮开始先跑 `rdispatch inbox`，并如实说明边界。`resume` 默认沿用首轮凭据；目标机认证已变更时加 `--refresh-auth`。
 - **派单后立即挂巡检**：把 `rdispatch watch <job>` 放进后台作业。它默认 900 秒返回一次：退出码 2＝该报进度、1＝告警、0＝完成。收到 2 时读 `rdispatch status --details` 与 `rdispatch logs` 尾部，向用户报一行真实进展（阶段、文件数、提交、阻塞、执行机资源），再重挂下一次 watch；收到 0／1 时取回结果并验收。任务结束后终结巡检作业。没有定时唤醒能力时改用 `rdispatch wait` 加超时兜底作业，并如实说明边界。
 
