@@ -66,7 +66,58 @@ class AppendOnlyTests(unittest.TestCase):
             log.append_batch([("receipt.ready", dict(job="a"), False), ("receipt.acked", dict(job="a"), False)])
         self.assertEqual(self.path.read_bytes(), before)
         log.append("receipt.ready", dict(job="a"))
-        self.assertEqual([row["seq"] for row in log.read_after(0)], [1, 2])
+        # 失败批次的 seq 可能已被读者在 fsync 前读到，不复用：重试从高水位之后编号。
+        self.assertEqual([row["seq"] for row in log.read_after(0)], [1, 4])
+
+
+class UncommittedVisibilityTests(unittest.TestCase):
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory(prefix="rd-events-visible-")
+        self.addCleanup(temporary.cleanup)
+        self.state = Path(temporary.name).resolve() / "state"
+
+    def test_seq_seen_by_a_reader_before_failed_fsync_is_never_reused(self):
+        log = events.EventLog(self.state)
+        cursor = events.EventCursor(self.state)
+        log.publish("host.changed", dict(host="a", load1=1))
+        self.assertEqual([row["seq"] for row in cursor.read()], [1])
+        seen = []
+
+        def bad(fd):
+            seen.extend(row["seq"] for row in cursor.read())  # 另一进程的 SSE 在 fsync 前读到
+            raise OSError(5, "EIO")
+        with patch.object(events.os, "fsync", bad), self.assertRaises(ValueError):
+            log.publish("host.changed", dict(host="a", load1=2))
+        self.assertEqual(seen, [2])
+        # 紧接一条更长的写入，读者的旧偏移会落在行中间：必须容错并拿到新行。
+        log.publish("host.changed", dict(host="a", load1=3, ncpu="x" * 200))
+        rows = cursor.read()
+        self.assertEqual([row["seq"] for row in rows], [3])
+        self.assertEqual(rows[0]["data"]["load1"], 3)
+        self.assertEqual([row["seq"] for row in log.read_after(0)], [1, 3])
+
+    def test_reader_survives_corrupt_line_in_active_segment(self):
+        log = events.EventLog(self.state)
+        log.publish("job.created", dict(job="a"))
+        cursor = events.EventCursor(self.state)
+        self.assertEqual(len(cursor.read()), 1)
+        with (self.state / "events.jsonl").open("ab") as stream:
+            stream.write(b"garbage-not-json\n")
+        self.assertEqual(cursor.read(), [])  # 不抛异常
+
+    def test_index_does_not_keep_retracted_data_as_latest(self):
+        log = events.EventLog(self.state)
+        rec = dict(job="j", user_id="u", rounds=1, host="h")
+        log.observe_job(rec, dict(state="running", round="1"))
+        log.warm()
+
+        def bad(fd):
+            raise OSError(5, "EIO")
+        with patch.object(events.os, "fsync", bad), self.assertRaises(ValueError):
+            log.observe_job(rec, dict(state="done", round="1", exit="0"))
+        log.observe_job(rec, dict(state="done", round="1", exit="0"))
+        states = [row["data"]["execution_state"] for row in log.read_after(0)]
+        self.assertEqual(states, ["running", "done"])
 
 
 class IndexTests(unittest.TestCase):

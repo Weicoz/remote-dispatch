@@ -155,4 +155,5 @@ for number in range(20):
                               ("receipt.acked", dict(job="fixture"), False)])
         self.assertEqual(log.read_after(0), before)
         log.append("receipt.ready", dict(job="fixture"))
-        self.assertEqual([row["seq"] for row in log.read_after(0)], [1, 2])
+        # 失败批次的 seq 可能已被读者在 fsync 前读到，不复用：重试从高水位之后编号。
+        self.assertEqual([row["seq"] for row in log.read_after(0)], [1, 4])

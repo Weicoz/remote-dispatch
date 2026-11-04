@@ -259,8 +259,18 @@ class LogIndex:
                     if attempt == 2:
                         raise
             return
+        if info is not None and self.offset and not self.boundary(log.path):
+            return self.rebuild(log)  # 截断后被更长写入覆盖：偏移落在行中间
         if info is not None and info.st_size > self.offset:
             self.inode, self.offset, self.segment = self.consume(log.path, self.segment, self.offset)
+
+    def boundary(self, path):
+        try:
+            with physical(path).open("rb") as stream:
+                stream.seek(self.offset - 1)
+                return stream.read(1) == b"\n"
+        except OSError:
+            return False
 
     def rebuild(self, log):
         self.reset()
@@ -353,6 +363,7 @@ class EventLog:
                 archives = self.archives()
                 if archives:
                     last_seq, _ = tail(archives[-1])
+            last_seq = max(last_seq, self.high_water())
             rows, latest = [], {}
             if any(changed for _, _, changed in items):
                 index.sync(self)
@@ -379,7 +390,9 @@ class EventLog:
             try:
                 write_active(self.path, body)
             except BaseException:
-                # 失败的批次不留下半截行：尽力截回写前长度（失败也由下次 tail() 修复）。
+                # 读者可能已在 fsync 前读到这些行：它们的 seq 不得复用，先记高水位，再截回写前长度。
+                self.remember_high_water(rows[-1]["seq"])
+                index.reset()
                 try:
                     with self.path.open("r+b") as stream:
                         stream.truncate(size)
@@ -394,6 +407,21 @@ class EventLog:
             if index.ready:
                 index.sync(self)
             return rows
+
+    def high_water(self):
+        try:
+            return int(physical(self.state / "events.hwm").read_text())
+        except (FileNotFoundError, ValueError):
+            return 0
+
+    def remember_high_water(self, seq):
+        """写失败后被撤回的 seq 上界；之后的批次从它之后编号。尽力写入。"""
+        try:
+            staging = self.state / ".events.hwm.tmp"
+            staging.write_text(str(seq))
+            os.replace(staging, self.state / "events.hwm")
+        except OSError:
+            pass
 
     def prune(self):
         """归档段超过上限时删除最旧的；删除失败不影响已提交的事件。"""
@@ -514,24 +542,36 @@ class EventCursor:
         self.segment = None
         self.offset = 0
 
+    def read_active(self, rows):
+        """读活动段新增行。写失败被截断后又被更长写入覆盖时，旧偏移可能落在行中间：
+        遇到坏行就从段首重扫一次（seq 过滤保证不重复）；重扫仍遇坏行则按未写完的尾部处理。"""
+        rescan = False
+        while True:
+            try:
+                with physical(self.log.path).open("rb") as stream:
+                    first = stream.readline()
+                    segment = json.loads(first)["seq"] if first.endswith(b"\n") else None
+                    size = os.fstat(stream.fileno()).st_size
+                    offset = self.offset if segment == self.segment and size >= self.offset and not rescan else 0
+                    stream.seek(offset)
+                    while line := stream.readline():
+                        if not line.endswith(b"\n"):
+                            break
+                        row = json.loads(line)
+                        if row["seq"] > self.seq:
+                            rows[row["seq"]] = row
+                        offset = stream.tell()
+                    return segment, offset
+            except FileNotFoundError:
+                return None, 0
+            except (ValueError, KeyError):
+                if rescan:
+                    return self.segment, self.offset
+                rescan = True
+
     def read(self):
         rows = {}
-        try:
-            with physical(self.log.path).open("rb") as stream:
-                first = stream.readline()
-                segment = json.loads(first)["seq"] if first.endswith(b"\n") else None
-                size = os.fstat(stream.fileno()).st_size
-                offset = self.offset if segment == self.segment and size >= self.offset else 0
-                stream.seek(offset)
-                while line := stream.readline():
-                    if not line.endswith(b"\n"):
-                        break
-                    row = json.loads(line)
-                    if row["seq"] > self.seq:
-                        rows[row["seq"]] = row
-                    offset = stream.tell()
-        except FileNotFoundError:
-            segment, offset = None, 0
+        segment, offset = self.read_active(rows)
         for path in self.log.archives():
             if int(path.name.split(".")[1]) <= self.seq:
                 continue
