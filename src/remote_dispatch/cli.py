@@ -2733,6 +2733,14 @@ def auto_pull_artifacts(cfg, rec, snapshot):
     return rec["artifacts_state"]["results"]
 
 
+def release_unstarted_slot(host, rec):
+    """准备或启动失败时释放热槽位领用：目标机上没有 pid 也没有 run 脚本（任务肯定没启动）才释放，
+    释放后心跳随之停止；有则保留（启动结果待核实）。释放失败不掩盖原错误，控制端崩溃由心跳上限兜底。"""
+    if warm.is_warm(rec) and host["platform"] != "windows":
+        with contextlib.suppress(Exception, SystemExit):
+            ssh(host, warm.release_unstarted_script(rec), check=False, timeout=30)
+
+
 def place_worktree(cfg, host, rec, a, proj, repo_key, prefix):
     """POSIX 目标建任务 worktree：命令任务先试热槽位（一次 ssh 完成准备、领用、交接快照与精确快照），
     无空闲槽位且达上限、关闭热模式或领用结果缺失时建冷 worktree。结果写进 rec["worktree"] 并落盘。"""
@@ -2747,7 +2755,9 @@ def place_worktree(cfg, host, rec, a, proj, repo_key, prefix):
     if use_warm:
         pinned = warm.pinned_jobs([r for r in all_jobs() if r.get("host") == host["name"]
                                    and r.get("user_id") == rec.get("user_id") and r["job"] != job], time.time())
-        script = warm.claim_script(prefix, bare, job, branch, f"{warm.slot_name_part(rec['project'])}-{repo_key}", slots, pinned)
+        script = warm.claim_script(prefix, bare, job, branch, f"{warm.slot_name_part(rec['project'])}-{repo_key}", slots, pinned,
+                                   heartbeat_max=warm.heartbeat_limit(getattr(a, "timeout", None) or host["timeout"],
+                                                                      fingerprint_settings(proj)[1]))
         fields, prepared = warm.parse_result(ssh(host, script).stdout), True
         if fields and fields["mode"] == warm.COLD:
             print(f"热工作树：{fields.get('reason', '无空闲槽位')}，改用冷 worktree。")
@@ -2875,6 +2885,10 @@ def cmd_run(a, cfg):
             if packed.returncode:
                 die("--include 打包失败，未派单：\n" + packed.stderr.decode(errors="replace"))
             included.seek(0)
+            # 实际写入目标机的文件清单（任何 include 形式，含 "."），热槽位下次领用前据此清理。
+            listing = subprocess.run(["tar", "-tf", "-"], stdin=included, capture_output=True)
+            unpacked = warm.unpacked_files(listing.stdout.decode(errors="replace")) if listing.returncode == 0 else []
+            included.seek(0)
         explicit = a.force_host and a.host not in (None, "auto")
         if explicit:
             candidates = [cfg.host(a.host)]
@@ -2999,7 +3013,6 @@ def cmd_run(a, cfg):
 
                 if a.include:
                     ssh(host, f'tar -xf - -C {warm.worktree_sh(rec)}', stdin=included)
-                    unpacked = [p for p in include_paths if p != "."]
                     if warm.is_warm(rec) and unpacked:
                         # 记下解包路径：下次领用前连被 .gitignore 忽略的文件一起清掉。
                         ssh(host, warm.record_unpacked_script(rec), stdin_data="\n".join(unpacked) + "\n")
@@ -3052,12 +3065,10 @@ def cmd_run(a, cfg):
                 if rec["dispatch_state"] == "preparing":
                     rec["dispatch_state"] = "preparation_failed"
                     save_job(rec)
-                    if warm.is_warm(rec) and host["platform"] != "windows":
-                        # 准备失败不占着热槽位（尚未启动才释放）；释放失败不掩盖原错误。
-                        with contextlib.suppress(Exception, SystemExit):
-                            ssh(host, warm.release_unstarted_script(rec), check=False, timeout=30)
+                    release_unstarted_slot(host, rec)
                     print(f"rdispatch: 准备失败，job 已登记：{job}；核对后用 rdispatch clean {job} --force --delete-branch 清理本任务。", file=sys.stderr)
                 else:
+                    release_unstarted_slot(host, rec)
                     print(f"rdispatch: 启动结果待核实，job 已登记：{job}；先用 rdispatch status {job} 检查。", file=sys.stderr)
                 raise
 
@@ -3146,6 +3157,8 @@ def describe(rec, st):
             bits.append("等待发起方收取与判断；检查状态以结果回执为准")
     if rec.get("artifact_paths"):
         bits.append("产物 " + ("待拉回" if artifacts.artifacts_pending(rec) else "已处理") + f"（{len(rec['artifact_paths'])} 项）")
+        if artifacts.artifacts_pending(rec) and warm.is_warm(rec):
+            bits.append(warm.ARTIFACT_PIN_TEXT)
     if st.get("setup") == "pending" and s == "running":
         bits.append("running setup")
     if st.get("head"):
@@ -3870,7 +3883,10 @@ def reclaim_check(cfg, rec, snapshot, host, *, single=False, force=False, a=None
         if referrers:
             return BLOCK_PLAN_REFERENCED, "待派登记中后续工作项仍引用该派单：" + "、".join(referrers), None, []
     if state in ("done", "dead") and artifacts.artifacts_pending(rec) and not unlaunched and not (single and force):
-        return BLOCK_ARTIFACTS_PENDING, "有声明的产物尚未拉回；先 rdispatch fetch JOB --artifacts（--force 可放弃）", None, []
+        text = "有声明的产物尚未拉回；先 rdispatch fetch JOB --artifacts（--force 可放弃）"
+        if warm.is_warm(rec):
+            text += "。" + warm.ARTIFACT_PIN_TEXT
+        return BLOCK_ARTIFACTS_PENDING, text, None, []
     if single:
         if state == "running" or (state == "starting" and not unlaunched):
             return BLOCK_RUNNING, "the job is still running; rdispatch stop it first", None, []

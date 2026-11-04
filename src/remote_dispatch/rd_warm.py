@@ -30,7 +30,9 @@ PATCH_LIMIT = 20 * 1024 * 1024
 HEARTBEAT_SECONDS = 20
 HEARTBEAT_STALE_SECONDS = 180
 HEARTBEAT_MAX_SECONDS = 6 * 3600
-OFF_VALUES = ("off", "false", "0", "no", "disable", "disabled")
+ARTIFACT_PIN_TEXT = ("热槽位因产物未拉回被占用，其他命令任务不会复用它；"
+                     "解除：rdispatch fetch JOB --artifacts，或 rdispatch clean JOB --force 放弃产物")
+OFF_VALUES =("off", "false", "0", "no", "disable", "disabled")
 RESULT_PREFIX = "rdwarm:"
 
 
@@ -182,6 +184,11 @@ rd_busy() {
   [ -f "$rd_d/exit_code" ] && return 1
   [ -f "$1/released" ] && return 1
   if [ -f "$rd_d/pid" ]; then kill -0 "$(cat "$rd_d/pid")" 2>/dev/null && return 0; return 1; fi
+  # 心跳进程还活着（休眠唤醒后 at 可能暂时过期）就仍是占用；同时核对命令行含领用目录，防 pid 复用。
+  rd_hp=$(cat "$1/hb.pid" 2>/dev/null)
+  if [ -n "$rd_hp" ] && kill -0 "$rd_hp" 2>/dev/null; then
+    case "$(ps -p "$rd_hp" -o command= 2>/dev/null)" in *"$1"*) return 0;; esac
+  fi
   rd_at=$(cat "$1/at" 2>/dev/null)
   case "$rd_at" in ''|*[!0-9]*) return 0;; esac
   [ $(( $(date +%s) - rd_at )) -lt @@STALE@@ ] && return 0
@@ -234,7 +241,26 @@ def unpacked_path(slot):
     return f"warm/{slot}.unpacked"
 
 
-def claim_script(prefix, bare, job, branch, slot_prefix, slots, pinned):
+def heartbeat_limit(*timeouts):
+    """心跳存活上限（秒）：该次派单的准备超时（setup、指纹、host timeout 取最大）加 10 分钟。"""
+    values = [int(float(t)) for t in timeouts if t not in (None, "")]
+    return max(values or [0]) + 600
+
+
+def unpacked_files(listing):
+    """从 `tar -tf` 输出得到实际写入槽位的文件相对路径（任何 --include 形式，含 "."）；
+    目录、.git、绝对路径与含 .. 的条目丢弃。"""
+    out = []
+    for line in listing.splitlines():
+        path = line[2:] if line.startswith("./") else line
+        parts = path.split("/")
+        if not path or path.endswith("/") or path.startswith("/") or ".." in parts or parts[0] == ".git":
+            continue
+        out.append(path)
+    return out
+
+
+def claim_script(prefix, bare, job, branch, slot_prefix, slots, pinned, heartbeat_max=None):
     """一次 ssh 完成：准备（prefix）→ 互斥内领用空闲槽位或在上限内新建 → 交接快照 → 精确快照 → 否则退回冷 worktree。
 
     快照写不全就不接手（槽位保持原状，退冷）；接手后中途失败先废弃槽位（快照已保障）再退冷，
@@ -244,13 +270,28 @@ def claim_script(prefix, bare, job, branch, slot_prefix, slots, pinned):
     body = prefix + f'BARE="$ROOT/{bare}"\n' + _assign(JOB=job, BRANCH=branch, PREFIX=slot_prefix, MAX=slots,
                                                       PINNED=" ".join(pinned),
                                                       HB_STEP=HEARTBEAT_SECONDS,
-                                                      HB_LOOPS=max(1, HEARTBEAT_MAX_SECONDS // max(1, HEARTBEAT_SECONDS)))
+                                                      HB_LOOPS=max(1, int(heartbeat_max or HEARTBEAT_MAX_SECONDS)
+                                                                   // max(1, HEARTBEAT_SECONDS)))
     body += MUTEX_SH + busy_sh() + SNAPSHOT_SH + r'''
 rd_cold() {
   rm -f "$ROOT/jobs/$JOB/worktree" "$ROOT/jobs/$JOB/warm-claim"
   git -C "$BARE" worktree add -q "$ROOT/wt/$JOB" "$BRANCH" || exit 92
   echo "rdwarm:mode=cold"; echo "rdwarm:reason=$1"
   exit 0
+}
+# 只对 git clean 报错的未跟踪路径放开权限（路径本身及其下内容；上级目录只加目录权限，不递归），
+# 不碰跟踪文件，避免把 100644 变成 100755。$1 是 clean 的 stderr 文件。
+rd_fix_clean() {
+  sed -n -e "s/^warning: could not open directory '\(.*\)': .*/\1/p" -e 's/^warning: failed to remove \(.*\): .*/\1/p' "$1" | while IFS= read -r fp; do
+    fp=${fp%/}
+    case "$fp" in ''|/*|..|../*|*/../*|*/..) continue;; esac
+    d=$fp
+    while [ -n "$d" ] && [ "$d" != "." ]; do
+      chmod u+rwx "$W/$d" 2>/dev/null
+      case "$d" in */*) d=${d%/*};; *) d=.;; esac
+    done
+    if [ -d "$W/$fp" ]; then chmod -R u+rwx "$W/$fp" 2>/dev/null; fi
+  done
 }
 # 废弃已接手但中途失败的槽位：上一任务的状态已写进交接快照，槽位删除后它读快照。
 rd_discard() {
@@ -286,17 +327,23 @@ if [ -d "$W" ] && [ "$(git -C "$W" rev-parse --show-toplevel 2>/dev/null)" = "$(
   fi
   # 上一任务解包的 --include 路径（含被忽略的文件）先清掉，git clean -fd 不碰被忽略的文件。
   if [ -f "$WARM/$S.unpacked" ]; then
-    while IFS= read -r up; do
-      case "$up" in ''|/*|..|../*|*/../*|*/..) continue;; esac
-      git -C "$W" clean -ffdxq -- "$up" >/dev/null 2>&1
-    done < "$WARM/$S.unpacked"
+    tr '\n' '\0' < "$WARM/$S.unpacked" | xargs -0 git -C "$W" clean -ffdxq -- >/dev/null 2>&1
     rm -f "$WARM/$S.unpacked"
   fi
   git -C "$W" checkout -q -f "$BRANCH" >/dev/null 2>&1 || { rd_discard; rd_cold checkout_failed; }
-  if ! git -C "$W" clean -ffdq >/dev/null 2>&1; then
-    chmod -R u+rwx "$W" 2>/dev/null
-    git -C "$W" clean -ffdq >/dev/null 2>&1 || { rd_discard; rd_cold clean_failed; }
+  rd_tries=0
+  while ! git -C "$W" clean -ffdq >/dev/null 2>"$WARM/.clean.$$"; do
+    rd_tries=$((rd_tries + 1))
+    [ "$rd_tries" -gt 3 ] && { rm -f "$WARM/.clean.$$"; rd_discard; rd_cold clean_failed; }
+    rd_fix_clean "$WARM/.clean.$$"
+  done
+  rm -f "$WARM/.clean.$$"
+  if [ "$rd_tries" -gt 0 ]; then
+    # 清理期间放开过权限：再检出一次，确保跟踪文件内容与权限都恢复成任务提交。
+    git -C "$W" checkout -q -f "$BRANCH" >/dev/null 2>&1 || { rd_discard; rd_cold checkout_failed; }
   fi
+  # 硬校验：领用后（--include/--wip 之前）工作树必须与任务提交完全一致，否则废弃槽位退冷。
+  [ -z "$(git -C "$W" status --porcelain 2>/dev/null)" ] || { rd_discard; rd_cold dirty_after_claim; }
 elif [ -d "$W" ] && [ -n "$prev_job" ] && [ -d "$ROOT/jobs/$prev_job" ] && [ ! -f "$ROOT/jobs/$prev_job/final-state.json" ]; then
   # 槽位目录异常且上一任务还没有交接快照：不删，退回冷路径。
   rd_cold slot_invalid
@@ -309,7 +356,7 @@ printf '%s\n' "$JOB" > "$C/job"; echo $$ > "$C/pid"; date +%s > "$C/at"
 gen=$(( $(cat "$WARM/$S.gen" 2>/dev/null || echo 0) + 1 )); echo "$gen" > "$WARM/$S.gen"
 printf '%s\n' "$W" > "$ROOT/jobs/$JOB/worktree"; printf '%s\n' "$C" > "$ROOT/jobs/$JOB/warm-claim"
 # 准备期心跳：任务启动脚本写下 pid、领用被释放或到达上限时结束。
-nohup sh -c 'i=0; while [ "$i" -lt "$1" ] && [ "$(cat "$3/job" 2>/dev/null)" = "$4" ] && [ ! -f "$5/pid" ]; do date +%s > "$3/at.tmp" && mv -f "$3/at.tmp" "$3/at"; sleep "$2"; i=$((i + 1)); done' sh "$HB_LOOPS" "$HB_STEP" "$C" "$JOB" "$ROOT/jobs/$JOB" >/dev/null 2>&1 </dev/null &
+nohup sh -c 'echo $$ > "$3/hb.pid"; i=0; while [ "$i" -lt "$1" ] && [ "$(cat "$3/job" 2>/dev/null)" = "$4" ] && [ ! -f "$5/pid" ]; do date +%s > "$3/at.tmp" && mv -f "$3/at.tmp" "$3/at"; sleep "$2"; i=$((i + 1)); done' sh "$HB_LOOPS" "$HB_STEP" "$C" "$JOB" "$ROOT/jobs/$JOB" >/dev/null 2>&1 </dev/null &
 echo "rdwarm:mode=warm"; echo "rdwarm:slot=$S"; echo "rdwarm:gen=$gen"; echo "rdwarm:reused=$reused"
 echo "rdwarm:prev_commit=$prev"; echo "rdwarm:prev_job=$prev_job"; echo "rdwarm:path=$W"
 '''
@@ -368,7 +415,8 @@ def release_unstarted_script(rec):
     """准备失败时释放：任务启动脚本已写下 pid（可能已在运行）则不动，避免放掉运行中的槽位。"""
     if not is_warm(rec):
         return ""
-    return f'[ -f "$ROOT/jobs/{rec["job"]}/pid" ] || {{ {release_script(rec)} }}\n'
+    d = f'"$ROOT/jobs/{rec["job"]}"'
+    return f'[ -f {d}/pid ] || ls {d}/run.r*.sh >/dev/null 2>&1 || {{ {release_script(rec)} }}\n'
 
 
 def pin_script(rec, *, until=None, artifacts=None):

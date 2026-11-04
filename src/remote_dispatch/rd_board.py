@@ -11,6 +11,8 @@ from . import rd_plan as plans
 from . import rd_reclaim_plan as reclaim_plan
 from . import rd_suggest as suggestions
 from . import rd_usage as usage
+from . import rd_artifacts as artifacts
+from . import rd_warm as warm
 
 UNRECORDED = usage.UNRECORDED
 RUNNING_STATES = ("running", "starting")
@@ -22,6 +24,7 @@ BLOCK_TEXT = dict(
     unreachable="连接不可达",
     not_finished="未确认任务已结束",
     receipt_pending="结果回执待收取；先用 rdispatch result / rdispatch ack",
+    artifacts_pending=warm.ARTIFACT_PIN_TEXT,
 )
 
 
@@ -67,6 +70,8 @@ def reclaim_block(query, rec, snapshot, receipt, referrers):
             (rec.get("handoff_version") and receipt is not None and query.delivery(rec, receipt) != "received")
             or safe(lambda: pending_receipt(query, rec), False)):
         code = "receipt_pending"
+    elif not unlaunched and warm.is_warm(rec) and artifacts.artifacts_pending(rec):
+        code = "artifacts_pending"
     return dict(code=code, reason=BLOCK_TEXT[code]) if code else None
 
 

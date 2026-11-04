@@ -533,9 +533,15 @@ class ReviewFixesTest(WarmFixture):
     def test_unremovable_untracked_dir_is_repaired_and_slot_stays_consistent(self):
         first = self.dispatch("mkdir -p junk/sub; touch junk/sub/f; chmod 000 junk/sub")
         self.addCleanup(self.unlock, self.slot_path(first) / "junk")
-        second = self.dispatch("true")
+        second = self.dispatch("git status --porcelain --untracked-files=no > st.txt; git diff --summary > modes.txt; "
+                               "git ls-files -s | awk '{print $1}' | sort -u > ls.txt")
         self.assertEqual(warm.parse_field(second)[0], "warm")
         self.assertFalse((self.slot_path(second) / "junk").exists())
+        # 只放开 clean 报错的未跟踪路径：跟踪文件权限不变，新任务领用后工作树与提交一致。
+        self.assertEqual((self.slot_path(second) / "st.txt").read_text(), "")
+        self.assertEqual((self.slot_path(second) / "modes.txt").read_text(), "")
+        self.assertEqual((self.slot_path(second) / "ls.txt").read_text().split(), ["100644"])
+        self.assertEqual(os.stat(self.slot_path(second) / "tracked.txt").st_mode & 0o111, 0)
         self.assertEqual(self.sh(second, f'git -C "{self.slot_path(second)}" symbolic-ref --short HEAD').strip(), second["branch"])
         self.assertEqual(self.state(first)["head"], first["base"])
 
@@ -614,6 +620,99 @@ class ReviewFixesTest(WarmFixture):
         self.assertEqual(failed["dispatch_state"], "preparation_failed")
         name = warm.parse_field(failed)[1]
         self.assertFalse((self.worker(failed) / "warm" / f"{name}.claim").exists())
+
+    # 第 3 轮：P1 权限恢复、心跳 pid / 上限、launching 失败释放、产物占用提示、include 清单
+    def test_clean_retry_does_not_touch_tracked_file_modes_in_nested_unremovable_paths(self):
+        first = self.dispatch("mkdir -p j2/s; touch j2/s/f; chmod 555 j2/s; mkdir -p junk/sub; touch junk/sub/f; chmod 000 junk/sub")
+        self.addCleanup(self.unlock, self.slot_path(first) / "j2")
+        self.addCleanup(self.unlock, self.slot_path(first) / "junk")
+        second = self.dispatch("git status --porcelain --untracked-files=no > st.txt; ls j2 junk > left.txt 2>&1; true")
+        self.assertEqual((self.slot_path(second) / "st.txt").read_text(), "")
+        self.assertIn("No such file", (self.slot_path(second) / "left.txt").read_text())
+
+    def test_heartbeat_pid_alive_keeps_claim_busy_even_when_at_is_stale(self):
+        host = self.make_bare()
+        with patch.object(warm, "HEARTBEAT_SECONDS", 30), patch.object(warm, "HEARTBEAT_STALE_SECONDS", 4):
+            first = self.claim(host, 0)
+            claim = Path(host["workdir"]) / "warm" / (first["slot"] + ".claim")
+            for _ in range(50):
+                if (claim / "hb.pid").exists():
+                    break
+                time.sleep(0.1)
+            pid = int((claim / "hb.pid").read_text())
+            self.addCleanup(lambda: subprocess.run(["kill", str(pid)], capture_output=True))
+            (claim / "at").write_text(str(int(time.time()) - 7200) + "\n")
+            self.assertEqual(self.claim(host, 1)["mode"], "cold")
+            os.kill(pid, 15)
+            time.sleep(0.5)
+            self.assertEqual(self.claim(host, 2)["mode"], "warm")
+
+    def test_heartbeat_limit_follows_this_dispatchs_prep_timeout(self):
+        self.assertEqual(warm.heartbeat_limit(3600, 120), 4200)
+        self.assertEqual(warm.heartbeat_limit(20, 120), 720)
+        seen = {}
+        real = warm.claim_script
+
+        def spy(*args, **kwargs):
+            seen.update(kwargs)
+            return real(*args, **kwargs)
+
+        with patch.object(warm, "claim_script", spy):
+            self.dispatch("true", timeout=20)
+        self.assertEqual(seen["heartbeat_max"], 720)
+
+    def test_launch_failure_without_run_script_releases_the_claim(self):
+        with patch.object(rd, "launch", side_effect=RuntimeError("launch broke")), self.assertRaises(RuntimeError):
+            self.start("true")
+        failed = rd.all_jobs()[0]
+        self.assertEqual(failed["dispatch_state"], "launching")
+        name = warm.parse_field(failed)[1]
+        self.assertFalse((self.worker(failed) / "warm" / f"{name}.claim").exists())
+
+    def test_launch_failure_after_run_script_upload_keeps_the_claim(self):
+        def half_launch(host, rec, *args):
+            rd.put_file(host, f"jobs/{rec['job']}/run.r1.sh", "true\n")
+            raise RuntimeError("launch broke late")
+
+        with patch.object(rd, "launch", side_effect=half_launch), self.assertRaises(RuntimeError):
+            self.start("true")
+        failed = rd.all_jobs()[0]
+        name = warm.parse_field(failed)[1]
+        self.assertTrue((self.worker(failed) / "warm" / f"{name}.claim").exists())
+
+    def test_pending_artifacts_are_reported_as_occupying_the_slot(self):
+        first = self.dispatch("mkdir -p out; echo mine > out/a.txt", artifact=["out"])
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            rd.cmd_clean(self.clean_args(expired=True, dry_run=True, json=True), self.cfg)
+        row = next(r for r in json.loads(out.getvalue()) if r["job"] == first["job"])
+        self.assertEqual(row["code"], rd.BLOCK_ARTIFACTS_PENDING)
+        self.assertIn("热槽位因产物未拉回被占用", row["reason"])
+        self.assertIn("fetch JOB --artifacts", row["reason"])
+        line = rd.describe(rd.load_job(first["job"]), self.state(first))
+        self.assertIn("热槽位因产物未拉回被占用", line)
+        from remote_dispatch import rd_board as board
+        stub = type("Q", (), dict(delivery=lambda s, r, x: "received",
+                                  result_path=lambda s, r, n: self.root / "no-results" / "r1.json"))()
+        block = board.reclaim_block(stub, rd.load_job(first["job"]), dict(state="done"), {}, [])
+        self.assertEqual(block["code"], "artifacts_pending")
+
+    def test_unpacked_listing_covers_every_include_form_including_dot(self):
+        listing = "./\n./a/\n./a/b.txt\n./.git/config\n.git/HEAD\nc.txt\n../evil\n/abs\nd/e/f.cfg\n"
+        self.assertEqual(warm.unpacked_files(listing), ["a/b.txt", "c.txt", "d/e/f.cfg"])
+
+    def test_ignored_files_inside_included_directory_are_cleaned_for_next_job(self):
+        (self.repo / ".gitignore").write_text("build/\n*.cfg\n")
+        (self.repo / "conf").mkdir()
+        (self.repo / "conf" / "local.cfg").write_text("secret\n")
+        (self.repo / "conf" / "n space.cfg").write_text("secret2\n")
+        self.git("add", ".gitignore")
+        self.git("commit", "-qm", "ignore cfg")
+        first = self.dispatch("ls conf > a.out", include=["conf"])
+        unpacked = (self.worker(first) / "warm" / (warm.parse_field(first)[1] + ".unpacked")).read_text().split("\n")
+        self.assertIn("conf/n space.cfg", unpacked)
+        second = self.dispatch("ls conf > seen.txt 2>&1; true")
+        self.assertIn("No such file", (self.slot_path(second) / "seen.txt").read_text())
 
     # P2-10
     def test_broken_slot_without_snapshot_is_kept_and_job_goes_cold(self):
