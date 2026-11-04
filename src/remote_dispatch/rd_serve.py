@@ -61,9 +61,24 @@ CONFIG_RELOAD_ERROR_LIMIT = 1000
 
 
 # 常见裸令牌（无 key=value 标签也要遮盖）：OpenAI/Anthropic 风格 sk-、GitHub ghp_/github_pat_、Bearer、Slack xox*-、AWS AKIA。
+# 前置断言排除嵌在标识、路径、文件名里的片段（如 weicoz-pk-arena-…）；通用 sk/pk/rk- 须至少含一个数字且 ≥20 位。
+_EDGE = r"(?<![\w/.\-])"
 TOKEN_PATTERN = re.compile(
-    r"\b(?:sk|pk|rk)-[A-Za-z0-9_\-]{16,}|\bgh[pousr]_[A-Za-z0-9]{20,}|\bgithub_pat_[A-Za-z0-9_]{20,}"
-    r"|(?i:\bBearer\s+)[A-Za-z0-9._~+/=\-]{8,}|\bxox[abposr]-[A-Za-z0-9\-]{10,}|\bAKIA[0-9A-Z]{16}\b")
+    _EDGE + r"(?:sk-(?:ant-|proj-)[A-Za-z0-9_\-]{16,}|(?:sk|pk|rk)-(?=[A-Za-z0-9_\-]*\d)[A-Za-z0-9_\-]{20,}"
+    r"|gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|xox[abposr]-[A-Za-z0-9\-]{10,}|AKIA[0-9A-Z]{16}\b)"
+    r"|(?i:(?<![\w/.\-])Bearer\s+)[A-Za-z0-9._~+/=\-]{8,}")
+
+# 结构化标识键：值用于路由与关联（派单 ID、分支、主机、路径等），不做文本脱敏；列表元素继承该语义。
+# 路径（cwd、repo、worker_root）不在此列：可能含配置密钥路径，令牌规则不会命中路径片段。
+# 自由文本（last、summary、phase、text、reply、note、message、error、日志与终端帧等）不在此列。
+IDENTIFIER_KEYS = frozenset({
+    "job", "jobs", "last_job", "running_job_ids", "job_id", "job_ids", "branch", "source_branch", "shared_branch", "base", "head",
+    "upstream", "project", "project_id", "projects", "host", "hosts", "initiator_host", "user_id", "round", "rounds",
+    "last_round", "current_rounds", "receipt_id", "report_id", "message_id", "initiator_session", "receiver_session",
+    "session", "session_id", "pane_id", "workspace_id", "device_id", "id", "seq", "type", "kind", "state", "execution_state",
+    "review_state", "delivery_state", "status", "created", "created_at", "updated_at", "snapshot_at", "captured_at",
+    "started_at", "stopped_at", "finished", "reviewed_at", "received_at", "delivered_at", "channels"})
+MIN_SECRET_LENGTH = 8
 
 
 def file_changes(receipt):
@@ -569,17 +584,23 @@ class Service:
         return bool(re.search(r"(?i)(?:env_?file|auth_?file|ssh|password|secret|token|private_?key|api_?key|credential|authorization)", key))
 
     def redact(self, value, *, sensitive=None):
-        """Project nested display data and scrub configured secrets in free text."""
+        """Project nested display data; scrub configured secrets and tokens in free text only."""
         if sensitive is None:
             sensitive = self.sensitive
+        secrets = sorted((item for item in sensitive if len(item) >= MIN_SECRET_LENGTH), key=len, reverse=True)
+        pattern = (re.compile(r"(?<![\w\-])(?:" + "|".join(map(re.escape, secrets)) + r")(?![\w\-])")
+                   if secrets else None)
+        return self.redact_value(value, pattern, False)
+
+    def redact_value(self, value, pattern, identifier):
         if isinstance(value, dict):
-            return {key: self.redact(item, sensitive=sensitive) for key, item in value.items()
+            return {key: self.redact_value(item, pattern, key in IDENTIFIER_KEYS) for key, item in value.items()
                     if not self.is_sensitive_field(key)}
         if isinstance(value, list):
-            return [self.redact(item, sensitive=sensitive) for item in value]
-        if isinstance(value, str):
-            for secret in sorted(sensitive, key=len, reverse=True):
-                value = value.replace(secret, "[redacted]")
+            return [self.redact_value(item, pattern, identifier) for item in value]
+        if isinstance(value, str) and not identifier:
+            if pattern is not None:
+                value = pattern.sub("[redacted]", value)
             value = TOKEN_PATTERN.sub("[redacted]", value)
             value = re.sub(r"-----BEGIN [^-]*PRIVATE KEY-----.*?-----END [^-]*PRIVATE KEY-----",
                            "[redacted]", value, flags=re.S)
@@ -627,8 +648,10 @@ class Service:
                 self.generations[path.stem] = tuple(generation)
                 if "raw_round" in saved:
                     self.raw_rounds[path.stem] = saved["raw_round"]
-                    self.complete_snapshots.add(path.stem)
                     self.restored_jobs.add(path.stem)  # 落盘时去掉了 last 与 network_sample
+                    if snapshot["state"] not in ("done", "dead", "missing"):
+                        self.complete_snapshots.add(path.stem)
+                    # 终态快照缺 last／network_sample：不记为完整，按旧格式补采一次（连不上时保留原快照）。
                 if progress:
                     self.progress[(path.stem, generation[0])] = progress
             except (OSError, ValueError, TypeError, KeyError):

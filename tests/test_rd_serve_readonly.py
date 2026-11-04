@@ -181,17 +181,16 @@ class CachedReadTests(unittest.TestCase):
         cli.acknowledge_receipt(rec, receipt, "owner", "cli")
         self.running.collector.cycle(rd_serve.events.EventLog(self.state))
         service = self.restart()
-        self.assertTrue(service.job_refresh_complete(rec))  # 重启后不再轮询它
+        self.assertTrue(service.job_refresh_complete(rec))  # 补采一次后不再轮询它
         future = datetime.now(timezone.utc) + timedelta(hours=3)
         service.cached_reads.clock = lambda: future.timestamp()
         direct = self.run_cli("status", "job-done", serve=False)
         with self.no_remote(service):
             self.assertEqual(self.run_cli("status", "job-done"), direct)
-        # JSON 行含 last／network_sample，落盘快照不保存它们：回退直跑，输出仍与直跑一致。
+        # 重启后终态快照缺 last／network_sample，已按旧格式补采一次：--json 也由缓存回答。
         direct = self.run_cli("status", "job-done", "--json", serve=False)
-        before = len(self.state_calls)
-        self.assertEqual(self.run_cli("status", "job-done", "--json"), direct)
-        self.assertGreater(len(self.state_calls), before)
+        with self.no_remote(service):
+            self.assertEqual(self.run_cli("status", "job-done", "--json"), direct)
 
     def test_snapshot_restored_in_the_old_subset_format_is_not_used_for_cached_output(self):
         self.running = self.seed()
@@ -203,7 +202,7 @@ class CachedReadTests(unittest.TestCase):
         path.write_text(json.dumps(saved))
         service = Service(cli.Config(), self.path, poll_interval=3600)  # 只恢复，不启动采集
         self.assertNotIn("job-running", service.complete_snapshots)
-        self.assertIn("job-done", service.complete_snapshots)
+        self.assertNotIn("job-done", service.complete_snapshots)  # 终态缺 last／network_sample：待补采
         reply = service.cached_reads.handle(dict(command="status", params=dict(job="job-running", json=False),
                                                  user_id="fixture", config=str(self.config.resolve())))
         self.assertEqual(reply, dict(handled=False))
@@ -274,6 +273,41 @@ class CachedReadTests(unittest.TestCase):
             self.assertEqual(service.redact("see " + token + " ok"), "see [redacted] ok", token)
         self.assertEqual(service.redact("Authorization: Bearer abcDEF123456.xyz"), "Authorization: [redacted]")
         self.assertEqual(service.redact("normal text sk-short"), "normal text sk-short")
+
+    def test_dispatch_ids_with_token_like_fragments_survive_in_identifier_fields_and_free_text(self):
+        service = self.serve()
+        service.sensitive = {"devserver"}
+        jid = "weicoz-pk-arena-fix-login-20261104-1200"
+        ids = [jid, "rd/weicoz-sk-learn-fix-20261104-1200", "weicoz-rk-ops-deploy-nightly-20261104-1200",
+               "weicoz-devserver-fix-20261104-1200"]
+        body = dict(jobs=ids, rows=[dict(job=i, branch="rd/" + i, source_branch=i, last="ran " + i + " on devserver",
+                                         summary="see " + i) for i in ids], worker_root="/srv/devserver/rd")
+        out = service.redact(body)
+        self.assertEqual(out["jobs"], ids)
+        for row, i in zip(out["rows"], ids):
+            self.assertEqual((row["job"], row["branch"], row["source_branch"]), (i, "rd/" + i, i))
+            self.assertIn(i, row["summary"])
+            self.assertEqual(row["last"], "ran " + i + " on [redacted]")
+        self.assertEqual(out["worker_root"], "/srv/[redacted]/rd")  # 路径按自由文本处理
+
+    def test_real_tokens_are_redacted_in_free_text_and_nested_non_identifier_fields(self):
+        service = self.serve()
+        service.sensitive = {"devserver"}
+        tokens = ["sk-ant-api03-abcdefghijklmnop", "sk-proj-abcdefghijklmnopqr", "ghp_" + "a" * 36,
+                  "github_pat_" + "B" * 30, "Bearer abcDEF123456", "xoxb-1234567890-abcdefghij", "AKIAABCDEFGHIJKLMNOP",
+                  "sk-" + "a1" * 12]
+        out = service.redact(dict(job="j", items=[dict(deep=dict(text="x " + t + " y")) for t in tokens]))
+        self.assertEqual(out["job"], "j")
+        for item in out["items"]:
+            self.assertEqual(item["deep"]["text"], "x [redacted] y")
+        self.assertEqual(service.redact("pk-arena-fix-login-20261104-1200 and weicoz-pk-arena-fix-login-20261104-1200"),
+                         "[redacted] and weicoz-pk-arena-fix-login-20261104-1200")
+
+    def test_persisted_snapshot_keeps_token_like_job_branch(self):
+        self.job("weicoz-pk-arena-fix-20261104-1200")
+        service = self.serve()
+        saved = json.loads((self.state / "serve-snapshots" / "weicoz-pk-arena-fix-20261104-1200.json").read_text())
+        self.assertEqual(saved["snapshot"]["state"], service.snapshots["weicoz-pk-arena-fix-20261104-1200"]["state"])
 
     def test_options_the_cache_cannot_reproduce_stay_on_the_original_path(self):
         parser_args = type("Args", (), {})
