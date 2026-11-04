@@ -39,7 +39,8 @@ class FalseTerminalTests(Fixture):
     def test_collect_result_does_not_cache_while_preparing(self):
         record = self.t.dispatch()
         record["dispatch_state"] = "preparing"
-        rd.collect_result(self.t.cfg, record, {"state": "missing", "round": "1"})
+        with rd_lock.JobLock(rd.STATE, record["job"]):  # 派单进行中持锁：reconcile 不动，也不落盘回执
+            rd.collect_result(self.t.cfg, record, {"state": "missing", "round": "1"})
         self.assertFalse(rd.result_path(record, 1).exists())
         record["dispatch_state"] = "started"
         self.assertIsNotNone(rd.collect_result(self.t.cfg, record, {"state": "done", "round": "1", "exit": "0"}))
