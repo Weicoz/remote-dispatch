@@ -186,6 +186,23 @@ class DispatchTests(unittest.TestCase):
         with self.assertRaises(SystemExit):  # include 只覆盖 new.txt，tracked.txt 改动仍未发送
             self.dispatch(project="app", cmd=None, test=True, include=["new.txt"])
 
+    def test_wip_does_not_hide_untracked_files_from_the_test_guard(self):
+        self.configure_project(test_quick="echo quick")
+        (self.repo / "tracked.txt").write_text("edited\n")
+        (self.repo / "new_test.py").write_text("x\n")
+        with self.assertRaises(SystemExit) as caught:
+            self.dispatch(project="app", cmd=None, test=True, wip=True)
+        self.assertEqual(caught.exception.code, 4)
+        self.assertTrue(self.dispatch(project="app", cmd=None, test=True, wip=True, include=["new_test.py"])["test"])
+
+    def test_unsent_changes_parsing(self):
+        self.assertEqual(rd.unsent_changes(" M src/a.py\0", ["src/a.py"]), [])
+        self.assertEqual(rd.unsent_changes("?? src/new/a.py\0?? src/new/b.py\0", ["src/new/a.py"]), ["?? src/new/b.py"])
+        self.assertEqual(rd.unsent_changes("?? src2/x.py\0", ["src"]), ["?? src2/x.py"])
+        self.assertEqual(rd.unsent_changes("?? src/x.py\0", ["src"]), [])
+        self.assertEqual(rd.unsent_changes("R  new name.py\0old.py\0", []), ["R  new name.py"])
+        self.assertEqual(rd.unsent_changes(" M a.py\0?? b.py\0", [], wip=True), ["?? b.py"])
+
     def test_non_test_dispatch_with_dirty_only_warns(self):
         (self.repo / "tracked.txt").write_text("edited\n")
         err = io.StringIO()

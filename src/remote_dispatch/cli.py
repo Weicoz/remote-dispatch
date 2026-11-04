@@ -2493,15 +2493,24 @@ def run_scope(a, cfg):
                               after=after, plan_store=plan_store)
 
 
-def unsent_changes(porcelain, include_paths):
-    """git status --porcelain 的行里，去掉已被 --include 覆盖的路径，返回仍不会发送的条目。"""
+def unsent_changes(porcelain, include_paths, wip=False):
+    """`git status --porcelain -z -uall` 的输出里，去掉已被 --include 覆盖的路径，返回仍不会发送的条目。
+    wip=True 时已跟踪的改动由 --wip 发送，只检查未跟踪文件。输出不得 strip：首行 " M" 的前导空格是状态位。"""
     rows = []
-    for line in porcelain.splitlines():
-        path = line[3:].split(" -> ")[-1].strip().strip('"')
-        covered = any(path == inc or path.startswith(inc.rstrip("/") + "/") or inc.startswith(path.rstrip("/") + "/")
-                      for inc in include_paths)
-        if path and not covered:
-            rows.append(line.strip())
+    tokens = porcelain.split("\0")
+    index = 0
+    while index < len(tokens):
+        entry = tokens[index]
+        index += 1
+        if len(entry) < 4:
+            continue
+        status, path = entry[:2], entry[3:]
+        if "R" in status or "C" in status:
+            index += 1  # 重命名／复制后跟一个原路径条目
+        if wip and status != "??":
+            continue
+        if not any(path == inc or path.startswith(inc.rstrip("/") + "/") for inc in include_paths):
+            rows.append(entry)
     return rows
 
 
@@ -2900,9 +2909,9 @@ def cmd_run(a, cfg):
         if not wip:
             die(f"--wip：已跟踪文件相对 {a.ref} 没有改动；未跟踪文件请用 --include。未派单。", 4)
         print(f"wip: sending tracked working-tree changes relative to {a.ref}; applied to remote index")
-    dirty = git(["status", "--porcelain"], repo).stdout.strip()
-    if dirty and not a.wip:
-        unsent = unsent_changes(dirty, include_paths)
+    dirty = git(["status", "--porcelain", "-z", "-uall"], repo).stdout
+    if dirty:
+        unsent = unsent_changes(dirty, include_paths, wip=bool(a.wip))
         if unsent and (a.test or test_full) and not getattr(a, "allow_dirty", False):
             die("测试类派单（--test / --test-full）拒绝派出：本地有未发送的改动，远端会测到旧代码。\n  "
                 + "\n  ".join(unsent[:5]) + ("\n  ..." if len(unsent) > 5 else "")
