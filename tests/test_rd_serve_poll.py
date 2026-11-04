@@ -311,6 +311,26 @@ class RemoteTimeoutTests(unittest.TestCase):
             cli.remote_report(dict(self.host, platform="windows"), rec, 1, "result")
         self.assertEqual(seen, [cli.REMOTE_READ_TIMEOUT] * 3)
 
+    def test_rsync_timeout_keeps_artifacts_pending_and_auto_pull_is_bounded(self):
+        from remote_dispatch import rd_artifacts
+        host = dict(self.host, workdir="/w")
+        seen = []
+
+        def timed_out(command, **kwargs):
+            seen.append(kwargs["timeout"])
+            raise subprocess.TimeoutExpired(command, kwargs["timeout"])
+        with patch.object(cli.subprocess, "run", timed_out):
+            result = cli.rsync_artifact(host, "j", "/repo", "out.txt", False, 5)
+        self.assertEqual((result["status"], seen), ("error", [5]))
+        self.assertIn("保持待拉", result["error"])
+        rec = dict(job="j", artifact_paths=["out.txt"], artifacts_state=dict(results=[result]))
+        self.assertTrue(rd_artifacts.artifacts_pending(rec))
+        calls = []
+        with patch.object(cli, "pull_artifacts", lambda cfg, rec_, timeout=None: calls.append(timeout) or []):
+            cli.auto_pull_artifacts(None, rec, dict(state="done"))
+        self.assertEqual(calls, [cli.ARTIFACT_AUTO_TIMEOUT])
+        self.assertLess(cli.ARTIFACT_AUTO_TIMEOUT, cli.ARTIFACT_FETCH_TIMEOUT)
+
     def test_remote_state_is_bounded(self):
         seen = []
 

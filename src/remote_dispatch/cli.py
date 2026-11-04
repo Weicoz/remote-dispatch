@@ -2589,7 +2589,11 @@ def local_artifact_guard(repo, path, is_dir):
     return None
 
 
-def pull_artifacts(cfg, rec):
+ARTIFACT_FETCH_TIMEOUT = 1800  # 手动 fetch --artifacts
+ARTIFACT_AUTO_TIMEOUT = 300  # 自动拉取（serve 轮询、result、wait）：有界，超时保持待拉，可用 fetch --artifacts 重试
+
+
+def pull_artifacts(cfg, rec, timeout=ARTIFACT_FETCH_TIMEOUT):
     """把远端 worktree 里声明的产物拉回本地仓库同一相对路径；缺失单独报告，不算整体失败。
     POSIX 用 rsync；Windows 经原生 worker 的 base64 通道取 tar（与 fetch-bundle 同一通道，不依赖 scp 路径转换）。
     状态：fetched/missing/skipped 是终态，error 保持待拉可重试。结果写进 rec["artifacts_state"]。"""
@@ -2627,22 +2631,22 @@ def pull_artifacts(cfg, rec):
             if guard:
                 results.append(dict(path=path, status=guard[0], error=guard[1]))
             elif host["platform"] == "windows":
-                results.append(native_artifact(host, job, repo, path, kind == "d"))
+                results.append(native_artifact(host, job, repo, path, kind == "d", timeout))
             else:
-                results.append(rsync_artifact(host, job, repo, path, kind == "d"))
+                results.append(rsync_artifact(host, job, repo, path, kind == "d", timeout))
     rec["artifacts_state"] = dict(results=results, at=time.strftime("%Y-%m-%d %H:%M:%S"))
     save_job(rec)
     return results
 
 
-def native_artifact(host, job, repo, path, is_dir):
+def native_artifact(host, job, repo, path, is_dir, timeout=ARTIFACT_FETCH_TIMEOUT):
     """Windows：worker 打 tar，本地校验成员后解到临时目录再替换；失败记 error，保持可重试。"""
     dest = os.path.join(repo, *path.split("/"))
     try:
         with tempfile.TemporaryDirectory(dir=os.path.dirname(dest)) as temporary:
             bundle = Path(temporary) / "artifact.tar"
             with bundle.open("wb") as stream:
-                native.request(host, "fetch-artifact", {"job": job, "relative": path}, output=stream, timeout=1800)
+                native.request(host, "fetch-artifact", {"job": job, "relative": path}, output=stream, timeout=timeout)
             staged = Path(temporary) / "staged"
             staged.mkdir()
             with tarfile.open(bundle) as archive:
@@ -2669,7 +2673,7 @@ def rsync_supports_protect_args():
     return "--protect-args" in (p.stdout or "") + (p.stderr or "")
 
 
-def rsync_artifact(host, job, repo, path, is_dir):
+def rsync_artifact(host, job, repo, path, is_dir, timeout=ARTIFACT_FETCH_TIMEOUT):
     dest = os.path.join(repo, *path.split("/"))
     source = scp_path(host, f"wt/{job}/{path}")
     command = ["rsync", "-a", "--safe-links"]
@@ -2683,8 +2687,10 @@ def rsync_artifact(host, job, repo, path, is_dir):
             source = prefix + shlex.quote(source[len(prefix):])
     command += ["--", source + "/", dest + "/"] if is_dir else ["--", source, dest]
     try:
-        p = subprocess.run(command, capture_output=True, text=True, timeout=1800)
-    except (OSError, subprocess.TimeoutExpired) as error:
+        p = subprocess.run(command, capture_output=True, text=True, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        return dict(path=path, status="error", error=f"rsync 超过 {timeout} 秒未完成，保持待拉；可用 fetch --artifacts 重试")
+    except OSError as error:
         return dict(path=path, status="error", error=f"rsync 无法完成：{error}")
     if p.returncode:
         return dict(path=path, status="error", error=f"rsync 退出码 {p.returncode}：{(p.stderr or '').strip()[:200]}")
@@ -2698,7 +2704,7 @@ def auto_pull_artifacts(cfg, rec, snapshot):
         return None
     if artifacts.artifacts_pending(rec) or not (rec.get("artifacts_state") or {}).get("results"):
         try:
-            return pull_artifacts(cfg, rec)
+            return pull_artifacts(cfg, rec, ARTIFACT_AUTO_TIMEOUT)
         except (OSError, SystemExit, subprocess.SubprocessError) as error:
             print(f"产物拉回未完成：{error}；稍后用 rdispatch fetch {rec['job']} --artifacts 重试。", file=sys.stderr)
             return None

@@ -943,7 +943,7 @@ SSH、结果／进度收取不会占用这个线程。本地写操作仍会唤�
 - 终态回执先收取落盘，再补采进度；进度与历史轮次补采失败只记日志，不阻断回执，也不阻止快照发布（沿用上一次的进度）。
   回执收取失败则保留旧快照，下一轮重试。
 - 所有轮询路径上的远端调用都有超时：`remote_state` 30 秒、`remote_report` 与会话查找（`find_session`）30 秒（`cli.REMOTE_READ_TIMEOUT`）、
-  探测 25 秒。会话查找超时抛 `SessionLookupError`，记为 `session` 阶段错误，回执留到下一轮重试，不再无限等待并占住 job 锁。
+  探测 25 秒；回执落盘时的自动产物拉取（rsync／Windows tar）300 秒（`cli.ARTIFACT_AUTO_TIMEOUT`），超时保持待拉，可用 `fetch --artifacts`（1800 秒）重试，不算失败。会话查找超时抛 `SessionLookupError`，记为 `session` 阶段错误，回执留到下一轮重试，不再无限等待并占住 job 锁。
 - 终态（`done/dead/missing`）且本轮回执已落盘的 job 降频：每 `max(8 × --poll-interval, 60)` 秒才重新探测一次；
   未签收仍在 `inbox`、`/v1/jobs` 中可见。新轮次或执行位置改变（generation 变化）立即恢复正常频率。已签收的终态 job 仍按原规则不再探测。
 - 错误日志（`serve.err.log`）按 (对象, 阶段, 异常类型) 聚合：
