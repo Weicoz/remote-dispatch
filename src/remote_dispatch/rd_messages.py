@@ -486,6 +486,8 @@ def phase_timings(directory, number):
                 result[key] = int(seconds) if seconds == int(seconds) else round(seconds, 1)
         elif key == "setup_note" and value == "已跳过":
             result[key] = value
+        elif key == "timeout_phase" and value in ("setup", "body"):
+            result[key] = value
         elif key == "path_size_kb":
             number, tab, rel = value.partition("\t")
             try:
@@ -552,7 +554,7 @@ def finish(directory, job, number, code, agent=None, test_command=None):
         data["started_at"] = started.read_text(encoding="utf-8").strip()
     data.update(executor_exit=int(code), finished_at=utc_now(),
                 reply_file="last.r" + str(number) + ".txt", stdout_file="stdout.r" + str(number) + ".log")
-    for key in ("setup_seconds", "body_seconds", "setup_note", "rollout_calls", "regenerable_kb"):
+    for key in ("setup_seconds", "body_seconds", "setup_note", "timeout_phase", "rollout_calls", "regenerable_kb"):
         data.pop(key, None)
     data.update(phase_timings(directory, number))
     if agent == "codex" and os.environ.get("RD_ROLLOUT_STATS") == "1":

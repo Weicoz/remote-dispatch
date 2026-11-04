@@ -443,15 +443,39 @@ def run_job(spec_file):
     os.chdir(wt)
     setup = directory / "setup.ps1"
     timing = directory / ("timing.r" + str(spec["round"]))
+    body_budget = spec["timeout"]
     if setup.exists() and not (directory / "setup.done").exists():
         began = time.monotonic()
+        setup_timed_out = False
         with (directory / "setup.log").open("wb") as output:
-            result = subprocess.run(shell_command(setup.read_text(encoding="utf-8")), stdout=output, stderr=subprocess.STDOUT, env=env)
-        timing.write_text("setup_seconds=%d\n" % (time.monotonic() - began), encoding="utf-8")
-        if result.returncode:
+            installer = subprocess.Popen(shell_command(setup.read_text(encoding="utf-8")), stdout=output, stderr=subprocess.STDOUT,
+                                         env=env, start_new_session=os.name != "nt")
+            try:
+                setup_code = installer.wait(timeout=spec["timeout"])
+            except subprocess.TimeoutExpired:
+                stop_tree(installer.pid)
+                installer.wait()
+                setup_code, setup_timed_out = 124, True
+        setup_elapsed = time.monotonic() - began
+        timing.write_text("setup_seconds=%d\n" % setup_elapsed, encoding="utf-8")
+        if setup_timed_out:
+            # setup 与主体共用同一超时预算；setup 超时按 124 收尾并标明阶段。
+            with timing.open("a", encoding="utf-8") as stream:
+                stream.write("timeout_phase=setup\n")
+            (directory / "timed_out").touch()
+            if spec.get("handoff_version"):
+                (directory / ("exit.r" + str(spec["round"]))).write_text("124", encoding="utf-8")
+                try:
+                    messages.finish(directory, spec["job"], spec["round"], 124, agent=spec.get("agent"))
+                except (ValueError, OSError):
+                    (directory / ("report.r" + str(spec["round"]) + ".log")).write_text("结果回执生成失败；原执行退出码保留。", encoding="utf-8")
+            (directory / "exit_code").write_text("124", encoding="utf-8")
+            return
+        if setup_code:
             (directory / "exit_code").write_text("97", encoding="utf-8")
             return
         (directory / "setup.done").touch()
+        body_budget = max(1, spec["timeout"] - setup_elapsed)
     else:
         timing.write_text("setup_seconds=0\nsetup_note=已跳过\n", encoding="utf-8")
     runtime = None
@@ -469,7 +493,7 @@ def run_job(spec_file):
             child = subprocess.Popen(command, stdin=incoming if runtime else subprocess.DEVNULL, stdout=output, stderr=error,
                                      env=env, start_new_session=os.name != "nt")
             try:
-                rc = child.wait(timeout=spec["timeout"])
+                rc = child.wait(timeout=body_budget)
             except subprocess.TimeoutExpired:
                 (directory / "timed_out").touch()
                 stop_tree(child.pid)
@@ -478,6 +502,8 @@ def run_job(spec_file):
     finally:
         with timing.open("a", encoding="utf-8") as stream:
             stream.write("body_seconds=%d\n" % (time.monotonic() - began))
+            if rc == 124 and (directory / "timed_out").exists():
+                stream.write("timeout_phase=body\n")
             for rel in spec.get("regenerable_paths") or []:
                 stream.write("path_size_kb=%d\t%s\n" % (tree_kb(wt.joinpath(*Path(rel).parts)), rel))
         if slot:

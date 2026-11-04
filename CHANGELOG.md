@@ -2,6 +2,8 @@
 
 ## 未发布
 
+- **setup 纳入超时预算**：setup 与主体共用 `--timeout`／`timeout` 同一预算：setup 卡住会在预算用完时被终止，退出码 124，回执 `report.timeout_phase` 为 `setup`；setup 用掉一部分时间后主体只拿剩余时间（至少 1 秒），主体超时 `timeout_phase` 为 `body`。setup 失败仍是退出码 97。POSIX 运行脚本与 Windows 原生 runner 都按此处理。
+- **配置读取与 CRUD 共用校验**：`Config.host` 改调 `rd_host_config.validate`，读取路径也拒绝 NaN、inf、负数和越界百分比（此前 `max_load_per_core=nan` 读取接受、写入拒绝，会放过高负载门禁），`sync`、`launcher`、`enabled`、`platform` 等枚举与布尔统一解析；`DEFAULTS` 移到 `rd_defaults`、`parse_cache_dirs` 移到 `rd_host_config`，`cli` 继续导出。serve 重载遇到无效配置仍保留旧配置。
 - **网络不可达的拒绝原因与失败提示**：派单前的目标机网络探针（模型服务与 Codex 端点）不通时，`run` 仍退出码 3 拒绝，现在写明具体原因（TLS 握手失败、超时、DNS 解析失败等）并建议换主机或稍后重试，`--host auto` 自动跳过该机、全部不通时逐机列出，`--force-host` 跳过检查。代理任务失败回执新增 `failure_hint`（`network_unreachable`／`auth_failed`）与中文说明 `failure_note`：扫描本轮输出里的 `workspace routing discovery failed`、TLS 握手、连接超时／重置、DNS、401 等已知模式，识别不了不标记；`result`、`inbox`、`board` 显示。判定集中在 `rd_messages.failure_hint()`。详见 `docs/agents.md`。
 - **测试回执自动检查与防测旧代码**：`run --test` / `--test-full` 的命令任务，收尾兜底回执按退出码写 `checks=passed`（0）或 `failed`（非 0），并在回执 `report.test_command` 记录被执行的命令；代理任务、执行方自己写了结果回执的任务不变。测试类派单遇本地未发送的改动（未提交、未 `--wip`、未被 `--include` 覆盖）退出码 4 拒绝，提示 `--wip`、`--include` 或先提交，确认要测 HEAD 时用 `--allow-dirty`；非测试派单仍继续，改为 stderr 警告。详见 `docs/handoff.md`。
 - **假终态与并发写修复**：派单登记为 `preparing`／`launching` 期间，`Query.result` 不再把目标机上尚未建好的 `missing`／`dead`（`launching` 时 `done` 仍可信）当终态，不生成也不落盘回执，避免假终态被缓存后任务真完成仍返回旧回执；`run` 从登记到 started 持有任务锁。`rdispatch keep` 改为持任务锁读改写，不再覆盖并发续跑写入的新轮次。产物取回状态按轮次保存（`artifacts_rounds`，含每轮目标路径），续轮重新取回，不再沿用上一轮的「已取回」；`artifacts_state` 保留最近一次并新增 `round`、`paths`。详见 `docs/locking-and-queries.md`。

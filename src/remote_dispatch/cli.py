@@ -127,27 +127,39 @@ mkdir -p "$RD_JOB_DIR/reports"
 @@ROLLOUT_ENV@@
 if [ -f "$RD_JOB_DIR/setup.sh" ] && [ ! -f "$RD_JOB_DIR/setup.done" ]; then
   rd_t0=$(date +%s)
-  if sh "$RD_JOB_DIR/setup.sh" > "$RD_JOB_DIR/setup.log" 2>&1; then
-    touch "$RD_JOB_DIR/setup.done"
-    echo "setup_seconds=$(( $(date +%s) - rd_t0 ))" > "$RD_JOB_DIR/timing.r$RD_ROUND"
-  else
-    echo "setup_seconds=$(( $(date +%s) - rd_t0 ))" > "$RD_JOB_DIR/timing.r$RD_ROUND"
+  sh "$RD_JOB_DIR/setup.sh" > "$RD_JOB_DIR/setup.log" 2>&1 &
+  spid=$!
+  ( sleep @@TIMEOUT@@; : > "$RD_JOB_DIR/timed_out"; killtree $spid ) &
+  swpid=$!
+  wait $spid; src=$?
+  killtree $swpid
+  rd_setup_s=$(( $(date +%s) - rd_t0 ))
+  echo "setup_seconds=$rd_setup_s" > "$RD_JOB_DIR/timing.r$RD_ROUND"
+  if [ -f "$RD_JOB_DIR/timed_out" ]; then
+    echo "timeout_phase=setup" >> "$RD_JOB_DIR/timing.r$RD_ROUND"
+    rc=124; @@REPORT_FINISH@@
+    echo 124 > "$RD_JOB_DIR/exit_code"; exit 124
+  elif [ "$src" -ne 0 ]; then
     rc=97; @@REPORT_FINISH@@
     echo 97 > "$RD_JOB_DIR/exit_code"; exit 97
   fi
+  touch "$RD_JOB_DIR/setup.done"
 else
+  rd_setup_s=0
   printf 'setup_seconds=0\nsetup_note=已跳过\n' > "$RD_JOB_DIR/timing.r$RD_ROUND"
 fi
+# setup 与主体共用同一超时预算：主体只拿剩余时间（至少 1 秒）。
+rd_left=$(( @@TIMEOUT@@ - rd_setup_s )); [ "$rd_left" -lt 1 ] && rd_left=1
 rd_t1=$(date +%s)
 @@EXEC@@ > "$RD_JOB_DIR/stdout.r$RD_ROUND.log" 2> "$RD_JOB_DIR/stderr.r$RD_ROUND.log" &
 cpid=$!
-( sleep @@TIMEOUT@@; : > "$RD_JOB_DIR/timed_out"; killtree $cpid ) &
+( sleep $rd_left; : > "$RD_JOB_DIR/timed_out"; killtree $cpid ) &
 wpid=$!
 wait $cpid; rc=$?
 killtree $wpid
 echo "body_seconds=$(( $(date +%s) - rd_t1 ))" >> "$RD_JOB_DIR/timing.r$RD_ROUND"
 @@REGEN@@
-[ -f "$RD_JOB_DIR/timed_out" ] && rc=124
+[ -f "$RD_JOB_DIR/timed_out" ] && { rc=124; echo "timeout_phase=body" >> "$RD_JOB_DIR/timing.r$RD_ROUND"; }
 git rev-parse HEAD > "$RD_JOB_DIR/head" 2>/dev/null
 git status --porcelain 2>/dev/null | wc -l | tr -d ' ' > "$RD_JOB_DIR/dirty"
 @@PUSH@@
