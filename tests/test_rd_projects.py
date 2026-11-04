@@ -96,12 +96,12 @@ class ProjectHistoryTests(unittest.TestCase):
         rd.save_job(dict(job="alice-job", user_id="alice-team", project="app"))
         row = self.command("project", "rebuild")[0]
         before = events.read_after(self.state, 0)
-        replace = os.replace
-        def fail_events(source, destination):
-            if Path(destination) == self.state / "events.jsonl":
+        write_active = events.write_active
+        def fail_events(path, body):
+            if Path(path) == self.state / "events.jsonl":
                 raise OSError("fixture event disk full")
-            return replace(source, destination)
-        with patch.object(os, "replace", side_effect=fail_events), contextlib.redirect_stderr(io.StringIO()), \
+            return write_active(path, body)
+        with patch.object(events, "write_active", side_effect=fail_events), contextlib.redirect_stderr(io.StringIO()), \
              self.assertRaises(SystemExit) as error:
             self.command("project", "hide", row["id"])
         self.assertEqual(error.exception.code, 4)

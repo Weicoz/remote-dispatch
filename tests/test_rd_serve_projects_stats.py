@@ -8,6 +8,7 @@ import unittest
 from unittest.mock import patch
 
 from remote_dispatch import cli
+from remote_dispatch import rd_events as events
 from remote_dispatch.rd_projects import ProjectIndex
 from tests import test_rd_serve as support
 
@@ -277,12 +278,12 @@ class ProjectsStatsTests(unittest.TestCase):
         headers = {"Content-Type": "application/json", "Idempotency-Key": "retry"}
         with ProjectLock(self.state, "fixture"):
             self.assertEqual(self.request(path, "POST", "{}", headers), (409, {"error": {"reason": "project_busy"}}))
-        replace = os.replace
-        def fail_event(source, destination):
-            if Path(destination) == self.state / "events.jsonl":
+        write_active = events.write_active
+        def fail_event(path, body):
+            if Path(path) == self.state / "events.jsonl":
                 raise OSError("fixture disk full")
-            return replace(source, destination)
-        with patch.object(os, "replace", side_effect=fail_event):
+            return write_active(path, body)
+        with patch.object(events, "write_active", side_effect=fail_event):
             self.assertEqual(self.request(path, "POST", "{}", headers), (503, {"error": {"reason": "project_write_failed"}}))
         self.assertFalse(self.request("/v1/projects")[1]["projects"][0]["hidden"])
         self.assertTrue(self.request(path, "POST", "{}", headers)[1]["project"]["hidden"])

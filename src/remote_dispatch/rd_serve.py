@@ -285,6 +285,11 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.close_connection = True
         self.wfile.write(b": connected\n\n")
+        oldest = events.EventLog(service.state).oldest_seq()
+        if cursor and oldest > cursor + 1:
+            # 游标早于仍保留的最早事件（历史已按上限清理）：注释行不是事件，旧客户端忽略；
+            # 新客户端应据此重新拉取快照，再从 oldest_seq 继续。
+            self.wfile.write(f": cursor_expired oldest_seq={oldest}\n\n".encode())
         self.wfile.flush()
         heartbeat = time.monotonic()
         reader = events.EventCursor(service.state)
@@ -749,6 +754,10 @@ class Service:
 
     def poll(self):
         log = events.EventLog(self.state)
+        try:
+            log.warm()
+        except (OSError, ValueError):
+            pass
         while not self.stop.is_set():
             self.wake.clear()
             # One config generation per cycle: a reload mid-cycle must not
@@ -998,9 +1007,8 @@ class Service:
                 return self.log_snapshots.read(rec, number, stream, tail)
             rounds = []
             progress_events = {}
-            for event in events.read_after(self.state, 0):
-                if (event["type"] == "progress.updated" and event["data"].get("job") == job
-                        and self.visible(event)):
+            for event in events.EventLog(self.state).read_job(job):
+                if self.visible(event):
                     row = dict(event, data=events.display_data(event["type"], event["data"]))
                     progress_events.setdefault(row["data"].get("round"), []).append(row)
             for history in progress_events.values():

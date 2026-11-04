@@ -350,12 +350,12 @@ class ReportTests(unittest.TestCase):
         rec = self.job()
         self.receipt(rec)
         service = self.service()
-        replace = os.replace
-        def fail_event(source, destination):
-            if str(destination).endswith('/events.jsonl'):
+        write_active = events.write_active
+        def fail_event(path, body):
+            if str(path).endswith('/events.jsonl'):
                 raise OSError('fixture disk full')
-            return replace(source, destination)
-        with patch.object(os, 'replace', side_effect=fail_event), self.assertRaises(ValueError):
+            return write_active(path, body)
+        with patch.object(events, 'write_active', side_effect=fail_event), self.assertRaises(ValueError):
             service.reports.tick(now=0)
         self.assertEqual(self.reports(service), [])
         service.reports.tick(now=6)

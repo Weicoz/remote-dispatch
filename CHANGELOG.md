@@ -2,6 +2,7 @@
 
 ## 未发布
 
+- **事件存储改为追加写并限制历史**：活动段改为单次 `O_APPEND` + fsync 追加，不再每次整段重写；崩溃半行读取时忽略、下次写入前修复。`only_if_changed` 去重与派单详情的 `progress_events` 改用进程内索引（`EventLog.read_job`），不再扫描全部历史；serve 启动时预热。历史段总量受 `RD_EVENT_LOG_MAX_ARCHIVES`（默认 5 段）限制，轮转后删除最旧段；游标早于保留范围时从最早保留事件返回，SSE 另发 `: cursor_expired oldest_seq=N` 注释行。`seq` 与对外契约不变。详见 `docs/events.md`。
 - **通知通道隔离**：汇报提醒通道各自独立线程与待发队列，慢通道（macOS `osascript` 最长 15 秒）不再拖住其他通道；连续失败 3 次熔断 300 秒（`circuit_open`），到期放行探测；队列上限 50，超限丢弃最旧（`queue_overflow`）并限频记日志；汇报投递线程池由 4 增至 8。详见 `docs/reports.md`。
 - **非 Git 产物取回 `run --artifact`**：声明仓库内相对路径（文件或目录，可重复；绝对路径、含 `..`、`.git`、通配符退出码 4），任务结束后 `wait`／`result`／回执收取时拉回本地同一路径一次（macOS／Linux 目标用 rsync，含空格路径安全；Windows 目标经原生 worker 的 base64 通道取 tar），输出与回执 `artifacts` 列出文件数和大小，远端缺失单独报告、不算失败。新增 `rdispatch fetch JOB --artifacts` 手动重拉。产物未成功拉回时回收判定返回 `artifacts_pending`（`clean --expired` 与定时回收不回收，单个 clean 可 `--force`）。指向已被 Git 跟踪文件的 `--artifact`（含目录内有已跟踪文件）在 `run` 阶段退出码 4；拉回时本地目标已被跟踪则跳过并报告「已跳过」（终态，不阻塞回收）；失败保持待拉可重试。macOS、Linux、Windows 目标均支持。
 - **派单前环境指纹核对**（macOS、Linux、Windows 目标均支持；Windows 优先 `fingerprint_windows`，PowerShell 语法）：`[project:<名>] fingerprint = <shell 命令>` 设置后，`run` 在目标机同步并 setup 之后比较本机与目标机 stdout；不一致则任务不执行主体，退出码 95，`run` 退出 5，输出 unified diff，派单记录与回执记两边指纹。`--host auto` 逐台尝试候选，全部不一致才失败。`--skip-fingerprint` 跳过并警告；`doctor` 在配置了指纹时也比较；`fingerprint_timeout` 默认 120 秒。配了指纹的派单在 `run` 阶段同步执行 setup。`doctor` 本机指纹失败时输出 MISSING 行并返回 1，不再中断。详见 `docs/worker-setup.md`。

@@ -159,15 +159,15 @@ class ReviewTests(unittest.TestCase):
         self.assertTrue(any(row["type"] == "job.state_changed" and row["data"]["round"] == 2 for row in rows))
 
     def test_event_publish_failure_rolls_back_review_and_started_rejection_without_partial_events(self):
-        replace = os.replace
-        def fail_events(source, destination):
-            if Path(destination) == Path(rd.STATE) / "events.jsonl":
+        write_active = events.write_active
+        def fail_events(path, body):
+            if Path(path) == Path(rd.STATE) / "events.jsonl":
                 raise OSError("fixture event disk full")
-            return replace(source, destination)
+            return write_active(path, body)
         for options in (("--accept",), ("--void",), ("--reject", "继续")):
             with self.subTest(options=options):
                 before = events.read_after(rd.STATE, 0)
-                with patch.object(os, "replace", side_effect=fail_events):
+                with patch.object(events, "write_active", side_effect=fail_events):
                     code, out, err = self.review(*options)
                 self.assertEqual(code, 4, err)
                 result = self.result()
@@ -191,14 +191,14 @@ class ReviewTests(unittest.TestCase):
     def test_plain_resume_restores_target_and_local_round_if_event_publish_fails_after_launch(self):
         prompt = self.root / "continue.md"
         prompt.write_text("继续")
-        replace = os.replace
+        write_active = events.write_active
         # Only fail the new-round event batch; collecting the old receipt is a
         # separate successful write and may legitimately publish old-round data.
-        def fail_new_round(source, destination):
-            if Path(destination) == Path(rd.STATE) / "events.jsonl" and self.state["state"] == "running":
+        def fail_new_round(path, body):
+            if Path(path) == Path(rd.STATE) / "events.jsonl" and self.state["state"] == "running":
                 raise OSError("fixture event disk full")
-            return replace(source, destination)
-        with patch.object(os, "replace", side_effect=fail_new_round):
+            return write_active(path, body)
+        with patch.object(events, "write_active", side_effect=fail_new_round):
             code, out, err = self.command("resume", "fixture-job", "--prompt-file", str(prompt))
         self.assertEqual(code, 4, err)
         self.assertIn("event_write_failed", err)

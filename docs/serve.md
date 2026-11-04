@@ -6,7 +6,7 @@
 8000 字，无百分比。旧任务没有追加文件时回退到最新一条；没有进度时返回空数组。
 只读取当前用户可见派单，未知派单／轮次返回 404。查询不连接目标机、不写状态，
 首次采集前为空；采集后的历史存于控制端 `serve-progress/`，断线与重启仍可读。
-详情的 `progress_events` 补入轮询之间的全部进度，排序优先进度时间，重复采集不重发。
+详情的 `progress_events` 补入轮询之间的全部进度，排序优先进度时间，重复采集不重发；按派单从事件内存索引读取（最近 2000 条，且限于仍保留的历史段），不扫描全部事件。
 
 编排方合入后更新控制端包及后续轮次使用的 reporter，再按现有流程重启所管理的 serve。
 在隔离派单中连续执行两次 `progress`，间隔小于实际轮询周期，等待下一次采集后读取
@@ -22,6 +22,8 @@ RD_SERVE_SOCKET=/private/tmp/rdispatch.sock rdispatch ack JOB --round 1 --receip
 curl --unix-socket /private/tmp/rdispatch.sock http://localhost/v1/jobs
 curl -N --unix-socket /private/tmp/rdispatch.sock -H 'Last-Event-ID: 12' http://localhost/v1/events
 ```
+
+事件历史有总量上限（见 [events](events.md)）；`Last-Event-ID` 早于保留范围时，SSE 在连接后先发注释行 `: cursor_expired oldest_seq=N`，随后从最早保留事件继续。
 
 默认路径是 `$RD_SERVE_SOCKET`，否则 `$RD_STATE/serve.sock`。
 服务只绑定 AF_UNIX，不监听 TCP。socket 权限 0600，新建目录权限 0700。

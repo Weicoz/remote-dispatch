@@ -71,12 +71,12 @@ class AcknowledgementTests(unittest.TestCase):
     def test_event_write_failure_leaves_receipt_unsigned_and_retry_publishes_both_events(self):
         receipt = self.command("result", "fixture-job")
         before = events.read_after(rd.STATE, 0)
-        replace = os.replace
-        def fail_events(source, destination):
-            if Path(destination) == Path(rd.STATE) / "events.jsonl":
+        write_active = events.write_active
+        def fail_events(path, body):
+            if Path(path) == Path(rd.STATE) / "events.jsonl":
                 raise OSError("fixture event disk full")
-            return replace(source, destination)
-        with patch.object(os, "replace", side_effect=fail_events), contextlib.redirect_stderr(io.StringIO()), \
+            return write_active(path, body)
+        with patch.object(events, "write_active", side_effect=fail_events), contextlib.redirect_stderr(io.StringIO()), \
              self.assertRaises(SystemExit) as error:
             self.command("ack", "fixture-job", "--round", "1", "--receipt-id", receipt["receipt_id"], json_output=False)
         self.assertEqual(error.exception.code, 4)
