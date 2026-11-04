@@ -7,7 +7,7 @@ import sys
 from datetime import datetime
 from unittest.mock import patch
 
-from remote_dispatch import cli
+from remote_dispatch import cli, rd_serve
 from tests import test_rd_serve as base
 
 
@@ -213,10 +213,16 @@ class ReadLatencyTests(unittest.TestCase):
             progress=dict(summary="must not load"))))
         (directory / "missing-generation.json").write_text(json.dumps(dict(user_id="fixture", snapshot={})))
         (directory / "linked.json").symlink_to(directory / "bad-cache.json")
-        service = self.start(poll_interval=3600)
-        row = self.request("/v1/jobs")[1]["jobs"][0]
-        self.assertEqual((row["execution_state"], row["snapshot_at"]), ("starting", None))
-        service.close()
+        # 首轮后台采集会把该 job 标成 unreachable 并写 snapshot_at；本用例只验证冷启动读本地记录，
+        # 所以让首轮采集确定性地推迟到断言之后，不依赖机器快慢。
+        release = threading.Event()
+        self.addCleanup(release.set)
+        with patch.object(rd_serve.Collector, "cycle", lambda collector, log: release.wait(30)):
+            service = self.start(poll_interval=3600)
+            row = self.request("/v1/jobs")[1]["jobs"][0]
+            self.assertEqual((row["execution_state"], row["snapshot_at"]), ("starting", None))
+            release.set()
+            service.close()
 
     def test_old_target_round_is_not_published_as_the_resumed_round(self):
         self.config.write_text("[host:target]\nplatform=windows\nssh=target.invalid\n")
