@@ -231,7 +231,7 @@ class HandoffWorkerTests(WorkerTests):
         self.assertEqual(receipt["delivery_state"], "pending")
         self.assertTrue(receipt["needs_initiator_review"])
         self.assertEqual(rd.load_job(rec["job"])["rounds"], 1)
-        wt = Path(rec["worker_root"]) / "wt" / rec["job"]
+        wt = Path(rec["worker_root"]) / rd.warm.job_worktree(rec)
         (wt / "live-change.txt").write_text("正在修改的文件", encoding="utf-8")
         holder = subprocess.Popen(["sleep", "5"])
         self.addCleanup(lambda: holder.poll() is None and holder.terminate())
