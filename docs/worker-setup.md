@@ -44,7 +44,7 @@ max_heavy = 1
 
 ### SSH 连接复用
 
-`ssh_opts` 默认是 `-o BatchMode=yes -o ConnectTimeout=8`。`rdispatch` 在加载目标机配置时，只要 `ssh_opts`（含默认值）里没有任何 `Control*` 选项，就追加 `-o ControlMaster=auto -o ControlPath=~/.ssh/rd-%C -o ControlPersist=60`：同一目标机的 ssh、git（`GIT_SSH_COMMAND`）与 rsync（`-e`）共用一条连接，握手从约 0.27 秒降到约 0.08 秒。`%C` 是定长哈希，socket 路径远低于 macOS 的 104 字节上限；`~/.ssh` 目录须存在。自己写了 `ControlMaster`、`ControlPath` 或 `ControlPersist` 时原样保留，写 `-o ControlMaster=no` 即关闭复用。Windows 发起方的 OpenSSH 不支持 ControlMaster，自动跳过。
+`ssh_opts` 默认是 `-o BatchMode=yes -o ConnectTimeout=8`。`rdispatch` 在加载目标机配置时，只要 `ssh_opts`（含默认值）里没有任何 `Control*` 选项，就追加 `-o ControlMaster=auto -o ControlPath=~/.ssh/rd-%C -o ControlPersist=60 -o ServerAliveInterval=10 -o ServerAliveCountMax=3`（后两项让 master 建好后目标机休眠或换网时约 30 秒内断开，而不是挂到 TCP 重传超时）：同一目标机的 ssh、git（`GIT_SSH_COMMAND`）与 rsync（`-e`）共用一条连接，握手从约 0.27 秒降到约 0.08 秒。`%C` 是定长哈希，socket 路径远低于 macOS 的 104 字节上限；`~/.ssh` 目录须存在。自己写了 `ControlMaster`、`ControlPath` 或 `ControlPersist` 时原样保留，写 `-o ControlMaster=no` 即关闭复用。Windows 发起方的 OpenSSH 不支持 ControlMaster，自动跳过。
 
 ## 3. 远端装好要用的东西
 

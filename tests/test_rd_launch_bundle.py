@@ -17,11 +17,12 @@ from test_rd_artifact_fingerprint import Fixture
 class SshOptionTests(Fixture):
     def test_defaults_gain_multiplexing_with_short_control_path(self):
         opts = rd.with_ssh_multiplexing(rd.DEFAULTS["ssh_opts"])
-        for part in ("ControlMaster=auto", "ControlPersist=60", "ControlPath=~/.ssh/rd-%C"):
+        for part in ("ControlMaster=auto", "ControlPersist=60", "ServerAliveInterval=10", "ServerAliveCountMax=3", "ControlPath=~/.ssh/rd-%C"):
             self.assertIn(part, opts)
         self.assertNotIn("%h", opts)  # 不用会变长的主机名占位
 
     def test_user_written_control_options_are_never_overridden(self):
+        self.assertNotIn("ServerAlive", rd.with_ssh_multiplexing("-o ControlMaster=no"))
         for text in ("-o ControlMaster=no", "-o controlpath=/tmp/x", "-o ControlPersist=5m -o BatchMode=yes"):
             self.assertEqual(rd.with_ssh_multiplexing(text), text)
 

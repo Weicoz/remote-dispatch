@@ -101,7 +101,7 @@ DEFAULTS = {
 
 # SSH 连接复用：同一目标机的多次 ssh/git/rsync 共用一条连接（握手约 0.27 秒 -> 复用约 0.08 秒）。
 # %C 是 40 位哈希，路径远低于 macOS 的 104 字节 socket 上限。
-SSH_MULTIPLEX_OPTS = "-o ControlMaster=auto -o ControlPath=~/.ssh/rd-%C -o ControlPersist=60"
+SSH_MULTIPLEX_OPTS = "-o ControlMaster=auto -o ControlPath=~/.ssh/rd-%C -o ControlPersist=60 -o ServerAliveInterval=10 -o ServerAliveCountMax=3"
 
 
 def with_ssh_multiplexing(opts):

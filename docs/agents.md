@@ -24,7 +24,7 @@ Codex（`codex_auth_file`）、DSH（`dsh_auth_file`）、AGY（`agy_auth_file`�
 
 本轮失败输出出现明确认证失败（Codex 的 `401 Unauthorized`、AGY 的 `authentication failed`／未登录、DSH 的 `MISSING_CREDENTIAL`）时，回执记 `credential_suspect: true` 和 `credential_hint`，`result`、`inbox`、`board` 显示重新复制的命令。rdispatch 不自动重复制、不自动续跑；识别不了的失败不标记。判定集中在 `rd_messages.credential_suspect()`。
 
-本轮非零退出且输出出现已知失败模式时，回执另记 `failure_hint` 与一句中文说明 `failure_note`：`auth_failed`（认证失效，优先）或 `network_unreachable`（`workspace routing discovery failed`、TLS 握手失败、连接超时／重置／拒绝、DNS 失败等）。只看 JSON 错误字段与输出末尾 20 行纯文本，不看代理的回复正文；识别不了不标记。`result`、`inbox`（摘要）、`board` 显示该提示。派单前网络探针不通时，`run` 退出码 3 拒绝并写明 TLS 握手失败／超时／DNS 等原因，建议换主机或稍后重试；`--host auto` 跳过该机，`--force-host` 跳过检查。判定集中在 `rd_messages.failure_hint()`。
+本轮非零退出且输出出现已知失败模式时，回执另记 `failure_hint` 与一句中文说明 `failure_note`：`auth_failed`（认证失效，优先）或 `network_unreachable`（`workspace routing discovery failed`、TLS 握手失败、连接超时／重置／拒绝、DNS 失败等）。只看最后一条失败事件（最后一条 `turn.failed` 或 `error`；没有 JSON 事件时取末尾 20 行里最后一条纯文本行），瞬时重连（`Reconnecting… waiting for network`）不算，先前被重试掉的错误也不算；不看代理的回复正文，识别不了不标记。`result`、`inbox`（摘要）、`board` 显示该提示。派单前网络探针不通时，`run` 退出码 3 拒绝并写明 TLS 握手失败／超时／DNS 等原因，建议换主机或稍后重试；`--host auto` 跳过该机，`--force-host` 跳过检查。判定集中在 `rd_messages.failure_hint()`。
 
 ### dsh 的凭据
 
