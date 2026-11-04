@@ -458,21 +458,26 @@ def run_job(spec_file):
                 setup_code, setup_timed_out = 124, True
         setup_elapsed = time.monotonic() - began
         timing.write_text("setup_seconds=%d\n" % setup_elapsed, encoding="utf-8")
+        def finish_early(code):
+            """setup 阶段就结束：与主体收尾一样写结果回执（测试类派单 checks 按退出码）和退出码。"""
+            if spec.get("handoff_version"):
+                (directory / ("exit.r" + str(spec["round"]))).write_text(str(code), encoding="utf-8")
+                try:
+                    messages.finish(directory, spec["job"], spec["round"], code, agent=spec.get("agent"),
+                                    test_command=spec.get("cmd") if spec.get("test") and not spec.get("agent") else None)
+                except (ValueError, OSError):
+                    (directory / ("report.r" + str(spec["round"]) + ".log")).write_text("结果回执生成失败；原执行退出码保留。", encoding="utf-8")
+            (directory / "exit_code").write_text(str(code), encoding="utf-8")
+
         if setup_timed_out:
             # setup 与主体共用同一超时预算；setup 超时按 124 收尾并标明阶段。
             with timing.open("a", encoding="utf-8") as stream:
                 stream.write("timeout_phase=setup\n")
             (directory / "timed_out").touch()
-            if spec.get("handoff_version"):
-                (directory / ("exit.r" + str(spec["round"]))).write_text("124", encoding="utf-8")
-                try:
-                    messages.finish(directory, spec["job"], spec["round"], 124, agent=spec.get("agent"))
-                except (ValueError, OSError):
-                    (directory / ("report.r" + str(spec["round"]) + ".log")).write_text("结果回执生成失败；原执行退出码保留。", encoding="utf-8")
-            (directory / "exit_code").write_text("124", encoding="utf-8")
+            finish_early(124)
             return
         if setup_code:
-            (directory / "exit_code").write_text("97", encoding="utf-8")
+            finish_early(97)
             return
         (directory / "setup.done").touch()
         body_budget = max(1, spec["timeout"] - setup_elapsed)

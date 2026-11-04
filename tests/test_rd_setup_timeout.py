@@ -69,8 +69,41 @@ class ShellSetupTimeoutTests(Fixture):
         self.assertNotIn("timeout_phase", messages.phase_timings(directory, 1))
 
 
+class FingerprintBudgetTests(Fixture):
+    def setUp(self):
+        super().setUp()
+        self.t.configure_project(fingerprint="echo fp", setup="true")
+
+    def launched_timeout(self, spent):
+        seen = []
+        with patch.object(rd, "check_fingerprint", return_value=spent), \
+                patch.object(rd, "launch", side_effect=lambda host, rec, number, cmd, prompt, timeout:
+                             (seen.append(timeout), self.t.finish(host, rec, number))[1]):
+            self.t.dispatch(project="app", timeout=100)
+        return seen[0]
+
+    def test_launch_gets_the_budget_minus_the_setup_already_run_by_the_fingerprint_check(self):
+        self.assertEqual(self.launched_timeout(30.7), 70)
+        self.assertEqual(self.launched_timeout(0), 100)
+
+    def test_remaining_budget_is_at_least_one_second(self):
+        self.assertEqual(self.launched_timeout(500), 1)
+        self.assertEqual(rd.remaining_timeout("60", 59.9), 1)
+        self.assertEqual(rd.remaining_timeout(60, None), 60)
+
+    def test_check_fingerprint_reports_the_setup_seconds(self):
+        record = self.t.dispatch()
+        host = rd.scoped_host(self.t.cfg.host("fixture"), "employee_a")
+        done = subprocess.CompletedProcess([], 0, "", "")
+        with patch.object(rd, "ssh", side_effect=lambda *a, **k: (time.sleep(0.2), done)[1]), \
+                patch.object(rd, "run_remote_fingerprint", return_value=("fp", "")):
+            spent = rd.check_fingerprint(host, record, "echo fp", "fp", 30, 100)
+        self.assertGreaterEqual(spent, 0.2)
+        self.assertLess(spent, 5)
+
+
 class NativeSetupTimeoutTests(Fixture):
-    def run_native(self, setup, command, timeout):
+    def run_native(self, setup, command, timeout, test=False):
         record = self.t.dispatch()
         directory, wt = self.root / "n-job", self.root / "n-wt"
         for folder in (directory, wt, self.root / "n-bin"):
@@ -79,7 +112,7 @@ class NativeSetupTimeoutTests(Fixture):
         (directory / "setup.ps1").write_text(setup)
         spec = dict(record, round=1, user_id="employee_a", timeout=timeout, max_heavy=1, heavy=False, cmd=command,
                     directory=str(directory), wt=str(wt), bin=str(self.root / "n-bin"),
-                    lock_dir=str(self.root / "locks"), sync="direct", profile=None, handoff_version=1, test=False, agent=None)
+                    lock_dir=str(self.root / "locks"), sync="direct", profile=None, handoff_version=1, test=test, agent=None)
         spec_file = self.root / "n-spec.json"
         spec_file.write_text(json.dumps(spec))
         self.addCleanup(os.chdir, os.getcwd())
@@ -97,6 +130,14 @@ class NativeSetupTimeoutTests(Fixture):
         self.assertIn("timeout_phase=setup", (directory / "timing.r1").read_text())
         report = json.loads((directory / "reports" / "result.r1.json").read_text())
         self.assertEqual((report["timeout_phase"], report["executor_exit"]), ("setup", 124))
+
+    def test_native_setup_timeout_and_failure_receipts_follow_the_test_checks_rule(self):
+        for setup, code, checks in (("sleep 30", 124, "failed"), ("exit 5", 97, "failed")):
+            with self.subTest(code=code):
+                directory, _, _ = self.run_native(setup, "true", 2, test=True)
+                report = json.loads((directory / "reports" / "result.r1.json").read_text())
+                self.assertEqual((report["executor_exit"], report["checks"], report["test_command"]), (code, checks, "true"))
+                shutil.rmtree(directory)
 
     def test_native_body_shares_the_budget_and_reports_body_phase(self):
         directory, elapsed, _ = self.run_native("sleep 2", "sleep 30", 4)

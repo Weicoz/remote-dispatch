@@ -2641,7 +2641,9 @@ def check_fingerprint(host, rec, command, local, timeout, setup_timeout):
                  f'cd "$ROOT/wt/{job}" || exit 96\n'
                  f'export RD_JOB={shlex.quote(job)} RD_WT="$PWD" RD_JOB_DIR="$D"\n'
                  f'sh "$D/setup.sh" > "$D/setup.log" 2>&1 && touch "$D/setup.done"')
+        began = time.monotonic()
         r = ssh(host, setup, check=False, timeout=setup_timeout)
+    setup_spent = time.monotonic() - began
     if r is None or r.returncode:
         reason = "setup 超时" if r is None else f"setup 失败（退出码 {r.returncode}，见 setup.log）"
         raise FingerprintMismatch(dict(host=host["name"], remote="", diff="", error=reason + "，未能核对环境指纹"))
@@ -2651,6 +2653,12 @@ def check_fingerprint(host, rec, command, local, timeout, setup_timeout):
         raise FingerprintMismatch(dict(host=host["name"], remote=artifacts.trim(remote), diff=diff, error=error))
     rec["fingerprint"] = dict(command=command, match=True, host=host["name"], local=artifacts.trim(local),
                               remote=artifacts.trim(remote), digest=artifacts.fingerprint_digest(local))
+    return setup_spent
+
+
+def remaining_timeout(total, spent):
+    """总超时预算扣掉已用掉的 setup 时间，至少 1 秒。"""
+    return max(1, int(float(total)) - int(spent or 0))
 
 
 def drop_attempt(host, rec):
@@ -3041,12 +3049,13 @@ def cmd_run(a, cfg):
                     setup = proj.get("setup_windows", proj.get("setup"))
                     if setup:
                         put_file(host, f"jobs/{job}/setup.ps1", setup)
+                    spent = 0
                     if fp_command and not skip_fp:
-                        check_fingerprint(host, rec, host_fingerprint_command(proj, host, fp_command), local_fp,
-                                          fp_timeout, a.timeout or host["timeout"])
+                        spent = check_fingerprint(host, rec, host_fingerprint_command(proj, host, fp_command), local_fp,
+                                                  fp_timeout, a.timeout or host["timeout"])
                     rec["dispatch_state"] = "launching"
                     save_job(rec)
-                    launch(host, rec, 1, "", prompt, a.timeout or host["timeout"])
+                    launch(host, rec, 1, "", prompt, remaining_timeout(a.timeout or host["timeout"], spent))
                     rec["dispatch_state"] = "started"
                     save_job(rec)
                     record_decline(a, scope)
@@ -3085,8 +3094,9 @@ def cmd_run(a, cfg):
                         ssh(host, f'git -C "$ROOT/wt/{job}" apply --index --binary -', stdin=patch_file)
                 if proj.get("setup"):
                     put_file(host, f"jobs/{job}/setup.sh", proj["setup"] + "\n")
+                spent = 0
                 if fp_command and not skip_fp:
-                    check_fingerprint(host, rec, fp_command, local_fp, fp_timeout, a.timeout or host["timeout"])
+                    spent = check_fingerprint(host, rec, fp_command, local_fp, fp_timeout, a.timeout or host["timeout"])
 
                 if a.agent:
                     cmd_text = agent_command(agent, a.model, a.effort, permission=permission)
@@ -3094,7 +3104,7 @@ def cmd_run(a, cfg):
                     cmd_text = ("rd-heavy sh -c " + shlex.quote(a.cmd)) if a.heavy else a.cmd
                 rec["dispatch_state"] = "launching"
                 save_job(rec)
-                launch(host, rec, 1, cmd_text, prompt, a.timeout or host["timeout"])
+                launch(host, rec, 1, cmd_text, prompt, remaining_timeout(a.timeout or host["timeout"], spent))
                 rec["dispatch_state"] = "started"
                 save_job(rec)
                 record_decline(a, scope)
