@@ -62,14 +62,39 @@ class FalseTerminalTests(Fixture):
 
 
 class StuckLaunchingTests(Fixture):
-    def stuck(self):
+    def stuck(self, stage="launching"):
         record = self.t.dispatch()
-        record["dispatch_state"] = "launching"
+        record["dispatch_state"] = stage
         rd.save_job(record)
         return record
 
-    def collect(self, record, snapshot):
-        return rd.collect_result(self.t.cfg, record, dict(snapshot))
+    def collect(self, record, snapshot, fresh=None):
+        """snapshot 是拿锁前的旧快照；锁内重新查询的远端状态取 fresh（缺省同 snapshot）。"""
+        answer = dict(snapshot if fresh is None else fresh)
+        with patch.object(rd, "remote_state", side_effect=lambda host, jobs: {record["job"]: dict(answer)}):
+            return rd.collect_result(self.t.cfg, record, dict(snapshot))
+
+    def test_state_is_rechecked_under_the_lock_not_taken_from_the_stale_snapshot(self):
+        record = self.stuck()  # 旧快照没有痕迹，但拿锁后远端已经启动
+        self.collect(record, {"state": "starting", "round": "0"}, fresh={"state": "running", "round": "1"})
+        self.assertEqual(rd.load_job(record["job"])["dispatch_state"], "started")
+        record = self.stuck()  # 旧快照有痕迹，锁内复查却连不上：不动
+        self.collect(record, {"state": "dead", "round": "1"}, fresh={"state": "unreachable"})
+        self.assertEqual(rd.load_job(record["job"])["dispatch_state"], "launching")
+
+    def test_preparing_left_by_a_killed_run_becomes_preparation_failed(self):
+        record = self.stuck("preparing")
+        self.collect(record, {"state": "starting", "round": "0"})
+        self.assertEqual(rd.load_job(record["job"])["dispatch_state"], "preparation_failed")
+
+    def test_preparing_with_launch_traces_or_held_lock_is_not_failed(self):
+        record = self.stuck("preparing")
+        self.collect(record, {"state": "starting", "round": "0"}, fresh={"state": "running", "round": "1"})
+        self.assertEqual(rd.load_job(record["job"])["dispatch_state"], "started")
+        record = self.stuck("preparing")  # 派单仍持锁（进行中）：不动
+        with rd_lock.JobLock(rd.STATE, record["job"]):
+            self.collect(record, {"state": "starting", "round": "0"})
+        self.assertEqual(rd.load_job(record["job"])["dispatch_state"], "preparing")
 
     def test_remote_traces_of_a_launch_correct_the_state_to_started(self):
         for snapshot in ({"state": "dead", "round": "1"}, {"state": "running", "round": "1"},

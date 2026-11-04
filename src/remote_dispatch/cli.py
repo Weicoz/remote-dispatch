@@ -1123,7 +1123,9 @@ def lock_wait_seconds():
     return value if math.isfinite(value) and value >= 0 else 60.0
 
 
-HELD_JOBS = set()  # 本进程当前持有任务锁的 job；锁不可重入，持锁的调用链用它判断可以直接写
+# 本进程当前持有任务锁的 job；锁不可重入，持锁的调用链用它判断可以直接写。
+# 按进程而不是按线程记录，只用于单线程的 CLI 路径（serve 的多线程路径不使用）。
+HELD_JOBS = set()
 
 
 @contextlib.contextmanager
@@ -1257,20 +1259,14 @@ def queries(cfg):
                                       if section.startswith("project:")] if cfg else ())
 
 
-def reconcile_dispatch_state(rec, snapshot):
-    """cmd_run 在 launching 阶段异常退出时，状态会永远停在 launching。按目标机现状校正（持任务锁写）：
+def reconcile_dispatch_state(cfg, rec, snapshot):
+    """cmd_run 被强杀或在 launching 阶段异常退出，会让状态永远停在 launching／preparing。
+    这两个状态只在 cmd_run 持锁期间存在：能拿到任务锁就说明 cmd_run 已退出。
+    拿到锁后重新查询目标机（拿锁前的快照可能已过期，cmd_run 可能刚启动完就被杀）：
     已有启动痕迹（run.rN.sh、pid、退出码）-> started；确认没有任何痕迹 -> preparation_failed；
-    连不上、锁被占（派单可能仍在进行）时不动。就地更新 rec。"""
-    if rec.get("dispatch_state") != "launching":
+    连不上、锁被占时不动。就地更新 rec。"""
+    if rec.get("dispatch_state") not in ("launching", "preparing") or snapshot.get("state") in (None, "", "unreachable"):
         return
-    state = snapshot.get("state")
-    if state in (None, "", "unreachable"):
-        return
-    try:
-        launched = state in ("running", "done", "dead") or int(snapshot.get("round") or 0) >= 1
-    except ValueError:
-        return
-    target = "started" if launched else "preparation_failed"
     lock = None
     if rec["job"] not in HELD_JOBS:
         try:
@@ -1279,9 +1275,17 @@ def reconcile_dispatch_state(rec, snapshot):
             return
     try:
         fresh = load_job(rec["job"])
-        if fresh.get("dispatch_state") == "launching":
-            fresh["dispatch_state"] = target
-            save_job(fresh)
+        stage = fresh.get("dispatch_state")
+        if stage in ("launching", "preparing"):
+            current = remote_state(job_host(cfg, fresh), [fresh["job"]]).get(fresh["job"], {})
+            state = current.get("state")
+            try:
+                launched = state in ("running", "done", "dead") or int(current.get("round") or 0) >= 1
+            except ValueError:
+                return
+            if state not in (None, "", "unreachable"):
+                fresh["dispatch_state"] = "started" if launched else "preparation_failed"
+                save_job(fresh)
         rec["dispatch_state"] = fresh["dispatch_state"]
     finally:
         if lock is not None:
@@ -1290,7 +1294,7 @@ def reconcile_dispatch_state(rec, snapshot):
 
 def collect_result(cfg, rec, snapshot):
     """Explicit write path used by inbox, resume and cleanup, never by queries."""
-    reconcile_dispatch_state(rec, snapshot)
+    reconcile_dispatch_state(cfg, rec, snapshot)
     events.EventLog(STATE).observe_job(rec, snapshot)
     number = int(snapshot.get("round") or 0) or rec["rounds"]
     receipt = queries(cfg).result(rec, number, snapshot)
