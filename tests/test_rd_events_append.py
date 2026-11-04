@@ -168,6 +168,20 @@ class IndexTests(unittest.TestCase):
         # 游标仍在保留范围内时无缺口。
         self.assertEqual([row["seq"] for row in log.read_after(7)], [8])
 
+    def test_cold_cli_writer_dedups_by_tail_scan_without_building_the_index(self):
+        log = events.EventLog(self.state, max_bytes=300, max_archives=20)
+        self.observe(log)
+        for number in range(8):
+            log.append("job.created", dict(job="filler%d" % number, round=1))
+        self.assertGreater(len(log.archives()), 0)
+        events._indexes.clear()  # 等同新进程
+        fresh = events.EventLog(self.state, max_bytes=300, max_archives=20)
+        self.observe(fresh)  # 与归档里的最新值相同：不得重复发布
+        self.assertFalse(fresh.index().ready)
+        self.assertEqual(len([row for row in fresh.read_after(0) if row["type"] == "job.state_changed"]), 1)
+        self.observe(fresh, "done")
+        self.assertEqual(len([row for row in fresh.read_after(0) if row["type"] == "job.state_changed"]), 2)
+
     def test_index_drops_entries_of_pruned_segments(self):
         log = events.EventLog(self.state, max_bytes=300, max_archives=1)
         rec = dict(job="old", user_id="u", rounds=1, host="h")

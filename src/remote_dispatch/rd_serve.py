@@ -812,6 +812,10 @@ class Service:
         while not self.stop.is_set():
             self.wake.clear()
             try:
+                log.warm()  # 索引在写失败或历史清理后被重置，这里按需重建
+            except (OSError, ValueError):
+                pass
+            try:
                 # 按目标机分工作单元并发采集；阶段错误聚合记录，见 rd_serve_poll。
                 self.collector.cycle(log)
                 self.collector.errors.ok("poll", "cycle")

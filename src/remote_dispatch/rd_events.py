@@ -342,10 +342,28 @@ class EventLog:
             index.sync(self)
 
     def latest(self, kind, data):
+        """同一对象最近一次同类型事件的数据。索引已预热（serve）就查索引；
+        否则（一次性 CLI）从活动段尾部向前倒读，找到即停，不在写锁内解析全部历史。"""
         index = self.index()
         with index.lock:
-            index.sync(self)
-            return index.latest.get(identity(kind, data))
+            if index.ready:
+                index.sync(self)
+                return index.latest.get(identity(kind, data))
+        wanted = identity(kind, data)
+        # 行是紧凑 JSON：先用子串粗筛（类型、派单/目标机标识），只解析可能命中的行。
+        needles = [('"type":"%s"' % kind).encode()]
+        needles += [json.dumps(value, ensure_ascii=False).encode() for value in wanted[1] if isinstance(value, str)]
+        for path in [self.path, *reversed(self.archives())]:
+            try:
+                lines = physical(path).read_bytes().splitlines(keepends=True)
+            except FileNotFoundError:
+                continue
+            for line in reversed(lines):
+                if line.endswith(b"\n") and all(needle in line for needle in needles):
+                    previous = json.loads(line)
+                    if identity(previous["type"], previous["data"]) == wanted:
+                        return previous["data"]
+        return None
 
     def append_batch(self, items):
         """Publish a complete operation with one fsynced append, or publish no new rows."""
@@ -365,13 +383,13 @@ class EventLog:
                     last_seq, _ = tail(archives[-1])
             last_seq = max(last_seq, self.high_water())
             rows, latest = [], {}
-            if any(changed for _, _, changed in items):
+            if index.ready and any(changed for _, _, changed in items):
                 index.sync(self)
             for kind, data, changed in items:
                 key = identity(kind, data)
                 if changed:
                     if key not in latest:
-                        latest[key] = index.latest.get(key)
+                        latest[key] = index.latest.get(key) if index.ready else self.latest(kind, data)
                     if latest[key] == data:
                         continue
                 latest[key] = data
