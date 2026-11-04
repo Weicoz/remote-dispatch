@@ -184,11 +184,14 @@ class CachedReadTests(unittest.TestCase):
         self.assertTrue(service.job_refresh_complete(rec))  # 重启后不再轮询它
         future = datetime.now(timezone.utc) + timedelta(hours=3)
         service.cached_reads.clock = lambda: future.timestamp()
-        for argv in (("status", "job-done", "--json"), ("status", "job-done")):
-            direct = self.run_cli(*argv, serve=False)
-            with self.no_remote(service):
-                cached = self.run_cli(*argv)
-            self.assertEqual(cached, direct, argv)
+        direct = self.run_cli("status", "job-done", serve=False)
+        with self.no_remote(service):
+            self.assertEqual(self.run_cli("status", "job-done"), direct)
+        # JSON 行含 last／network_sample，落盘快照不保存它们：回退直跑，输出仍与直跑一致。
+        direct = self.run_cli("status", "job-done", "--json", serve=False)
+        before = len(self.state_calls)
+        self.assertEqual(self.run_cli("status", "job-done", "--json"), direct)
+        self.assertGreater(len(self.state_calls), before)
 
     def test_snapshot_restored_in_the_old_subset_format_is_not_used_for_cached_output(self):
         self.running = self.seed()
@@ -229,9 +232,9 @@ class CachedReadTests(unittest.TestCase):
         self.assertIn("job-done", service.complete_snapshots)
         future = datetime.now(timezone.utc) + timedelta(hours=3)
         service.cached_reads.clock = lambda: future.timestamp()
-        direct = self.run_cli("status", "job-done", "--json", serve=False)
+        direct = self.run_cli("status", "job-done", serve=False)
         with self.no_remote(service):
-            self.assertEqual(self.run_cli("status", "job-done", "--json"), direct)
+            self.assertEqual(self.run_cli("status", "job-done"), direct)
 
     def restart_service(self):
         service = Service(cli.Config(), self.path, poll_interval=3600)
@@ -251,6 +254,26 @@ class CachedReadTests(unittest.TestCase):
         self.addCleanup(service.close)
         self.eventually(lambda: service.collector.last_cycle_seconds, bool)
         self.assertEqual(service.snapshots["job-done"]["state"], "done")
+
+    def test_persisted_snapshot_has_no_remote_output_line_and_tokens_are_redacted(self):
+        self.job("job-secret")
+        self.states["job-secret"]["last"] = "key sk-abcdefghijklmnopqrstuvwx"
+        self.states["job-secret"]["network_sample"] = {"x": 1}
+        service = self.serve()
+        saved = json.loads((self.state / "serve-snapshots" / "job-secret.json").read_text())
+        self.assertNotIn("last", saved["snapshot"])
+        self.assertNotIn("network_sample", saved["snapshot"])
+        self.assertNotIn("sk-abcdefgh", json.dumps(saved))
+        # 实采的内存快照仍带 last，running 时 CLI 文本输出依赖它。
+        self.assertIn("last", service.snapshots["job-secret"])
+
+    def test_common_token_shapes_are_redacted_by_the_shared_redactor(self):
+        service = self.serve()
+        for token in ("sk-ant-api03-abcdefghijklmnop", "ghp_" + "a" * 36, "github_pat_" + "B" * 30,
+                      "xoxb-1234567890-abcdefghij", "AKIAABCDEFGHIJKLMNOP"):
+            self.assertEqual(service.redact("see " + token + " ok"), "see [redacted] ok", token)
+        self.assertEqual(service.redact("Authorization: Bearer abcDEF123456.xyz"), "Authorization: [redacted]")
+        self.assertEqual(service.redact("normal text sk-short"), "normal text sk-short")
 
     def test_options_the_cache_cannot_reproduce_stay_on_the_original_path(self):
         parser_args = type("Args", (), {})

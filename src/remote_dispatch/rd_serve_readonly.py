@@ -54,7 +54,7 @@ class CachedReads:
         collector = self.service.collector
         return MAX_AGE_CYCLES * self.service.poll_interval + collector.last_cycle_seconds
 
-    def states(self, recs):
+    def states(self, recs, *, full=False):
         """每个 job 取缓存快照，还原为 CLI 直跑时 job_states 返回的形状；任一缺失或过旧则 NotCached。"""
         service = self.service
         states = {}
@@ -66,7 +66,11 @@ class CachedReads:
                 generation = service.generations.get(job)
                 raw = service.raw_rounds.get(job, "")
                 complete = job in service.complete_snapshots
+                restored = job in service.restored_jobs
             if snapshot is None or generation != service.generation(rec) or not complete:
+                raise NotCached(job)
+            if restored and (full or snapshot.get("state") == "running"):
+                # 磁盘恢复的快照没有 last／network_sample：JSON 行或 running 的 last output 行会与直跑不同。
                 raise NotCached(job)
             if not service.collector.is_settled(rec):
                 taken = instant(snapshot.get("snapshot_at"))
@@ -131,7 +135,7 @@ class CachedReads:
                 [r for r in cli.all_jobs() if not r.get("user_id") or r["user_id"] == service.user_id])
         if not recs:
             return "no jobs.\n"
-        states = self.states(recs)
+        states = self.states(recs, full=bool(params.get("json")))
         if params.get("json"):
             return json.dumps(service.query().jobs(recs, states, user_id=service.user_id),
                               indent=2, ensure_ascii=False) + "\n"

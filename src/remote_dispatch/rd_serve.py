@@ -60,6 +60,12 @@ CONFIG_RELOAD_INTERVAL = 1.0
 CONFIG_RELOAD_ERROR_LIMIT = 1000
 
 
+# 常见裸令牌（无 key=value 标签也要遮盖）：OpenAI/Anthropic 风格 sk-、GitHub ghp_/github_pat_、Bearer、Slack xox*-、AWS AKIA。
+TOKEN_PATTERN = re.compile(
+    r"\b(?:sk|pk|rk)-[A-Za-z0-9_\-]{16,}|\bgh[pousr]_[A-Za-z0-9]{20,}|\bgithub_pat_[A-Za-z0-9_]{20,}"
+    r"|(?i:\bBearer\s+)[A-Za-z0-9._~+/=\-]{8,}|\bxox[abposr]-[A-Za-z0-9\-]{10,}|\bAKIA[0-9A-Z]{16}\b")
+
+
 def file_changes(receipt):
     """Project saved report statistics; a missing list is distinct from no changes."""
     report = receipt.get("report") or {}
@@ -408,6 +414,7 @@ class Service:
         self.generations = {}
         self.progress = {}
         self.raw_rounds = {}
+        self.restored_jobs = set()  # 来自磁盘、缺 last／network_sample 的快照，实采后移出
         self.complete_snapshots = set()  # 带完整采集字段（可供只读缓存逐字复现 CLI 输出）的快照
         self.restore_snapshots()
         self.host_last_seen = self.restore_host_last_seen()
@@ -573,6 +580,7 @@ class Service:
         if isinstance(value, str):
             for secret in sorted(sensitive, key=len, reverse=True):
                 value = value.replace(secret, "[redacted]")
+            value = TOKEN_PATTERN.sub("[redacted]", value)
             value = re.sub(r"-----BEGIN [^-]*PRIVATE KEY-----.*?-----END [^-]*PRIVATE KEY-----",
                            "[redacted]", value, flags=re.S)
             value = re.sub(r"(?i)(?<![\w-])[\w-]*(?:auth_file|env_file|ssh(?:_opts)?|password|secret|token|api_key|private_?key)"
@@ -620,6 +628,7 @@ class Service:
                 if "raw_round" in saved:
                     self.raw_rounds[path.stem] = saved["raw_round"]
                     self.complete_snapshots.add(path.stem)
+                    self.restored_jobs.add(path.stem)  # 落盘时去掉了 last 与 network_sample
                 if progress:
                     self.progress[(path.stem, generation[0])] = progress
             except (OSError, ValueError, TypeError, KeyError):

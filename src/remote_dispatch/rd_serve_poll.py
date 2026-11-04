@@ -384,7 +384,8 @@ class Collector:
         # Persist only display data, so restart can serve the last
         # observation while the first remote collection is pending.
         # 完整快照落盘（经脱敏），重启后只读缓存才能逐字复现 CLI 输出；老格式文件没有 raw_round，不作缓存依据。
-        saved_snapshot = dict(snapshot)
+        # last（目标机输出末行）与 network_sample 不落盘：输出可能含令牌，脱敏规则覆盖不了所有形态。
+        saved_snapshot = {key: value for key, value in snapshot.items() if key not in ("last", "network_sample")}
         with service.cache_lock:
             if not progress_ok:
                 progress = service.progress.get((rec["job"], number))  # 本轮没读到：沿用上一次的进度
@@ -399,6 +400,7 @@ class Collector:
             service.snapshots[rec["job"]] = snapshot
             service.raw_rounds[rec["job"]] = raw_round  # 只读查询还原 CLI 直跑时的原始 round
             service.complete_snapshots.add(rec["job"])
+            service.restored_jobs.discard(rec["job"])
             service.generations[rec["job"]] = service.generation(rec)
             service.progress[(rec["job"], number)] = progress
             service.snapshot_version += 1
