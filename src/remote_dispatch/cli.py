@@ -1022,6 +1022,22 @@ def fmt_probe(host, info, why):
             f"heavy {unk('heavy')}/{host['max_heavy']}  network [{net}]  -> {verdict}{hint}")
 
 
+NETWORK_ERRORS_ZH = {"TLS handshake failed": "TLS 握手失败", "TLS certificate failed": "TLS 证书校验失败", "timeout": "超时",
+                     "DNS failed": "DNS 解析失败", "proxy DNS failed": "代理 DNS 解析失败", "connect failed": "连接失败"}
+
+
+def network_advice(why):
+    """目标机网络探针（含模型服务与 codex 端点）不通时的中文原因与建议；与网络无关返回空串。"""
+    reasons = [item for item in why if item.startswith("network unavailable")]
+    if not reasons:
+        return ""
+    text = "；".join(reasons)
+    for english, chinese in NETWORK_ERRORS_ZH.items():
+        text = text.replace(english, chinese)
+    return (f"网络不可达（{text}）。建议换主机（--host auto 会自动跳过）或稍后重试；"
+            "确认要照派可加 --force-host 跳过检查。")
+
+
 def pick_host(cfg, name, tags):
     return pick_hosts(cfg, name, tags)[0]
 
@@ -1034,7 +1050,8 @@ def pick_hosts(cfg, name, tags):
         why = assess(host, info)
         print(fmt_probe(host, info, why))
         if why:
-            die(f"目标机 {name} 离线或暂时无法接单（{'; '.join(why)}）；未派出，请检查目标机状态。", 3)
+            die(f"目标机 {name} 离线或暂时无法接单（{'; '.join(why)}）；未派出，请检查目标机状态。"
+                + (("\n" + network_advice(why)) if network_advice(why) else ""), 3)
         return [host]
     matching = [h for h in cfg.hosts() if set(tags) <= {t.strip() for t in h["tags"].split(",") if t.strip()}]
     hosts = [h for h in matching if not is_local(h)]
@@ -1043,16 +1060,19 @@ def pick_hosts(cfg, name, tags):
         if local:
             die(f"auto 不会选择本机目标（{', '.join(local)} 配置为 ssh = local）；本机派单请显式 --host {local[0]}。", 4)
         die(f"no enabled host{' with tags ' + ','.join(tags) if tags else ''} in {CONFIG}")
-    free = []
+    free, refused = [], []
     for host, info in probe_all(hosts):
         why = assess(host, info)
         print(fmt_probe(host, info, why))
-        if not why:
+        if why:
+            refused.append((host["name"], why))
+        else:
             # 没有会话数上限：能不能接由负载、内存、磁盘决定；多台都能接时挑负载最低的。
             per_core = (num(info.get("load1")) or 0) / (num(info.get("ncpu")) or 1)
             free.append((per_core, int(num(info.get("running")) or 0), host["name"], host))
     if not free:
-        die("no host can take the job right now; nothing was dispatched.", 3)
+        advice = " ".join(f"[{n}] {network_advice(w)}" for n, w in refused if network_advice(w))
+        die("no host can take the job right now; nothing was dispatched." + (("\n" + advice) if advice else ""), 3)
     return [item[3] for item in sorted(free, key=lambda t: t[:3])]
 
 
