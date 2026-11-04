@@ -72,6 +72,7 @@ class Reports:
             self.pool.shutdown(wait=False, cancel_futures=True)
             self.pool = None
             self.futures = []
+        notifier.close(self.service)
         with self.lock:
             # 宽限期之后迟到的通知线程不得再写报告存储；汇报留在 queued，重启后补投。
             self.closed = True
@@ -168,7 +169,7 @@ class Reports:
             self.inflight.add(row["id"])
             if background:
                 if self.pool is None:
-                    self.pool = ThreadPoolExecutor(max_workers=4, thread_name_prefix="rd-notify")
+                    self.pool = ThreadPoolExecutor(max_workers=8, thread_name_prefix="rd-notify")
                 self.futures = [f for f in self.futures if not f.done()]
                 self.futures.append(self.pool.submit(self.deliver, row))
             else:
