@@ -181,16 +181,16 @@ class CachedReadTests(unittest.TestCase):
         cli.acknowledge_receipt(rec, receipt, "owner", "cli")
         self.running.collector.cycle(rd_serve.events.EventLog(self.state))
         service = self.restart()
-        self.assertTrue(service.job_refresh_complete(rec))  # 补采一次后不再轮询它
+        self.assertTrue(service.job_refresh_complete(rec))  # 已签收终态：重启后不再轮询它
         future = datetime.now(timezone.utc) + timedelta(hours=3)
         service.cached_reads.clock = lambda: future.timestamp()
         direct = self.run_cli("status", "job-done", serve=False)
         with self.no_remote(service):
             self.assertEqual(self.run_cli("status", "job-done"), direct)
-        # 重启后终态快照缺 last／network_sample，已按旧格式补采一次：--json 也由缓存回答。
-        direct = self.run_cli("status", "job-done", "--json", serve=False)
-        with self.no_remote(service):
-            self.assertEqual(self.run_cli("status", "job-done", "--json"), direct)
+        # 重启后终态快照缺 last／network_sample 且不再补采（避免历史任务一波 ssh）：--json 不由缓存回答，回退直跑。
+        reply = service.cached_reads.handle(dict(command="status", params=dict(job="job-done", json=True),
+                                                 user_id="fixture", config=str(self.config.resolve())))
+        self.assertEqual(reply, dict(handled=False))
 
     def test_snapshot_restored_in_the_old_subset_format_is_not_used_for_cached_output(self):
         self.running = self.seed()
@@ -202,7 +202,7 @@ class CachedReadTests(unittest.TestCase):
         path.write_text(json.dumps(saved))
         service = Service(cli.Config(), self.path, poll_interval=3600)  # 只恢复，不启动采集
         self.assertNotIn("job-running", service.complete_snapshots)
-        self.assertNotIn("job-done", service.complete_snapshots)  # 终态缺 last／network_sample：待补采
+        self.assertIn("job-done", service.complete_snapshots)  # 新格式终态快照：记为完整，不补采
         reply = service.cached_reads.handle(dict(command="status", params=dict(job="job-running", json=False),
                                                  user_id="fixture", config=str(self.config.resolve())))
         self.assertEqual(reply, dict(handled=False))

@@ -79,6 +79,11 @@ IDENTIFIER_KEYS = frozenset({
     "session", "session_id", "pane_id", "workspace_id", "device_id", "id", "seq", "type", "kind", "state", "execution_state",
     "review_state", "delivery_state", "status", "created", "created_at", "updated_at", "snapshot_at", "captured_at",
     "started_at", "stopped_at", "finished", "reviewed_at", "received_at", "delivered_at", "channels", "previous", "line", "name", "unit"})
+# 路由类标识：系统生成的派单 ID、分支、回执 ID 等。其中出现配置密钥值只是巧合，替换会让 App 无法定位派单，
+# 因此完全免脱敏。其余标识键（host、session 等可能含用户输入）只免启发式令牌正则，配置密钥值照常遮盖。
+ROUTING_KEYS = frozenset({
+    "job", "jobs", "last_job", "running_job_ids", "job_id", "job_ids", "branch", "source_branch", "shared_branch",
+    "previous", "line", "receipt_id", "report_id", "message_id"})
 MIN_SECRET_LENGTH = 8
 
 
@@ -599,13 +604,19 @@ class Service:
 
     def redact_value(self, value, pattern, identifier):
         if isinstance(value, dict):
-            return {key: self.redact_value(item, pattern, key in IDENTIFIER_KEYS) for key, item in value.items()
+            return {key: self.redact_value(item, pattern, "routing" if key in ROUTING_KEYS
+                                           else key in IDENTIFIER_KEYS) for key, item in value.items()
                     if not self.is_sensitive_field(key)}
         if isinstance(value, list):
             return [self.redact_value(item, pattern, identifier) for item in value]
-        if isinstance(value, str) and not identifier:
+        if isinstance(value, str):
+            if identifier == "routing":
+                return value
+            # 配置里的密钥值是确定的秘密，非路由标识键里出现也必须遮盖；标识键只免启发式的令牌正则。
             if pattern is not None:
                 value = pattern.sub("[redacted]", value)
+            if identifier:
+                return value
             value = TOKEN_PATTERN.sub("[redacted]", value)
             value = re.sub(r"-----BEGIN [^-]*PRIVATE KEY-----.*?-----END [^-]*PRIVATE KEY-----",
                            "[redacted]", value, flags=re.S)
@@ -654,9 +665,9 @@ class Service:
                 if "raw_round" in saved:
                     self.raw_rounds[path.stem] = saved["raw_round"]
                     self.restored_jobs.add(path.stem)  # 落盘时去掉了 last 与 network_sample
-                    if snapshot["state"] not in ("done", "dead", "missing"):
-                        self.complete_snapshots.add(path.stem)
-                    # 终态快照缺 last／network_sample：不记为完整，按旧格式补采一次（连不上时保留原快照）。
+                    # 新格式快照记为完整：已签收终态任务重启后不再远端探测（历史任务多时补采是一波 ssh）。
+                    # 代价：status --json 与 running 的 last output 行在重采前回退直跑（见 rd_serve_readonly）。
+                    self.complete_snapshots.add(path.stem)
                 if progress:
                     self.progress[(path.stem, generation[0])] = progress
             except (OSError, ValueError, TypeError, KeyError):

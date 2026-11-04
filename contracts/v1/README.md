@@ -154,7 +154,7 @@
 - 汇报提醒改版（票 01）：`reports.json` 的 `delivery` 改为 `status`（`notified`／`inbox_only`）与 `channels`；
   `report-delivered.json` 的 `data` 改为成功通道名列表 `channels`，仅在提醒成功后发布；
   `delivery.status=queued` 且 `channels` 非空：已有部分通道给出结果（含超时或失败），其余通道尚未真正尝试（熔断、关闭、队列满或 `queue_timeout`），服务稍后只重投未尝试的通道；`channels=[]` 则尚未有任何结果。
-  脱敏范围：`/v1` 响应、SSE、落盘快照与汇报对 `src/remote_dispatch/rd_serve.py` 中 `IDENTIFIER_KEYS` 列出的标识键（派单 ID、分支、主机、轮次、状态、时间等）不做文本脱敏，嵌套对象按内层键重判；其余自由文本照常遮盖令牌与配置密钥。重启后的终态快照每机每轮至多补采 10 个（最近优先），离线机沿用现有离线退避。
+  脱敏范围：`/v1` 响应、SSE、落盘快照与汇报按字段分两层（`src/remote_dispatch/rd_serve.py`）。`ROUTING_KEYS`（派单 ID、分支、回执 ID 等系统生成的路由标识）完全不做文本脱敏，保证 App 能定位派单；`IDENTIFIER_KEYS` 中的其他标识键（主机、会话、状态、时间等）不做启发式令牌匹配，但配置里长度 ≥8 的密钥值照常遮盖；其余自由文本遮盖令牌与配置密钥。嵌套对象按内层键重判。重启后，旧格式（升级前落盘）的终态快照每机每轮至多补采 10 个（最近优先），离线机沿用现有离线退避；新格式快照不补采，`status --json` 在该任务下次被采集前回退直跑。
   `reports-unsubmitted.json` 标为历史状态样例，老记录的旧状态与原因键原样返回。
 - 票 61：`reports-unsubmitted.json`（历史状态样例）展示文本已写入、回车失败的
   `delivery.status=text_delivered/reason=session_submit_failed`；保留写入时间，
