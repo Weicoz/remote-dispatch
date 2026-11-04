@@ -528,9 +528,10 @@ def scoped_host(host, uid):
     return dict(host, shared_workdir=host["workdir"], workdir=host["workdir"].rstrip("/") + "/users/" + uid)
 
 
-def job_host(cfg, rec):
-    # 已登记的任务：宽松读取，不校验字段（目标机配置被写坏也要能继续监控与收尾）；派新单才严格校验。
-    host = cfg.host(rec["host"], lenient=True)
+def job_host(cfg, rec, *, strict=False):
+    # 已登记的任务：宽松读取，不校验字段（目标机配置被写坏也要能继续监控与收尾）；
+    # strict=True（续跑到原主机）按派新单的标准校验。
+    host = cfg.host(rec["host"], lenient=not strict)
     if rec.get("user_id"):
         if require_user() != rec["user_id"]:
             die("当前 RD_USER_ID 与任务员工 ID 不匹配。", 4)

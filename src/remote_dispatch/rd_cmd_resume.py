@@ -137,12 +137,13 @@ def resume_job(a, cfg, rec, *, prompt=None, before_launch=None, rollback_stack=N
     if getattr(a, "agent", None) and a.agent != rec.get("agent"):
         cli.die("harness_change_not_allowed: 续跑不能换 harness；请另派一单。", 4)
     cli.require_user()
+    moving = bool(getattr(a, "host", None) and a.host != rec["host"])
     if not rec.get("user_id") or not (rec.get("profile") or rec.get("isolated")):
         cli.die("resume_not_allowed: 旧任务未固定用户配置；查看、取回仍可用，续跑必须重新派单。", 4)
     if not rec.get("agent"):
         cli.die("resume_not_allowed: only agent jobs can be resumed; start a new job for commands")
-    cfg.host(rec["host"])  # 续跑是新一轮工作：和派新单一样严格校验目标机配置
-    host = cli.job_host(cfg, rec)
+    # 续跑是新一轮工作，只严格校验承接它的目标机：原主机配置写坏时仍可续跑到另一台好主机（源主机宽松读取）。
+    host = cli.job_host(cfg, rec, strict=not moving)
     host["probe_agent"] = rec["agent"]
     host["probe_profile_fingerprint"] = (rec.get("profile") or {}).get("fingerprint")
     st = cli.remote_state(host, [rec["job"]]).get(rec["job"], {})
@@ -151,9 +152,8 @@ def resume_job(a, cfg, rec, *, prompt=None, before_launch=None, rollback_stack=N
     if st.get("state") == "unreachable":
         cli.die(f"resume_host_unavailable: job is unreachable on {host['name']}", 4)
     source_host = host
-    moving = bool(getattr(a, "host", None) and a.host != rec["host"])
     if moving:
-        host = cli.scoped_host(cfg.host(a.host), rec["user_id"])
+        host = cli.scoped_host(cfg.host(a.host, check_disabled=True), rec["user_id"])
         host["probe_agent"] = rec["agent"]
     info = cli.probe(host)
     why = cli.assess(host, info)

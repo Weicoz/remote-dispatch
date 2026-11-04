@@ -207,6 +207,50 @@ class InFlightJobHostTests(ConfigFixture):
         self.assertIn("timeout", str(caught.exception))
 
 
+class ResumeTargetValidationTests(ConfigFixture):
+    class Stop(Exception):
+        pass
+
+    def resume(self, host_arg):
+        self.path.write_text("[host:box]\nssh = user@box\ntimeout = 0\n[host:good]\nssh = good@h\n", encoding="utf-8")
+        config = cli.Config(strict=True)
+        rec = {"job": "j", "host": "box", "agent": "codex", "user_id": "u", "isolated": True, "rounds": 1}
+        args = type("A", (), dict(host=host_arg, agent=None, force_host=False))()
+        probed = []
+
+        def probe(host):
+            probed.append(host["name"])
+            raise self.Stop()
+        with patch.object(cli, "require_user", return_value="u"), \
+                patch.object(cli, "remote_state", return_value={"j": {"state": "done"}}), \
+                patch.object(cli, "probe", side_effect=probe), self.assertRaises((self.Stop, cli.ConfigError)) as caught:
+            cli.resume_job(args, config, rec)
+        return probed, caught.exception
+
+    def test_resume_to_another_good_host_is_allowed_when_the_original_host_config_is_broken(self):
+        probed, error = self.resume("good")
+        self.assertIsInstance(error, self.Stop)
+        self.assertEqual(probed, ["good"])
+
+    def test_resume_in_place_on_a_broken_host_is_refused(self):
+        probed, error = self.resume(None)
+        self.assertIsInstance(error, cli.ConfigError)
+        self.assertIn("timeout", str(error))
+        self.assertEqual(probed, [])
+
+    def test_resume_to_a_broken_target_host_is_refused(self):
+        self.path.write_text("[host:box]\nssh = user@box\n[host:bad]\nssh = bad@h\nmax_heavy = 0\n", encoding="utf-8")
+        config = cli.Config(strict=True)
+        rec = {"job": "j", "host": "box", "agent": "codex", "user_id": "u", "isolated": True, "rounds": 1}
+        args = type("A", (), dict(host="bad", agent=None, force_host=False))()
+        with patch.object(cli, "require_user", return_value="u"), \
+                patch.object(cli, "remote_state", return_value={"j": {"state": "done"}}), \
+                patch.object(cli, "probe") as probe, self.assertRaises(cli.ConfigError) as caught:
+            cli.resume_job(args, config, rec)
+        self.assertIn("max_heavy", str(caught.exception))
+        probe.assert_not_called()
+
+
 class DependencyDirectionTests(unittest.TestCase):
     def test_defaults_and_cache_parser_live_below_cli_and_are_re_exported(self):
         self.assertIs(cli.DEFAULTS, rd_defaults.DEFAULTS)
