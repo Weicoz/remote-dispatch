@@ -894,7 +894,7 @@ class Service:
         progress = detail["progress"] or {}
         execution = detail["execution"]
         project = query.jobs([rec], {}, user_id=self.user_id)[0]
-        card = {key: rec.get(key) for key in ("job", "host", "model", "initiator_harness", "initiator_host", "initiator_session", "initiator_herdr", "initiator_hc")}
+        card = {key: rec.get(key) for key in ("job", "host", "model", "initiator_harness", "initiator_host", "initiator_session", "initiator_herdr", "initiator_hc", "initiator_primary")}
         card.update(project=project["project"], project_id=project["project_id"], harness=rec.get("agent"),
                     round=rec["rounds"], execution_state=execution.get("state", "starting"),
                     executor_exit=receipt.get("executor_exit"), outcome=report.get("outcome"), checks=report.get("checks"),

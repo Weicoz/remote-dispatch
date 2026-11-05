@@ -144,6 +144,11 @@ class Sessions:
         return [item["row"] for item in self.cached()]
 
     @staticmethod
+    def owner_order(rec):
+        """发起会话归属顺序：按 initiator_primary 优先、另一个回落；旧记录（缺省）先 herdr 后 hc。"""
+        return ("hc", "herdr") if rec.get("initiator_primary") == "hc" else ("herdr", "hc")
+
+    @staticmethod
     def count_attention(rows, records, cards):
         """把「卡住 / 离线 / 失败」的派单挂到发起会话上：先按 initiator_herdr.pane_id 匹配 TUI 会话，
         匹配不到再按 initiator_hc.terminal 匹配 App 会话；probable 会话恒为 0。口径同项目级 needs_attention_count。"""
@@ -158,10 +163,10 @@ class Sessions:
             if card is None or urgency(card)[1] >= 3:
                 continue
             pane = (rec.get("initiator_herdr") or {}).get("pane_id")
-            target = by_pane.get(pane) if pane else None
-            if target is None:
-                terminal = (rec.get("initiator_hc") or {}).get("terminal")
-                target = by_address.get(terminal) if terminal else None
+            terminal = (rec.get("initiator_hc") or {}).get("terminal")
+            lookups = dict(herdr=by_pane.get(pane) if pane else None,
+                           hc=by_address.get(terminal) if terminal else None)
+            target = next((lookups[kind] for kind in Sessions.owner_order(rec) if lookups[kind]), None)
             if target is not None and "needs_attention_count" in target and not target["probable"]:
                 target["needs_attention_count"] += 1
         return rows
@@ -389,15 +394,18 @@ class Sessions:
             identity = rec.get("initiator_session")
             item = next((row for row in rows if identity and row["session_id"] == identity), None)
             matched_by = "session_id" if item else None
-            if item is None:
-                pane = (rec.get("initiator_herdr") or {}).get("pane_id")
-                item = next((row for row in rows if row["pane_id"] == pane), None)
-                matched_by = "pane_id" if item else None
-            if item is None:
-                terminal = (rec.get("initiator_hc") or {}).get("terminal")
-                item = next((row for row in rows if terminal and row.get("surface") == "app"
-                             and row["address"] == terminal), None)
-                matched_by = "terminal" if item else None
+            pane = (rec.get("initiator_herdr") or {}).get("pane_id")
+            terminal = (rec.get("initiator_hc") or {}).get("terminal")
+            for kind in self.owner_order(rec):
+                if item is not None:
+                    break
+                if kind == "herdr":
+                    item = next((row for row in rows if pane and row["pane_id"] == pane), None)
+                    matched_by = "pane_id" if item else None
+                else:
+                    item = next((row for row in rows if terminal and row.get("surface") == "app"
+                                 and row["address"] == terminal), None)
+                    matched_by = "terminal" if item else None
             if item is None:
                 return 200, dict(session=None, matched_by=None, reason="session_closed", text="会话已关闭")
             return 200, dict(session=item, matched_by=matched_by)

@@ -234,7 +234,7 @@ class Writes:
                     argv += ["--" + name + "=" + value]
             origin = dict(initiator_harness="app", initiator_host=socket.gethostname(),
                           initiator_herdr=dict(session=None, workspace_id=None, pane_id=None),
-                          initiator_hc=None)
+                          initiator_hc=None, initiator_primary=None)
             plan_args, decision = self.line_arguments(body)
             argv += plan_args
             if plan_args and decision is None:

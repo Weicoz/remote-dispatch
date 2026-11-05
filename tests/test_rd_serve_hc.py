@@ -262,6 +262,31 @@ class HcTests(unittest.TestCase):
         self.assertEqual(project["needs_attention_count"], 5)
         self.assertEqual(rows["hc:t10"]["needs_attention_count"], 0)
 
+    def test_initiator_primary_decides_ownership_and_old_records_keep_herdr_first(self):
+        self.config.write_text("[host:target]\nssh=local\nworkdir=%s\nsync=direct\n" % (self.root / "worker"))
+        self.job_states = {}
+        boundary = patch.object(cli, "job_states", side_effect=lambda cfg, recs: {
+            rec["job"]: self.job_states.get(rec["job"], {"state": "running", "round": "1"}) for rec in recs})
+        boundary.start()
+        self.addCleanup(boundary.stop)
+        both = dict(initiator_herdr={"pane_id": "w1:p1"}, initiator_hc={"terminal": "t8"})
+        self.attention_job("app-inner", "unreachable", initiator_primary="hc", **both)
+        self.attention_job("tui-inner", "unreachable", initiator_primary="herdr", **both)
+        self.attention_job("old-record", "unreachable", **both)
+        self.attention_job("hc-primary-pane-gone", "unreachable", initiator_primary="hc",
+                           initiator_herdr={"pane_id": "w9:p9"}, initiator_hc={"terminal": "t8"})
+        self.attention_job("herdr-primary-pane-gone", "unreachable", initiator_primary="herdr",
+                           initiator_herdr={"pane_id": "w9:p9"}, initiator_hc={"terminal": "t8"})
+        self.attention_job("resolve-hc", "running", initiator_session="gone", initiator_primary="hc", **both)
+        self.attention_job("resolve-old", "running", initiator_session="gone", **both)
+        self.start_hc(["hc:t8"])
+        expected = {"w1:p1": 2, "hc:t8": 3}
+        self.eventually(self.by_id, lambda rows: {k: rows[k]["needs_attention_count"] for k in expected} == expected)
+        by_hc = self.request("/v1/jobs/resolve-hc/session")[1]
+        by_old = self.request("/v1/jobs/resolve-old/session")[1]
+        self.assertEqual((by_hc["session"]["id"], by_hc["matched_by"]), ("hc:t8", "terminal"))
+        self.assertEqual((by_old["session"]["id"], by_old["matched_by"]), ("w1:p1", "pane_id"))
+
     def test_summary_counts_working_sessions_from_tui_and_app(self):
         self.data["agents"] = [self.agent("w1:p1", "working"), self.agent("w1:p2", "idle")]
         self.save_fixture()
