@@ -348,6 +348,8 @@ def cmd_run(a, cfg):
         rec["round_prompts"] = {"1": prompt}
         source = dict(forwarded_origin) if forwarded_origin else initiators.origin(origin_harness, rec["created"])
         source["initiator_herdr"] = dict(source["initiator_herdr"], captured_at=rec["created"])
+        if source.get("initiator_hc"):
+            source["initiator_hc"] = dict(source["initiator_hc"], captured_at=rec["created"])
         rec.update(source)
         print(f"dispatching {job} -> {host['name']} (branch {branch}, base {sha[:10]}, sync {host['sync']})")
 

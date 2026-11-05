@@ -577,7 +577,7 @@ class Service:
                        RD_USER_ID=self.user_id,
                        PYTHONPATH=str(Path(__file__).resolve().parents[1]))
             for name in ("RD_INITIATOR_SESSION", *filter(None, cli.initiators.SESSION_VARIABLES.values()),
-                         "HERDR_SESSION", "HERDR_WORKSPACE_ID", "HERDR_PANE_ID"):
+                         "HERDR_SESSION", "HERDR_WORKSPACE_ID", "HERDR_PANE_ID", "HC_TERMINAL_ID"):
                 env.pop(name, None)
             process = subprocess.run([sys.executable, "-c", "from remote_dispatch.rd_serve import execute_cli; execute_cli()"],
                                      input=json.dumps(request), cwd=request["cwd"], env=env,
@@ -894,7 +894,7 @@ class Service:
         progress = detail["progress"] or {}
         execution = detail["execution"]
         project = query.jobs([rec], {}, user_id=self.user_id)[0]
-        card = {key: rec.get(key) for key in ("job", "host", "model", "initiator_harness", "initiator_host", "initiator_session", "initiator_herdr")}
+        card = {key: rec.get(key) for key in ("job", "host", "model", "initiator_harness", "initiator_host", "initiator_session", "initiator_herdr", "initiator_hc")}
         card.update(project=project["project"], project_id=project["project_id"], harness=rec.get("agent"),
                     round=rec["rounds"], execution_state=execution.get("state", "starting"),
                     executor_exit=receipt.get("executor_exit"), outcome=report.get("outcome"), checks=report.get("checks"),

@@ -122,7 +122,7 @@ class DispatchTests(unittest.TestCase):
         values = dict(RD_INITIATOR_SESSION="", CODEX_THREAD_ID="codex-session",
                       CLAUDE_CODE_SESSION_ID="claude-session", DSH_SESSION_ID="dsh-session",
                       ANTIGRAVITY_CONVERSATION_ID="agy-session", KIMI_SESSION_ID="unconfirmed-kimi",
-                      HERDR_SESSION="herdr-session", HERDR_WORKSPACE_ID="workspace-1", HERDR_PANE_ID="pane-1")
+                      HERDR_SESSION="herdr-session", HERDR_WORKSPACE_ID="workspace-1", HERDR_PANE_ID="pane-1", HC_TERMINAL_ID="")
         values.update(environment)
         with patch.dict(os.environ, values), patch.object(subprocess, "run", side_effect=run), \
              patch("socket.gethostname", return_value="initiator-fixture"):
@@ -389,6 +389,27 @@ class DispatchTests(unittest.TestCase):
         self.assertEqual(row["initiator_session"], "codex-session")
         self.assertEqual(row["initiator_herdr"], dict(session="herdr-session", workspace_id="workspace-1",
                                                    pane_id="pane-1", captured_at=row["created"]))
+
+    def test_run_records_initiator_hc_for_local_remote_and_missing_terminal(self):
+        cases = (("t8", dict(terminal="t8", machine=None)),
+                 ("vps/t7", dict(terminal="vps/t7", machine="vps")),
+                 ("", None))
+        for terminal, expected in cases:
+            with self.subTest(terminal=terminal), self.initiator_context(
+                    {os.getppid(): (1, "/opt/bin/codex exec")}, HC_TERMINAL_ID=terminal):
+                record = self.dispatch()
+                row = self.queried_job(record["job"])
+                if expected is None:
+                    self.assertIsNone(row["initiator_hc"])
+                else:
+                    self.assertEqual(row["initiator_hc"], dict(expected, captured_at=row["created"]))
+
+    def test_run_records_both_herdr_pane_and_hc_terminal_when_both_exist(self):
+        with self.initiator_context({os.getppid(): (1, "/opt/bin/codex exec")}, HC_TERMINAL_ID="vps/t7"):
+            record = self.dispatch()
+        row = self.queried_job(record["job"])
+        self.assertEqual(row["initiator_herdr"]["pane_id"], "pane-1")
+        self.assertEqual(row["initiator_hc"]["terminal"], "vps/t7")
 
     def test_run_uses_nearest_harness_despite_conflicting_session_variables(self):
         for harness, session in (("claude", "claude-session"), ("dsh", "dsh-session"),

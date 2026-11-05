@@ -15,6 +15,7 @@
           "initiator_host": "controller",
           "initiator_session": "original-session",
           "initiator_herdr": null,
+          "initiator_hc": null,
           "project": "demo",
           "project_id": "3e15c8030cfe7c2cd22b",
           "harness": null,

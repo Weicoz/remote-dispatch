@@ -80,9 +80,19 @@ def session(harness_name):
     return os.environ.get(variable) if variable else None
 
 
+def hc_context(created):
+    """herdr-core 终端地址：原样记 HC_TERMINAL_ID；`机器/终端` 形式取第一个 `/` 前的机器名，本机裸地址为 null。"""
+    terminal = (os.environ.get("HC_TERMINAL_ID") or "").strip()
+    if not terminal:
+        return None
+    machine = terminal.split("/", 1)[0] if "/" in terminal else None
+    return dict(terminal=terminal, machine=machine or None, captured_at=created)
+
+
 def origin(harness_name, created):
     return dict(initiator_harness=harness_name, initiator_host=socket.gethostname(),
                 initiator_herdr=dict(session=os.environ.get("HERDR_SESSION") or None,
                                      workspace_id=os.environ.get("HERDR_WORKSPACE_ID") or None,
                                      pane_id=os.environ.get("HERDR_PANE_ID") or None,
-                                     captured_at=created))
+                                     captured_at=created),
+                initiator_hc=hc_context(created))

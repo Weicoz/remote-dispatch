@@ -15,6 +15,7 @@
           "initiator_host": null,
           "initiator_session": null,
           "initiator_herdr": null,
+          "initiator_hc": null,
           "project": "demo",
           "project_id": "3e15c8030cfe7c2cd22b",
           "harness": "codex",

@@ -46,7 +46,7 @@ class ConfigCliTests(unittest.TestCase):
                         HERDR_CONFIG_PATH=str(self.root / "herdr" / "config.toml"),
                         CLAUDE_CONFIG_DIR=str(self.root / "claude"), CODEX_HOME=str(self.root / "codex"))
         for key in ("RD_SERVE_SOCKET", "RD_INITIATOR_SESSION", "HERDR_SESSION",
-                    "HERDR_WORKSPACE_ID", "HERDR_PANE_ID"):
+                    "HERDR_WORKSPACE_ID", "HERDR_PANE_ID", "HC_TERMINAL_ID"):
             self.env.pop(key, None)
 
     def command(self, *argv, **environment):
