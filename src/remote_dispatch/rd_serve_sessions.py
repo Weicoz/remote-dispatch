@@ -1,6 +1,7 @@
 """Session routes kept separate from the shared serve routing module."""
 import base64
 import copy
+from datetime import datetime, timezone
 import difflib
 import hashlib
 import json
@@ -15,6 +16,7 @@ from . import cli
 from . import rd_messages as messages
 from . import rd_events as events
 from .rd_herdr import Herdr
+from .rd_hc import Hc
 from .rd_terminal_ws import TerminalSockets
 from .rd_session_defaults import DefaultRoutes, SessionDefaults
 from .rd_projects import project_id
@@ -25,7 +27,10 @@ from .rd_lock import JobBusy, JobLock
 HARNESSES = {"codex": "codex", "claude": "claude", "claude-code": "claude",
              "kimi": "kimi", "kimi-code": "kimi", "agy": "agy",
              "antigravity": "agy", "antigravity-cli": "agy"}
-STATUS_TEXT = {"working": "工作中", "idle": "空闲", "blocked": "等待输入", "unknown": "状态未知"}
+STATUS_TEXT = {"working": "工作中", "idle": "空闲", "blocked": "等待输入", "unknown": "状态未知", "done": "已完成"}
+# 会话 id：TUI 为 pane_id（w1:p1）；App 为 "hc:" + hc 地址，地址可含一个 "/"（机器/终端）。
+SESSION_ID = r"(hc:[^?]+?|[^/]+)"
+UNSUPPORTED_SURFACE = (409, {"error": "unsupported_surface", "surface": "app"})
 TERMINAL_KEYS = {"backspace", "left", "right", "ctrl+d", "shift+tab", "ctrl+a", "ctrl+u",
                  "space", "enter", "esc", "up", "down", "tab", "ctrl+c"}
 DISABLED = (403, {"error": {"reason": "session_access_disabled"}})
@@ -35,6 +40,7 @@ class Sessions:
     def __init__(self, service):
         self.service = service
         self.herdr = Herdr()
+        self.hc = Hc(on_change=lambda: service.wake.sessions.set())
         self.terminals = TerminalSockets(self)
         self.defaults = DefaultRoutes(self)
         self.observed = {}
@@ -70,10 +76,12 @@ class Sessions:
                 SessionDefaults(self.service.state, self.service.user_id).observe(None)
                 return
             items = self.discover()
-            SessionDefaults(self.service.state, self.service.user_id).observe([item["row"] for item in items])
+            # App 会话没有 pane_id：不进派单默认值与 session.* 事件，只出现在列表缓存里。
+            tui = [item for item in items if item["row"].get("surface", "tui") == "tui"]
+            SessionDefaults(self.service.state, self.service.user_id).observe([item["row"] for item in tui])
             current, seen = {}, {pane: set(ids) for pane, ids in self.seen_messages.items()}
             with events.transaction():
-                for item in items:
+                for item in tui:
                     row = item["row"]
                     pane = row["pane_id"]
                     data = events.display_data("session.changed", dict(row, user_id=self.service.user_id, removed=False))
@@ -114,6 +122,7 @@ class Sessions:
     def close(self):
         self.terminals.close()
         self.herdr.close()
+        self.hc.close()
 
     @staticmethod
     def is_session_path(path):
@@ -126,6 +135,34 @@ class Sessions:
     def list(self):
         return [item["row"] for item in self.cached()]
 
+    @staticmethod
+    def count_attention(rows, records, cards):
+        """把「卡住 / 离线 / 失败」的派单挂到发起会话上：先按 initiator_herdr.pane_id 匹配 TUI 会话，
+        匹配不到再按 initiator_hc.terminal 匹配 App 会话；probable 会话恒为 0。口径同项目级 needs_attention_count。"""
+        from .rd_serve_projects import urgency
+        by_pane = {row["pane_id"]: row for row in rows if row.get("surface") == "tui" and row.get("pane_id")}
+        by_address = {row["address"]: row for row in rows if row.get("surface") == "app"}
+        for row in rows:
+            if "needs_attention_count" in row:
+                row["needs_attention_count"] = 0
+        for rec in records:
+            card = cards.get(rec["job"])
+            if card is None or urgency(card)[1] >= 3:
+                continue
+            pane = (rec.get("initiator_herdr") or {}).get("pane_id")
+            target = by_pane.get(pane) if pane else None
+            if target is None:
+                terminal = (rec.get("initiator_hc") or {}).get("terminal")
+                target = by_address.get(terminal) if terminal else None
+            if target is not None and "needs_attention_count" in target and not target["probable"]:
+                target["needs_attention_count"] += 1
+        return rows
+
+    def counted(self, rows):
+        """请求路径上只读项目缓存；调用方不得持有 cache_lock（与项目列表重建的加锁顺序相反）。"""
+        view = self.service.project_routes.list_view()
+        return self.count_attention(rows, view["retained"], view["cards"])
+
     def cached(self):
         """HTTP reads use the last successful collection, including during outages."""
         with self.cache_lock:
@@ -134,10 +171,15 @@ class Sessions:
             items = copy.deepcopy(self.items)
             for item in items:
                 row = item["row"]
+                if row.get("surface", "tui") != "tui":
+                    continue
                 event = self.latest.get(row["pane_id"])
                 row["updated_at"] = event["time"] if event and all(
                     event["data"].get(key) == row[key] for key in ("session_id", "harness", "project_id")) else None
             return items
+
+    def backend(self, surface):
+        return self.hc if surface == "app" else self.herdr
 
     def transcripts(self, harness):
         if harness == "codex":
@@ -209,10 +251,26 @@ class Sessions:
         execution_roots.extend(Path(cli.local_path(rec["worker_root"], "")).resolve()
                                for rec in self.service.records()
                                if rec.get("host") in local_hosts and rec.get("worker_root"))
+        candidates = []
         for agent in self.herdr.agents():
-            harness = HARNESSES.get(agent.get("agent"))
+            pane = agent["pane_id"]
             live_cwd = agent.get("foreground_cwd") or agent.get("cwd") or None
-            cwd = live_cwd or saved.get(agent["pane_id"], {}).get("cwd")
+            raw_status = agent.get("agent_status", "unknown")
+            status = "idle" if raw_status == "done" else raw_status
+            candidates.append(dict(
+                surface="tui", id=pane, address=pane, pane_id=pane, harness=HARNESSES.get(agent.get("agent")),
+                live_cwd=live_cwd, cwd=live_cwd or saved.get(pane, {}).get("cwd"), agent=agent,
+                saved=saved.get(pane, {}), status=status, new_reply=raw_status == "done"))
+        self.hc.start()
+        for agent in self.hc.agents():
+            address = agent["address"]
+            candidates.append(dict(
+                surface="app", id="hc:" + address, address=address, pane_id=None,
+                harness=next((HARNESSES[name] for name in agent["names"] if name in HARNESSES), None),
+                live_cwd=agent["cwd"], cwd=agent["cwd"], agent={}, saved={}, status=agent["status"],
+                new_reply=agent["status"] == "done", stamp_ms=agent["stamp_ms"]))
+        for found in candidates:
+            harness, cwd, agent, surface = found["harness"], found["cwd"], found["agent"], found["surface"]
             if not harness or not cwd:
                 continue
             if any(Path(cwd).resolve().is_relative_to(root) for root in execution_roots):
@@ -221,22 +279,29 @@ class Sessions:
             if result.returncode:
                 continue
             project, origin = cli.project_name(result.stdout.strip())
-            raw_status = agent.get("agent_status", "unknown")
-            status = "idle" if raw_status == "done" else raw_status
+            status = found["status"]
             if status not in STATUS_TEXT:
                 status = "unknown"
             if harness not in transcripts:
                 transcripts[harness] = self.transcripts(harness)
             identity, transcript, probable = self.locate(
-                agent, saved.get(agent["pane_id"], {}), cwd, harness, transcripts[harness])
-            row = dict(id=agent["pane_id"], pane_id=agent["pane_id"], harness=harness,
-                             project=project, project_id=project_id(project, origin), cwd=live_cwd,
-                             status=status, status_text=STATUS_TEXT[status], has_new_reply=raw_status == "done",
+                agent, found["saved"], cwd, harness, transcripts[harness])
+            backend = self.backend(surface)
+            row = dict(id=found["id"], pane_id=found["pane_id"], harness=harness,
+                             project=project, project_id=project_id(project, origin), cwd=found["live_cwd"],
+                             status=status, status_text=STATUS_TEXT[status], has_new_reply=found["new_reply"],
                              session_id=identity, probable=probable,
-                             identity_text="可能是这个会话" if probable else None)
-            event = latest.get(row["pane_id"])
-            row["updated_at"] = event["time"] if event and all(
-                event["data"].get(key) == row[key] for key in ("session_id", "harness", "project_id")) else None
+                             identity_text="可能是这个会话" if probable else None,
+                             surface=surface, address=found["address"],
+                             capabilities=list(backend.capabilities), needs_attention_count=0)
+            if surface == "tui":
+                event = latest.get(row["pane_id"])
+                row["updated_at"] = event["time"] if event and all(
+                    event["data"].get(key) == row[key] for key in ("session_id", "harness", "project_id")) else None
+            else:
+                stamp = found.get("stamp_ms")
+                row["updated_at"] = (datetime.fromtimestamp(stamp / 1000, timezone.utc).isoformat()
+                                     if type(stamp) in (int, float) else None)
             rows.append(dict(row=row, transcript=transcript, origin=origin))
         return rows
 
@@ -301,15 +366,16 @@ class Sessions:
         if defaults is not None:
             return defaults
         if path == "/v1/sessions":
+            rows = self.counted(self.list())
             with self.cache_lock:
-                return 200, {"sessions": self.list(), "collection": dict(self.collection)}
+                return 200, {"sessions": rows, "collection": dict(self.collection)}
         match = re.fullmatch(r"/v1/jobs/([^/]+)/session", path)
         if match:
             job = messages.job_id(match[1])
             rec = messages.read_json(self.service.state / "jobs" / (job + ".json"))
             if not rec or rec.get("user_id") not in (None, "", self.service.user_id):
                 return 404, {"error": {"reason": "not_found"}}
-            rows = sorted(self.list(), key=lambda row: row["probable"])
+            rows = sorted(self.counted(self.list()), key=lambda row: row["probable"])
             identity = rec.get("initiator_session")
             item = next((row for row in rows if identity and row["session_id"] == identity), None)
             matched_by = "session_id" if item else None
@@ -318,9 +384,14 @@ class Sessions:
                 item = next((row for row in rows if row["pane_id"] == pane), None)
                 matched_by = "pane_id" if item else None
             if item is None:
+                terminal = (rec.get("initiator_hc") or {}).get("terminal")
+                item = next((row for row in rows if terminal and row.get("surface") == "app"
+                             and row["address"] == terminal), None)
+                matched_by = "terminal" if item else None
+            if item is None:
                 return 200, dict(session=None, matched_by=None, reason="session_closed", text="会话已关闭")
             return 200, dict(session=item, matched_by=matched_by)
-        match = re.fullmatch(r"/v1/sessions/([^/]+)/messages", path)
+        match = re.fullmatch(r"/v1/sessions/" + SESSION_ID + r"/messages", path)
         if match:
             item = next((item for item in self.cached() if item["row"]["id"] == match[1]), None)
             if item is None:
@@ -333,6 +404,16 @@ class Sessions:
         path = unquote(urlsplit(handler.path).path)
         if self.is_session_path(path) and not self.allowed(getattr(handler, "session_device", None)):
             handler.json(*DISABLED)
+            return True
+        app = re.fullmatch(r"/v1/sessions/(hc:[^?]+?)/(terminal(?:/ws)?|screen)", path)
+        if app is not None:
+            item = next((item for item in self.list() if item["id"] == app[1]), None)
+            if item is None:
+                handler.json(404, {"error": {"reason": "session_closed", "text": "会话已关闭"}})
+            elif app[2] == "screen":
+                self.app_screen(handler, item)
+            else:
+                handler.json(*UNSUPPORTED_SURFACE)
             return True
         if self.terminals.handle_get(handler):
             return True
@@ -397,6 +478,19 @@ class Sessions:
             frames.close()
         return True
 
+    def app_screen(self, handler, row):
+        """App 会话读屏：`hc read`，只读，不改变终端尺寸；hc 不可用时 503。"""
+        try:
+            screen = self.hc.screen(row["address"], timeout=self.service.config.cp.getfloat(
+                "serve", "request_timeout", fallback=15))
+        except (OSError, ValueError):
+            handler.json(503, {"error": {"reason": "hc_screen_unavailable"}})
+            return
+        handler.json(200, self.service.redact(dict(
+            id=row["id"], pane_id=None, address=row["address"], surface="app",
+            text=redact_terminal(self.service, screen["text"]), width=screen["width"],
+            height=screen["height"], cursor=screen["cursor"])))
+
     def handle_post(self, handler):
         path = unquote(urlsplit(handler.path).path)
         if not self.is_session_path(path):
@@ -411,6 +505,19 @@ class Sessions:
             except ValueError:
                 pass
             handler.json(*DISABLED)
+            return True
+        app = re.fullmatch(r"/v1/sessions/(hc:[^?]+?)/input", path)
+        if app is not None:
+            try:
+                length = int(handler.headers.get("Content-Length", "0"))
+                if not handler.headers.get("Transfer-Encoding") and 0 < length <= 8 * 1024 * 1024:
+                    handler.rfile.read(length)
+            except ValueError:
+                pass
+            if any(item["id"] == app[1] for item in self.list()):
+                handler.json(*UNSUPPORTED_SURFACE)
+            else:
+                handler.json(404, {"error": {"reason": "session_closed", "text": "会话已关闭"}})
             return True
         match = re.fullmatch(r"/v1/sessions/([^/]+)/input", path)
         if match is None:

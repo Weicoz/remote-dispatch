@@ -18,6 +18,9 @@ from remote_dispatch import rd_events as events
 from remote_dispatch.rd_serve import Service, UnixHTTPConnection
 from remote_dispatch.rd_herdr import Herdr
 
+# 测试不连接真实 hc；hc 后端的测试自行注入假 hc。
+os.environ.setdefault("RD_HC_BIN", "")
+
 
 class NetworkTests(unittest.TestCase):
     def setUp(self):

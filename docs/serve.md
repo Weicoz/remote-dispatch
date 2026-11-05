@@ -769,7 +769,7 @@ Herdr 的环境和命名 session 沿用服务进程；可用 `HERDR_CONFIG_PATH`
   成功返回 `{pane_id,accepted:true}`。同一幂等键仍重放首次结果（包括改变 submit 的重试），
   不重复写入、不重复发事件；落盘只存结果、不存输入正文，失败／不确定结果不自动重发。
 - `GET /v1/jobs/{job}/session`：当前用户派单的会话反查，先匹配 `initiator_session`，
-  再匹配 `initiator_herdr.pane_id`。返回 `session/matched_by`；都不存在时返回
+  再匹配 `initiator_herdr.pane_id`，最后匹配 `initiator_hc.terminal`（App 会话，`matched_by=terminal`）。返回 `session/matched_by`；都不存在时返回
   `session=null/reason=session_closed/text="会话已关闭"`。未知或其他用户派单返回 404。
 - `GET /v1/projects`：合并持久索引与当前可见会话项目，`session_only` 区分仅会话项目；
   仅会话项目 `dispatch_count=0`，不写索引，会话关闭即消失。项目摘要由票 22 扩展。
@@ -802,6 +802,38 @@ Unix socket 请求默认是本机。设备鉴权层须将可信的设备记录�
 以及 App 消息增量和派单反查。不要把 Herdr 的 idle 当成菜单识别成功；Kimi 信任菜单
 存在已知漏报。实现会话不连接真实 Herdr、不部署测试栈、不重启既有服务。
 
+
+### App 会话（herdr-core，herdr-mod 02）
+
+`/v1/sessions` 与 `projects[].sessions[]` 同时列出两类会话，新增可选字段（契约版本不变）：
+
+- `surface`：`tui`（Herdr TUI 窗格）或 `app`（herdr-core 终端）。
+- `address`：TUI 为 pane_id（`w1:p1`），App 为 hc 地址（`t8`、`vps/t7`）。
+- App 会话 `id` = `hc:` + 地址，`pane_id` = `null`；TUI 会话 `id` 不变。地址含 `/` 时 URL 里写 `hc:vps%2Ft7`。
+- `capabilities`：TUI 为 `["screen","input","terminal_ws"]`，App（M1）为 `["screen"]`。缺省（旧 serve）按三项全有处理。
+- `needs_attention_count`：只计 `initiator_herdr.pane_id` 或 `initiator_hc.terminal` 精确匹配本会话、且处于卡住／离线／失败的派单，口径同项目级。归属先匹配在线 TUI 窗格，匹配不到再匹配 App 终端；`probable: true` 的会话恒为 0。
+
+后端：`rd_hc.py` 是 hc 的唯一子进程边界，只执行 `hc events --json`、`ls --json`、`get <t> --json`、`read <t> --json`，不执行 send/keys/run/kill 等写命令。`events` 首帧快照加带 `seq` 的增量是状态来源；`ls` 只在每次（重）连时做发现，把快照里缺的终端补进来。断流后保留最近快照至多 5 秒并重连，重连后以新快照整体对齐；仍连不上则 App 会话消失。hc 未安装（PATH 里没有，或 `RD_HC_BIN` 设为空）或 core 未运行时，App 后端标不可用，TUI 后端不受影响。`RD_HC_BIN` 可指定 hc 可执行文件。读接口只读内存缓存，采集周期与 TUI 相同，hc 有变化时立即唤醒一次采集。只有本机能解析 git 仓库的 cwd 才会列出（远端机器的终端 cwd 本机通常解析不到，会被跳过，与 TUI 后端同口径）。普通 shell（非 harness）不列出。App 会话不进派单默认值观察，也不发 `session.*` 事件。
+
+增量事件正文形状未在本机实测（只观测到 `heartbeat`）：带完整终端记录的事件直接合并；只带地址的事件对该终端执行 `hc get` 对齐；`removed` 删除；`missed` 触发重连。
+
+状态映射（hc `status.state` 到会话 `status`）：
+
+| hc `status` | 会话 `status` | 依据 |
+|---|---|---|
+| `null`（普通 shell、从未上报） | `unknown` | 本机实测（`hc get t8`） |
+| `working` | `working` | `hc schema` 文档；本机未实测 agent 终端 |
+| `blocked` | `blocked` | 同上 |
+| `done` | `done`（`has_new_reply=true`） | 同上 |
+| `idle` | `idle` | 同上 |
+| `error` | `unknown` | 文档列出，含义未确认 |
+| 其他任何取值 | `unknown` | 未确认 |
+
+本机实测环境只有一个 zsh 终端，Claude Code／Codex／DSH 在工作、等输入、空闲时的真实取值尚未实测，上表除 `null` 外均为「文档确认、未实测」。
+
+`GET /v1/sessions/{id}/screen` 对 App 会话执行 `hc read <地址> --json`，返回 `{id,pane_id:null,address,surface:"app",text,width,height,cursor:null}`（宽高取自 hc 记录，无光标信息）。读取由该终端的变化事件触发：无事件时 2 秒内用缓存，两次读取至少间隔 0.3 秒（去抖）。读取只读，不改变终端尺寸，满足本文对「不改变真实 pane 尺寸」的约束。hc 不可用时返回 503 `hc_screen_unavailable`。
+
+`POST /v1/sessions/{id}/input`、`GET /v1/sessions/{id}/terminal`、`/terminal/ws` 对 App 会话一律返回 409 `{"error":"unsupported_surface","surface":"app"}`（样例 `sessions-unsupported-surface.json`）；会话不存在仍为 404。理由：`hc send` 一步完成粘贴加回车，与「回车失败不得重发」的两步语义不同；hc 实时画面走带 RESIZE 的 attach 通道，无法保证不改变真实尺寸。
 
 ### 连接、推送与读取资源边界
 

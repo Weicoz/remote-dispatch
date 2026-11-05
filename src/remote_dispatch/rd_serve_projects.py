@@ -231,6 +231,7 @@ class ProjectRoutes:
                 sessions = service.sessions.cached()
             except OSError:
                 sessions = []
+            service.sessions.count_attention([item["row"] for item in sessions], records, cards)
             for item in sessions:
                 session = item["row"]
                 identity = session["project_id"]

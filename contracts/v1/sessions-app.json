@@ -1,0 +1,42 @@
+{
+  "request": {
+    "method": "GET",
+    "path": "/v1/sessions"
+  },
+  "response": {
+    "status": 200,
+    "body": {
+      "sessions": [
+        {
+          "id": "hc:t8",
+          "pane_id": null,
+          "harness": "claude",
+          "project": "demo",
+          "project_id": "example-project-id",
+          "status": "working",
+          "status_text": "工作中",
+          "has_new_reply": false,
+          "session_id": null,
+          "probable": false,
+          "identity_text": null,
+          "updated_at": "2026-10-25T00:00:00+00:00",
+          "cwd": "/workspace/demo",
+          "surface": "app",
+          "address": "t8",
+          "capabilities": [
+            "screen"
+          ],
+          "needs_attention_count": 0
+        }
+      ],
+      "collection": {
+        "stale": false,
+        "consecutive_failures": 0,
+        "last_attempt_succeeded": true,
+        "reason": null,
+        "last_success_at": "2026-10-27T00:00:00+00:00"
+      }
+    }
+  },
+  "events": []
+}

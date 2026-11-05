@@ -17,6 +17,9 @@ from remote_dispatch import cli
 from remote_dispatch import rd_events as events
 from remote_dispatch.rd_serve import Service
 
+# 测试不连接真实 hc；hc 后端的测试自行注入假 hc。
+os.environ.setdefault("RD_HC_BIN", "")
+
 
 CONTRACTS = Path(__file__).resolve().parents[1] / "contracts" / "v1"
 

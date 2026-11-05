@@ -16,6 +16,10 @@ class InputNotSubmitted(OSError):
 
 
 class Herdr:
+    """TUI 会话后端（Herdr 窗格）：统一后端接口里 frames/input 为可选能力，这里全部具备。"""
+    surface = "tui"
+    capabilities = ("screen", "input", "terminal_ws")
+
     def __init__(self):
         self.observers = set()
         self.observers_lock = threading.Lock()
