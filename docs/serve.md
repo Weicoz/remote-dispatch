@@ -814,7 +814,7 @@ Unix socket 请求默认是本机。设备鉴权层须将可信的设备记录�
 - `capabilities`：TUI 为 `["screen","input","terminal_ws"]`，App（M1）为 `["screen"]`。缺省（旧 serve）按三项全有处理。
 - `needs_attention_count`：只计 `initiator_herdr.pane_id` 或 `initiator_hc.terminal` 精确匹配本会话、且处于卡住／离线／失败的派单，口径同项目级。归属先匹配在线 TUI 窗格，匹配不到再匹配 App 终端；`probable: true` 的会话恒为 0。
 
-后端：`rd_hc.py` 是 hc 的唯一子进程边界，只执行 `hc events --json`、`ls --json`、`get <t> --json`、`read <t> --json`，不执行 send/keys/run/kill 等写命令。`events` 首帧快照加带 `seq` 的增量是状态来源；`ls` 只在每次（重）连时做发现，把快照里缺的终端补进来。断流后保留最近快照至多 5 秒并重连，重连后以新快照整体对齐；仍连不上则 App 会话消失。hc 未安装（PATH 里没有，或 `RD_HC_BIN` 设为空）或 core 未运行时，App 后端标不可用，TUI 后端不受影响。`RD_HC_BIN` 可指定 hc 可执行文件。读接口只读内存缓存，采集周期与 TUI 相同，hc 有变化时立即唤醒一次采集。只有本机能解析 git 仓库的 cwd 才会列出（远端机器的终端 cwd 本机通常解析不到，会被跳过，与 TUI 后端同口径）。普通 shell（非 harness）不列出。App 会话不进派单默认值观察，也不发 `session.*` 事件。
+后端：`rd_hc.py` 是 hc 的唯一子进程边界，只执行 `hc events --json`、`ls --json`、`get <t> --json`、`read <t> --json`，不执行 send/keys/run/kill 等写命令。`events` 首帧快照加带 `seq` 的增量是状态来源；`ls` 只在每次（重）连时做发现，把快照里缺的终端补进来。断流后保留最近快照至多 5 秒并重连，重连后以新快照整体对齐；仍连不上则 App 会话消失。hc 未安装（PATH 里没有，或 `RD_HC_BIN` 设为空）或 core 未运行时，App 后端标不可用，TUI 后端不受影响。`RD_HC_BIN` 可指定 hc 可执行文件。`events` 流超过 45 秒没有任何输出（含心跳）视为 hc 挂住，终止并按退避重连；`hc get` 返回坏 JSON 只跳过该终端。会话级 `needs_attention_count` 在读路径只读已有的项目缓存（不触发重建，缓存未就绪时为 0），由后台采集预热。读接口只读内存缓存，采集周期与 TUI 相同，hc 有变化时立即唤醒一次采集。只有本机能解析 git 仓库的 cwd 才会列出（远端机器的终端 cwd 本机通常解析不到，会被跳过，与 TUI 后端同口径）。普通 shell（非 harness）不列出。App 会话不进派单默认值观察，也不发 `session.*` 事件。
 
 增量事件正文形状未在本机实测（只观测到 `heartbeat`）：带完整终端记录的事件直接合并；只带地址的事件对该终端执行 `hc get` 对齐；`removed` 删除；`missed` 触发重连。
 
@@ -834,7 +834,7 @@ Unix socket 请求默认是本机。设备鉴权层须将可信的设备记录�
 
 `GET /v1/sessions/{id}/screen` 对 App 会话执行 `hc read <地址> --json`，返回 `{id,pane_id:null,address,surface:"app",text,width,height,cursor:null}`（宽高取自 hc 记录，无光标信息）。读取由该终端的变化事件触发：无事件时 2 秒内用缓存，两次读取至少间隔 0.3 秒（去抖）。读取只读，不改变终端尺寸，满足本文对「不改变真实 pane 尺寸」的约束。hc 不可用时返回 503 `hc_screen_unavailable`。
 
-`POST /v1/sessions/{id}/input`、`GET /v1/sessions/{id}/terminal`、`/terminal/ws` 对 App 会话一律返回 409 `{"error":"unsupported_surface","surface":"app"}`（样例 `sessions-unsupported-surface.json`）；会话不存在仍为 404。理由：`hc send` 一步完成粘贴加回车，与「回车失败不得重发」的两步语义不同；hc 实时画面走带 RESIZE 的 attach 通道，无法保证不改变真实尺寸。
+`POST /v1/sessions/{id}/input`、`GET /v1/sessions/{id}/terminal`、`/terminal/ws` 对 App 会话一律返回 409 `{"error":"unsupported_surface","surface":"app"}`（样例 `sessions-unsupported-surface.json`）；会话不存在仍为 404。`/messages`（App 会话 M1 无转录）同样返回 409（样例 `sessions-unsupported-surface-messages.json`）。App 会话的派单默认值（`dispatch-defaults`、`dispatch-mode` 的 GET／PUT，含带 `/` 的地址）M1 不支持，一律 409，后续补（样例 `sessions-unsupported-surface-dispatch-defaults.json`）。理由：`hc send` 一步完成粘贴加回车，与「回车失败不得重发」的两步语义不同；hc 实时画面走带 RESIZE 的 attach 通道，无法保证不改变真实尺寸。
 
 ### 连接、推送与读取资源边界
 

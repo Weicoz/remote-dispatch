@@ -104,6 +104,7 @@ class Sessions:
                 self.items = items
                 self.collection = dict(stale=False, consecutive_failures=0,
                     last_attempt_succeeded=True, reason=None, last_success_at=messages.utc_now())
+            self.warm_projects()
         except (OSError, ValueError, TypeError, KeyError) as error:
             # Exception text can contain terminal content or credentials. Log only
             # the exception category and failure count, never its message/traceback.
@@ -114,6 +115,13 @@ class Sessions:
                     reason=type(error).__name__)
             print(f"rdispatch: session_collect_failed reason={type(error).__name__} "
                   f"consecutive_failures={failures}; retaining previous list", file=sys.stderr)
+
+    def warm_projects(self):
+        """后台预热项目视图，让读路径的会话级 needs_attention_count 有缓存可读。"""
+        try:
+            self.service.project_routes.list_view()
+        except Exception as error:
+            print(f"rdispatch: session_warm_failed reason={type(error).__name__}", file=sys.stderr)
 
     def allowed(self, device=None):
         """device is trusted authentication context, never request headers."""
@@ -159,8 +167,10 @@ class Sessions:
         return rows
 
     def counted(self, rows):
-        """请求路径上只读项目缓存；调用方不得持有 cache_lock（与项目列表重建的加锁顺序相反）。"""
-        view = self.service.project_routes.list_view()
+        """请求路径上只读已有的项目缓存，绝不触发重建；缓存未就绪时计数为 0，由后台采集预热。"""
+        view = self.service.project_routes.cached_view()
+        if view is None:
+            return rows
         return self.count_attention(rows, view["retained"], view["cards"])
 
     def cached(self):
@@ -392,6 +402,10 @@ class Sessions:
                 return 200, dict(session=None, matched_by=None, reason="session_closed", text="会话已关闭")
             return 200, dict(session=item, matched_by=matched_by)
         match = re.fullmatch(r"/v1/sessions/" + SESSION_ID + r"/messages", path)
+        if match and match[1].startswith("hc:"):
+            if any(row["id"] == match[1] for row in self.list()):
+                return UNSUPPORTED_SURFACE
+            return 404, {"error": {"reason": "session_closed", "text": "会话已关闭"}}
         if match:
             item = next((item for item in self.cached() if item["row"]["id"] == match[1]), None)
             if item is None:

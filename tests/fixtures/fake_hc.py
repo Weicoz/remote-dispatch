@@ -26,6 +26,8 @@ if fixture.get("unavailable"):
 known = {row["address"]: row for row in fixture.get("terminals", []) + fixture.get("ls_extra", [])}
 if args[:1] == ["events"]:
     print(json.dumps({"channel": None, "seq": fixture.get("seq", 1), "terminals": fixture["terminals"]}), flush=True)
+    if fixture.get("stall"):
+        time.sleep(3600)
     gate = fixture.get("gate")
     while gate and not Path(gate).exists():
         time.sleep(0.01)
@@ -37,6 +39,8 @@ elif args[:1] == ["ls"]:
     print(json.dumps({"hidden_finished": 0, "machines": [], "terminals": [
         {"address": a, "agent": r.get("foreground", {}).get("name"), "cwd": r.get("cwd"),
          "state": r.get("state", "live"), "turn": 0} for a, r in known.items()]}))
+elif args[:1] == ["get"] and fixture.get("garbage_get"):
+    print("not json")
 elif args[:1] == ["get"]:
     row = known.get(args[1])
     if row is None:

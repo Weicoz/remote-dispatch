@@ -273,6 +273,53 @@ class HcTests(unittest.TestCase):
         self.assertEqual(body["summary"]["sessions_working"], 3)
         self.assertEqual(body["summary"], dict(needs_attention=0, in_progress=0, review_pending=0, sessions_working=3))
 
+    def test_dispatch_defaults_and_messages_are_unsupported_for_app_sessions(self):
+        self.hc_data["terminals"].append(self.terminal("vps/t7", "codex", "idle"))
+        self.save_hc()
+        self.start_hc(["hc:t8", "hc:vps/t7"])
+        expected = (409, {"error": "unsupported_surface", "surface": "app"})
+        headers = {"Content-Type": "application/json", "Idempotency-Key": "d1"}
+        for identity in ("hc:t8", "hc:vps%2Ft7"):
+            for leaf in ("dispatch-defaults", "dispatch-mode"):
+                path = "/v1/sessions/%s/%s" % (identity, leaf)
+                self.assertEqual(self.request(path), expected, path)
+                self.assertEqual(self.request(path, "PUT", json.dumps({"host": "auto"}), headers), expected, path)
+            self.assertEqual(self.request("/v1/sessions/%s/messages" % identity), expected)
+        self.assertEqual(self.request("/v1/sessions/hc:t99/messages")[0], 404)
+        for name in ("messages", "dispatch-defaults"):
+            example = json.loads((base.CONTRACTS / ("sessions-unsupported-surface-%s.json" % name)).read_text())
+            self.assertEqual((example["response"]["status"], example["response"]["body"]), expected)
+            status, body = self.request(example["request"]["path"], example["request"]["method"])
+            self.assertEqual((status, body), expected)
+
+    def test_read_paths_never_rebuild_project_view_and_cold_cache_counts_zero(self):
+        service = self.start_hc(["hc:t8"])
+        routes = service.project_routes
+        with patch.object(routes, "list_view", side_effect=AssertionError("读路径不得重建项目视图")):
+            routes.list_payloads.clear()
+            body = self.request("/v1/sessions")[1]
+            self.assertEqual({row["needs_attention_count"] for row in body["sessions"]}, {0})
+            self.assertEqual(self.request("/v1/jobs/none/session")[0], 404)
+        self.assertIsNone(routes.cached_view())
+
+    def test_idle_hc_stream_is_killed_and_reconnected(self):
+        self.hc_data["stall"] = True
+        self.save_hc()
+        with patch.object(rd_hc.Hc, "IDLE_TIMEOUT", 0.4), patch.object(rd_hc.Hc, "GRACE", 0.3):
+            self.start_hc(["hc:t8"])
+            deadline = time.monotonic() + 10
+            while time.monotonic() < deadline and sum(c[:1] == ["events"] for c in self.calls()) < 2:
+                time.sleep(0.1)
+            self.assertGreaterEqual(sum(c[:1] == ["events"] for c in self.calls()), 2)
+
+    def test_garbage_json_from_hc_get_does_not_cause_fast_reconnect_loop(self):
+        self.hc_data.update(garbage_get=True, ls_extra=[self.terminal("t10", "claude", "idle")])
+        self.save_hc()
+        self.start_hc(["hc:t8"])
+        time.sleep(1.0)
+        self.assertNotIn("hc:t10", self.by_id())
+        self.assertEqual(sum(c[:1] == ["events"] for c in self.calls()), 1)
+
     def test_probable_session_never_counts_needs_attention(self):
         rows = [dict(surface="app", address="t8", pane_id=None, probable=True, needs_attention_count=0),
                 dict(surface="tui", address="w1:p1", pane_id="w1:p1", probable=True, needs_attention_count=0)]

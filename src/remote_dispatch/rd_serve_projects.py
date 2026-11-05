@@ -66,6 +66,10 @@ class ProjectRoutes:
         self.list_view(False)
         self.list_view()
 
+    def cached_view(self):
+        """已发布的完整视图；从不重建，未就绪返回 None。供读路径使用。"""
+        return self.list_payloads.get(True)
+
     def list_view(self, include_history=True):
         """Single-flight rebuild. No TTL: every read checks all local generations."""
         service = self.service

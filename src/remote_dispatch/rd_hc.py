@@ -7,6 +7,7 @@
 import json
 import os
 import re
+import select
 import shutil
 import subprocess
 import threading
@@ -30,6 +31,8 @@ class Hc:
     """App 会话后端（herdr-core）。surface=app，M1 只支持读屏。"""
     surface = "app"
     capabilities = ("screen",)
+    IDLE_TIMEOUT = 45.0  # 含心跳在内的任何输出都没有超过该时长，视为 hc 挂住
+    GRACE = 5.0
 
     def __init__(self, on_change=None, debounce=0.3, screen_ttl=2.0):
         self.on_change = on_change
@@ -45,7 +48,8 @@ class Hc:
         self.live = False
         self.delay = 0.2
         self.lost_at = None
-        self.grace = 5.0
+        self.grace = self.GRACE
+        self.idle_timeout = self.IDLE_TIMEOUT
         self.reason = "hc_not_started"
 
     # ---- 子进程边界 ----
@@ -130,7 +134,7 @@ class Hc:
     def stream(self):
         try:
             found = self.discover()
-        except OSError:
+        except (OSError, ValueError):
             found = None
         process = subprocess.Popen(self.command("events", "--json"), stdout=subprocess.PIPE,
                                    stderr=subprocess.DEVNULL, stdin=subprocess.DEVNULL)
@@ -139,15 +143,28 @@ class Hc:
         try:
             if self.stopped.is_set():
                 return
-            for raw in process.stdout:
-                if self.stopped.is_set():
-                    return
-                message = json.loads(raw)
-                if not isinstance(message, dict):
-                    raise ValueError("hc_event_invalid")
-                self.handle(message, found)
-                found = None if self.live else found
-            raise OSError("hc_stream_ended")
+            descriptor, pending, last = process.stdout.fileno(), b"", time.monotonic()
+            while not self.stopped.is_set():
+                remaining = self.idle_timeout - (time.monotonic() - last)
+                if remaining <= 0:
+                    raise OSError("hc_idle_timeout")
+                ready, _, _ = select.select([descriptor], [], [], min(remaining, 0.2))
+                if not ready:
+                    continue
+                chunk = os.read(descriptor, 65536)
+                if not chunk:
+                    raise OSError("hc_stream_ended")
+                last = time.monotonic()
+                pending += chunk
+                while b"\n" in pending:
+                    raw, pending = pending.split(b"\n", 1)
+                    if not raw.strip():
+                        continue
+                    message = json.loads(raw)
+                    if not isinstance(message, dict):
+                        raise ValueError("hc_event_invalid")
+                    self.handle(message, found)
+                    found = None if self.live else found
         finally:
             with self.lock:
                 self.process = None
@@ -192,7 +209,7 @@ class Hc:
             if address not in table:
                 try:
                     table[address] = self.fetch(address)
-                except OSError:
+                except (OSError, ValueError):
                     pass
         with self.lock:
             for address in table.keys() | self.terminals.keys():
@@ -236,7 +253,7 @@ class Hc:
             # 增量正文形状未在本机观测到；不识别的变化一律对该终端 `hc get` 对齐。
             try:
                 row = self.fetch(address)
-            except OSError:
+            except (OSError, ValueError):
                 row = None
         with self.lock:
             if row is None:

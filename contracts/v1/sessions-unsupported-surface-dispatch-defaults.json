@@ -1,0 +1,14 @@
+{
+  "request": {
+    "method": "GET",
+    "path": "/v1/sessions/hc:t8/dispatch-defaults"
+  },
+  "response": {
+    "status": 409,
+    "body": {
+      "error": "unsupported_surface",
+      "surface": "app"
+    }
+  },
+  "events": []
+}

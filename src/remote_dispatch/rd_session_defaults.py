@@ -175,7 +175,15 @@ class DefaultRoutes:
         import re
         return re.fullmatch(r'/v1/sessions/([^/]+)/(dispatch-defaults|dispatch-mode)', path)
 
+    @staticmethod
+    def app_match(path):
+        """App 会话（hc: 前缀，地址可含 /）的派单默认值 M1 不支持。"""
+        import re
+        return re.fullmatch(r'/v1/sessions/hc:.+?/(dispatch-defaults|dispatch-mode)', path)
+
     def read(self, path):
+        if self.app_match(path):
+            return 409, {'error': 'unsupported_surface', 'surface': 'app'}
         match = self.match(path)
         if match:
             from . import cli
@@ -205,7 +213,18 @@ class DefaultRoutes:
         import json
         from urllib.parse import unquote, urlsplit
         from .rd_idempotency import fingerprint
-        match = self.match(unquote(urlsplit(handler.path).path))
+        path = unquote(urlsplit(handler.path).path)
+        if self.app_match(path):
+            try:
+                length = int(handler.headers.get('Content-Length', '0'))
+                if not handler.headers.get('Transfer-Encoding') and 0 < length <= 8 * 1024 * 1024:
+                    handler.rfile.read(length)
+            except ValueError:
+                pass
+            if not self.sessions.allowed(getattr(handler, 'session_device', None)):
+                return handler.json(403, {'error': {'reason': 'session_access_disabled'}})
+            return handler.json(409, {'error': 'unsupported_surface', 'surface': 'app'})
+        match = self.match(path)
         if not match:
             return handler.json(404, {'error': {'reason': 'not_found'}})
         try:
