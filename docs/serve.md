@@ -771,6 +771,7 @@ Herdr 的环境和命名 session 沿用服务进程；可用 `HERDR_CONFIG_PATH`
 - `GET /v1/jobs/{job}/session`：当前用户派单的会话反查，先匹配 `initiator_session`，
   再匹配 `initiator_herdr.pane_id`，最后匹配 `initiator_hc.terminal`（App 会话，`matched_by=terminal`）。返回 `session/matched_by`；都不存在时返回
   `session=null/reason=session_closed/text="会话已关闭"`。未知或其他用户派单返回 404。
+- `GET /v1/projects`：项目项新增 `review_pending_count`（`outcome` 为 completed／partial 且 `review_state=pending` 的派单数）；响应顶层新增 `summary {needs_attention,in_progress,review_pending,sessions_working}`，前三项是未隐藏项目对应计数之和，`sessions_working` 是所有会话（TUI 与 App）中 `status=working` 的数量（会话访问关闭时为 0）。
 - `GET /v1/projects`：合并持久索引与当前可见会话项目，`session_only` 区分仅会话项目；
   仅会话项目 `dispatch_count=0`，不写索引，会话关闭即消失。项目摘要由票 22 扩展。
   Herdr 不可用时仍返回持久项目；公开项目字段不包含 origin 凭据。

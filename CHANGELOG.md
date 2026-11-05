@@ -1,5 +1,9 @@
 # 变更记录
 
+## 未发布
+
+- **herdr-mod 后端契约（可选新增字段，契约版本不变）**：派单记录与 `/v1/jobs`、`/v1/jobs/{job}` 新增 `initiator_hc`（`{terminal,machine,captured_at}`，来自 `HC_TERMINAL_ID`，无则 `null`，与 `initiator_herdr` 并存）；serve 新增 herdr-core（hc）只读会话后端（`rd_hc.py`），`/v1/sessions` 与 `projects[].sessions[]` 列出 App 会话（`id=hc:<地址>`），新增 `surface/address/capabilities/needs_attention_count`，App 会话支持 `/screen`，`/input`、`/terminal`、`/terminal/ws` 返回 409 `unsupported_surface`；`/v1/projects` 项目项新增 `review_pending_count`，顶层新增 `summary {needs_attention,in_progress,review_pending,sessions_working}`。`RD_HC_BIN` 可指定 hc 路径（设为空串关闭该后端）。详见 `docs/serve.md`「App 会话」。
+
 ## 0.4.1（2026-11-04）
 
 - **status 回退直查时多主机并行**：serve 缓存不命中（有任务刚派出或运行中快照过旧）时，`status` 按主机并行查询，总耗时取最慢的一台，不再逐台累加；单台主机行为不变。

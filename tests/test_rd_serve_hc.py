@@ -262,6 +262,17 @@ class HcTests(unittest.TestCase):
         self.assertEqual(project["needs_attention_count"], 5)
         self.assertEqual(rows["hc:t10"]["needs_attention_count"], 0)
 
+    def test_summary_counts_working_sessions_from_tui_and_app(self):
+        self.data["agents"] = [self.agent("w1:p1", "working"), self.agent("w1:p2", "idle")]
+        self.save_fixture()
+        self.hc_data["terminals"] = [self.terminal("t8", "claude", "working"), self.terminal("t10", "codex", "working"),
+                                     self.terminal("t12", "codex", "blocked")]
+        self.save_hc()
+        self.start_hc(["w1:p2", "hc:t8", "hc:t10", "hc:t12"])
+        body = self.request("/v1/projects")[1]
+        self.assertEqual(body["summary"]["sessions_working"], 3)
+        self.assertEqual(body["summary"], dict(needs_attention=0, in_progress=0, review_pending=0, sessions_working=3))
+
     def test_probable_session_never_counts_needs_attention(self):
         rows = [dict(surface="app", address="t8", pane_id=None, probable=True, needs_attention_count=0),
                 dict(surface="tui", address="w1:p1", pane_id="w1:p1", probable=True, needs_attention_count=0)]

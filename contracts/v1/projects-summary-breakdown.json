@@ -21,9 +21,16 @@
               "updated_at": "2026-10-25T00:00:00+00:00",
               "accepted_round_count": 0
             }
-          }
+          },
+          "review_pending_count": 2
         }
-      ]
+      ],
+      "summary": {
+        "needs_attention": 6,
+        "in_progress": 1,
+        "review_pending": 2,
+        "sessions_working": 0
+      }
     }
   },
   "events": []
