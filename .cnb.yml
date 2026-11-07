@@ -1,0 +1,45 @@
+main:
+  push:
+    - docker:
+        image: python:3.11
+      stages:
+        - name: 安装包
+          script: "python -m pip install -e ."
+        - name: 完整测试
+          script: "PYTHONUTF8=1 python -m unittest discover -s tests -p 'test_*.py'"
+    - docker:
+        image: python:3.12
+      stages:
+        - name: 安装包
+          script: "python -m pip install -e ."
+        - name: 完整测试
+          script: "PYTHONUTF8=1 python -m unittest discover -s tests -p 'test_*.py'"
+    - docker:
+        image: python:3.13
+      stages:
+        - name: 安装包
+          script: "python -m pip install -e ."
+        - name: 完整测试
+          script: "PYTHONUTF8=1 python -m unittest discover -s tests -p 'test_*.py'"
+  pull_request:
+    - docker:
+        image: python:3.11
+      stages:
+        - name: 安装包
+          script: "python -m pip install -e ."
+        - name: 完整测试
+          script: "PYTHONUTF8=1 python -m unittest discover -s tests -p 'test_*.py'"
+    - docker:
+        image: python:3.12
+      stages:
+        - name: 安装包
+          script: "python -m pip install -e ."
+        - name: 完整测试
+          script: "PYTHONUTF8=1 python -m unittest discover -s tests -p 'test_*.py'"
+    - docker:
+        image: python:3.13
+      stages:
+        - name: 安装包
+          script: "python -m pip install -e ."
+        - name: 完整测试
+          script: "PYTHONUTF8=1 python -m unittest discover -s tests -p 'test_*.py'"
