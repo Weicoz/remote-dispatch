@@ -17,6 +17,9 @@ from remote_dispatch import cli
 from remote_dispatch import rd_events as events
 from remote_dispatch.rd_serve import Service
 
+# 测试不连接真实 hc；hc 后端的测试自行注入假 hc。
+os.environ.setdefault("RD_HC_BIN", "")
+
 
 CONTRACTS = Path(__file__).resolve().parents[1] / "contracts" / "v1"
 
@@ -442,13 +445,15 @@ class ServeTests(unittest.TestCase):
             subprocess.run(["git", "-C", str(repo), *argv], check=True, capture_output=True)
         self.start(poll_interval=3600)
         result = self.command("-C", str(repo), "run", "--cmd", "sleep 60", "--host", "target", "--force-host",
-                              "--project", "demo", RD_INITIATOR_SESSION="sender", HERDR_PANE_ID="pane-19")
+                              "--project", "demo", RD_INITIATOR_SESSION="sender", HERDR_PANE_ID="pane-19", HC_TERMINAL_ID="vps/t7")
         self.assertEqual(result.returncode, 0, result.stderr)
         cards = self.eventually(lambda: self.request("/v1/jobs")[1]["jobs"], bool)
         job = cards[0]["job"]
         self.addCleanup(self.command, "stop", job)
         self.assertEqual(cards[0]["initiator_session"], "sender")
         self.assertEqual(cards[0]["initiator_herdr"]["pane_id"], "pane-19")
+        self.assertEqual((cards[0]["initiator_hc"]["terminal"], cards[0]["initiator_hc"]["machine"]), ("vps/t7", "vps"))
+        self.assertEqual(self.request("/v1/jobs/" + cards[0]["job"])[1]["job"]["initiator_hc"]["terminal"], "vps/t7")
         project = cards[0]["project_id"]
         for action in ("hide", "show"):
             result = self.command("project", action, project)

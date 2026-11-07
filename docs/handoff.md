@@ -16,7 +16,7 @@ rdispatch resume <job> --prompt-file followup.md --initiator-session <当前会�
 
 参数优先于 `RD_INITIATOR_SESSION`，再读取父进程链中最近的 harness 对应的会话变量：Claude Code 用 `CLAUDE_CODE_SESSION_ID`、Codex 用 `CODEX_THREAD_ID`、DSH 用 `DSH_SESSION_ID`、AGY 用 `ANTIGRAVITY_CONVERSATION_ID`，Kimi 不自动读取会话。识别不了 harness 时记为 `unknown`，不会因其他 harness 的环境变量存在而绑定会话。App 可以显式传入 `app:<device_id>` 或所选会话 ID。未配置且宿主未提供时新任务未绑定；既有任务不自动迁移或推断所属会话。绑定ID是路由元数据，不是鉴权凭据。同用户的其他会话必须显式使用原ID才能接管结果或续派，CLI不据此提供操作系统级隔离。
 
-`run` 同时保存 `initiator_harness`、控制端机器名 `initiator_host` 和 `initiator_herdr`。后者的 `session / workspace_id / pane_id` 分别取自 `HERDR_SESSION / HERDR_WORKSPACE_ID / HERDR_PANE_ID`，缺值为 `null`；`captured_at` 与派单的 `created` 相同，标明这些是派单时继承的值，移动 pane 后不随之更新。`status --json` 可读回来源；缺这些字段的旧记录仍可正常查询。
+`run` 同时保存 `initiator_harness`、控制端机器名 `initiator_host` 和 `initiator_herdr`。后者的 `session / workspace_id / pane_id` 分别取自 `HERDR_SESSION / HERDR_WORKSPACE_ID / HERDR_PANE_ID`，缺值为 `null`；`captured_at` 与派单的 `created` 相同，标明这些是派单时继承的值，移动 pane 后不随之更新。两个 ID 同时存在（herdr-core 从某个 Herdr 窗格启动时 App 终端会继承陈旧的 `HERDR_PANE_ID`）时，按两者根进程在派单进程祖先链里的先后判内层，记入 `initiator_primary`（`herdr`／`hc`／`null`）；窗格已不存在则 `initiator_herdr` 的各字段置 `null`。`status --json` 可读回来源；缺这些字段的旧记录仍可正常查询。
 
 `status --json`、`status --details` 和 `result` 只读，不创建缓存或回写接收会话。已有缓存回执在连接中断时仍可读取；未缓存的结果按目标机当前状态即时生成，断线时无法取得。`ack` 在持有 job 锁时核对轮次和具体 receipt_id，并保存此前未缓存的回执；`inbox`、续跑和清理也保留原有的显式收取路径。`inbox` 只列当前用户、当前发起会话尚未 ack 的结果。`ack` 可以重复确认同一回执，不会启动任务。接收会话已识别后，`resume --session` 不接受不同线程ID。
 

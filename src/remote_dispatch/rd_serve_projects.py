@@ -66,6 +66,10 @@ class ProjectRoutes:
         self.list_view(False)
         self.list_view()
 
+    def cached_view(self):
+        """已发布的完整视图；从不重建，未就绪返回 None。供读路径使用。"""
+        return self.list_payloads.get(True)
+
     def list_view(self, include_history=True):
         """Single-flight rebuild. No TTL: every read checks all local generations."""
         service = self.service
@@ -143,8 +147,18 @@ class ProjectRoutes:
     def summary(row, session_only=False):
         return dict(row, session_only=session_only, sessions=[], needs_attention_count=0,
                     blocked_count=0, offline_count=0, failed_count=0,
-                    in_progress_count=0, hosts={}, week_dispatch_count=0,
+                    in_progress_count=0, review_pending_count=0, hosts={}, week_dispatch_count=0,
                     last_accepted_at=None, last_harness=None, recent_event=None)
+
+    @staticmethod
+    def summary_totals(rows):
+        """顶层汇总：前三项为未隐藏项目对应计数之和；sessions_working 为所有会话（TUI 与 App）中工作中的数量。"""
+        shown = [row for row in rows if not row.get("hidden")]
+        return dict(needs_attention=sum(row["needs_attention_count"] for row in shown),
+                    in_progress=sum(row["in_progress_count"] for row in shown),
+                    review_pending=sum(row["review_pending_count"] for row in shown),
+                    sessions_working=sum(session["status"] == "working"
+                                         for row in rows for session in row["sessions"]))
 
     def accepted_counts(self, rec, query):
         counts = {}
@@ -201,6 +215,8 @@ class ProjectRoutes:
                 row[state + "_count"] += 1
             row["needs_attention_count"] = row["blocked_count"] + row["offline_count"] + row["failed_count"]
             row["in_progress_count"] += int(state == "running")
+            row["review_pending_count"] += int(card["outcome"] in ("completed", "partial")
+                                               and card["review_state"] == "pending")
             created = instant(rec.get("created"))
             if created and week <= created <= now:
                 row["week_dispatch_count"] += 1
@@ -231,6 +247,7 @@ class ProjectRoutes:
                 sessions = service.sessions.cached()
             except OSError:
                 sessions = []
+            service.sessions.count_attention([item["row"] for item in sessions], records, cards)
             for item in sessions:
                 session = item["row"]
                 identity = session["project_id"]
@@ -262,7 +279,8 @@ class ProjectRoutes:
             return 200, {"harness_stats": statistics(self.service, recent),
                          "host_stats": host_statistics(self.service), "date_basis": "controller_local"}
         if path == "/v1/projects":
-            return 200, {"projects": self.projects(device)}
+            rows = self.projects(device)
+            return 200, {"projects": rows, "summary": self.summary_totals(rows)}
         if path == "/v1/jobs":
             return 200, self.jobs(args)
         return None

@@ -110,10 +110,19 @@ class DispatchTests(unittest.TestCase):
         return next(r for r in rd.all_jobs() if r["job"] not in before)
 
     @contextlib.contextmanager
-    def initiator_context(self, processes, **environment):
-        """伪造进程信息的系统边界，其余 Git、落盘与查询照常执行。"""
+    def initiator_context(self, processes, tools=None, **environment):
+        """伪造进程信息的系统边界，其余 Git、落盘与查询照常执行。
+        tools 伪造 hc／herdr 的只读命令：键为命令名，值为 stdout 文本或要抛出的异常；缺省视为未安装。"""
         original = subprocess.run
+        tools = tools or {}
         def run(command, *args, **kwargs):
+            if command[0] in ("hc", "herdr") or command[0].endswith("/hc"):
+                outcome = tools.get(command[0])
+                if outcome is None:
+                    raise FileNotFoundError(command[0])
+                if isinstance(outcome, BaseException):
+                    raise outcome
+                return subprocess.CompletedProcess(command, 0, outcome, "")
             if command[0] == "ps":
                 pid = int(command[command.index("-p") + 1])
                 parent, executable = processes.get(pid, (0, "/sbin/launchd"))
@@ -122,7 +131,7 @@ class DispatchTests(unittest.TestCase):
         values = dict(RD_INITIATOR_SESSION="", CODEX_THREAD_ID="codex-session",
                       CLAUDE_CODE_SESSION_ID="claude-session", DSH_SESSION_ID="dsh-session",
                       ANTIGRAVITY_CONVERSATION_ID="agy-session", KIMI_SESSION_ID="unconfirmed-kimi",
-                      HERDR_SESSION="herdr-session", HERDR_WORKSPACE_ID="workspace-1", HERDR_PANE_ID="pane-1")
+                      HERDR_SESSION="herdr-session", HERDR_WORKSPACE_ID="workspace-1", HERDR_PANE_ID="pane-1", HC_TERMINAL_ID="")
         values.update(environment)
         with patch.dict(os.environ, values), patch.object(subprocess, "run", side_effect=run), \
              patch("socket.gethostname", return_value="initiator-fixture"):
@@ -389,6 +398,85 @@ class DispatchTests(unittest.TestCase):
         self.assertEqual(row["initiator_session"], "codex-session")
         self.assertEqual(row["initiator_herdr"], dict(session="herdr-session", workspace_id="workspace-1",
                                                    pane_id="pane-1", captured_at=row["created"]))
+
+    def test_run_records_initiator_hc_for_local_remote_and_missing_terminal(self):
+        cases = (("t8", dict(terminal="t8", machine=None)),
+                 ("vps/t7", dict(terminal="vps/t7", machine="vps")),
+                 ("", None))
+        for terminal, expected in cases:
+            with self.subTest(terminal=terminal), self.initiator_context(
+                    {os.getppid(): (1, "/opt/bin/codex exec")}, HC_TERMINAL_ID=terminal):
+                record = self.dispatch()
+                row = self.queried_job(record["job"])
+                if expected is None:
+                    self.assertIsNone(row["initiator_hc"])
+                else:
+                    self.assertEqual(row["initiator_hc"], dict(expected, captured_at=row["created"]))
+
+    def test_run_records_both_herdr_pane_and_hc_terminal_when_both_exist(self):
+        with self.initiator_context({os.getppid(): (1, "/opt/bin/codex exec")}, HC_TERMINAL_ID="vps/t7"):
+            record = self.dispatch()
+        row = self.queried_job(record["job"])
+        self.assertEqual(row["initiator_herdr"]["pane_id"], "pane-1")
+        self.assertEqual(row["initiator_hc"]["terminal"], "vps/t7")
+
+    def primary_case(self, chain, hc_pid=5000, pane_pid=6000, pane="found", **environment):
+        """chain 为从当前进程向上的祖先 pid 列表。"""
+        processes = {os.getppid(): (chain[0], "/bin/zsh -c rdispatch")}
+        for index, pid in enumerate(chain):
+            processes[pid] = (chain[index + 1] if index + 1 < len(chain) else 1, "/opt/bin/codex exec")
+        herdr = (json.dumps({"id": "x", "error": {"code": "pane_not_found", "message": "pane not found"}})
+                 if pane == "missing" else
+                 json.dumps({"id": "x", "result": {"process_info": {"shell_pid": pane_pid, "pane_id": "w1:p1"}}}))
+        tools = dict(hc=json.dumps({"address": "t13", "pid": hc_pid}), herdr=herdr)
+        tools.update(environment.pop("tools", {}))
+        with patch.dict(os.environ, {"RD_HC_BIN": "hc"}), \
+                self.initiator_context(processes, tools=tools, HC_TERMINAL_ID="t13", **environment):
+            record = self.dispatch()
+        return self.queried_job(record["job"])
+
+    def test_both_ids_choose_inner_layer_by_ancestor_chain_and_record_primary(self):
+        # 近的是内层：hc 根进程比窗格 shell 离当前进程近。
+        row = self.primary_case([700001, 5000, 6000])
+        self.assertEqual((row["initiator_primary"], row["initiator_hc"]["terminal"], row["initiator_herdr"]["pane_id"]),
+                         ("hc", "t13", "pane-1"))
+        row = self.primary_case([700001, 6000, 5000])
+        self.assertEqual(row["initiator_primary"], "herdr")
+        # 只有一方在祖先链里，则是它。
+        self.assertEqual(self.primary_case([700001, 5000])["initiator_primary"], "hc")
+        self.assertEqual(self.primary_case([700001, 6000])["initiator_primary"], "herdr")
+
+    def test_missing_herdr_pane_is_treated_as_inherited_stale_value(self):
+        row = self.primary_case([700001], pane="missing")
+        self.assertEqual(row["initiator_primary"], "hc")
+        self.assertEqual(row["initiator_hc"]["terminal"], "t13")
+        self.assertEqual(row["initiator_herdr"], dict(session=None, workspace_id=None, pane_id=None,
+                                                   captured_at=row["created"]))
+
+    def test_undeterminable_layers_leave_primary_null_without_blocking_dispatch(self):
+        for label, tools in (("tools missing", dict(hc=None, herdr=None)),
+                             ("timeout", dict(hc=subprocess.TimeoutExpired("hc", 2),
+                                              herdr=subprocess.TimeoutExpired("herdr", 2))),
+                             ("garbage", dict(hc="not json", herdr="not json"))):
+            with self.subTest(label):
+                row = self.primary_case([700001, 5000, 6000], tools=tools)
+                self.assertIsNone(row["initiator_primary"])
+                self.assertEqual((row["initiator_herdr"]["pane_id"], row["initiator_hc"]["terminal"]), ("pane-1", "t13"))
+        # 祖先链里两者都找不到：同样无法判定。
+        self.assertIsNone(self.primary_case([700001, 7000], hc_pid=5000, pane_pid=6000)["initiator_primary"])
+
+    def test_primary_with_single_id_or_none(self):
+        with self.initiator_context({os.getppid(): (1, "/opt/bin/codex exec")}, HC_TERMINAL_ID=""):
+            row = self.queried_job(self.dispatch()["job"])
+        self.assertEqual(row["initiator_primary"], "herdr")
+        with self.initiator_context({os.getppid(): (1, "/opt/bin/codex exec")}, HC_TERMINAL_ID="t8",
+                                    HERDR_SESSION="", HERDR_WORKSPACE_ID="", HERDR_PANE_ID=""):
+            row = self.queried_job(self.dispatch()["job"])
+        self.assertEqual(row["initiator_primary"], "hc")
+        with self.initiator_context({os.getppid(): (1, "/opt/bin/codex exec")}, HC_TERMINAL_ID="",
+                                    HERDR_SESSION="", HERDR_WORKSPACE_ID="", HERDR_PANE_ID=""):
+            row = self.queried_job(self.dispatch()["job"])
+        self.assertIsNone(row["initiator_primary"])
 
     def test_run_uses_nearest_harness_despite_conflicting_session_variables(self):
         for harness, session in (("claude", "claude-session"), ("dsh", "dsh-session"),

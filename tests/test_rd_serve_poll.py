@@ -15,6 +15,9 @@ from remote_dispatch import rd_events as events
 from remote_dispatch import rd_serve_poll as poll
 from remote_dispatch.rd_serve import Service
 
+# 测试不连接真实 hc；hc 后端的测试自行注入假 hc。
+os.environ.setdefault("RD_HC_BIN", "")
+
 
 class PollErrorsTests(unittest.TestCase):
     def setUp(self):

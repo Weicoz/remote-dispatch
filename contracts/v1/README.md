@@ -102,6 +102,11 @@
   成功 body 与 GET 相同。同键且请求指纹相同返回首次结果，失败保留原选择。
 - `network-addresses-write-invalid.json`：禁用项也不能含通配地址，返回
   400 `invalid_listen_address`；其他失败与本机边界见 `docs/serve.md`。
+- `sessions-app.json`：herdr-core（App）会话行，`id=hc:t8`、`pane_id=null`、`surface=app`、
+  `capabilities=["screen"]`；其余会话样例补 `surface/address/capabilities/needs_attention_count`。
+  `sessions-unsupported-surface.json`：App 会话的 `/input`、`/terminal`、`/terminal/ws` 返回 409；
+  `sessions-unsupported-surface-messages.json`、`sessions-unsupported-surface-dispatch-defaults.json` 同理。
+  `jobs*.json`、`job-details*.json` 新增 `initiator_hc`（`{terminal,machine,captured_at}` 或 `null`）。
 - `sessions-list.json` / `sessions-projects.json` / `sessions-resolve.json`：会话快照
   来自最近一次成功的后台发现，HTTP 列表与反查不执行 Herdr；
   冷启动尚未发现时为空，发现失败保留上次列表。屏幕与终端仍读本机 Herdr。

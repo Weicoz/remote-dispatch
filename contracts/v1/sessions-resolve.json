@@ -19,7 +19,15 @@
         "probable": false,
         "identity_text": null,
         "updated_at": "2026-10-25T00:00:00+00:00",
-        "cwd": "/workspace/demo"
+        "cwd": "/workspace/demo",
+        "surface": "tui",
+        "address": "w1:p1",
+        "capabilities": [
+          "screen",
+          "input",
+          "terminal_ws"
+        ],
+        "needs_attention_count": 0
       },
       "matched_by": "session_id"
     }

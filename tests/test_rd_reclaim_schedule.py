@@ -14,6 +14,9 @@ from remote_dispatch import rd_board as board
 from remote_dispatch import rd_events as events
 from remote_dispatch import rd_serve
 from remote_dispatch.rd_serve import Service
+
+# 测试不连接真实 hc；hc 后端的测试自行注入假 hc。
+os.environ.setdefault("RD_HC_BIN", "")
 from test_rd_reclaim_unblock import ReclaimFixture
 
 # 每个 worktree 里 target 约 1.5 MB（可再生），big.bin 约 1.5 MB（已跟踪，瘦身后仍在）。

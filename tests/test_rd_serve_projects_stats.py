@@ -73,8 +73,35 @@ class ProjectsStatsTests(unittest.TestCase):
         self.assertEqual((row["blocked_count"], row["offline_count"], row["failed_count"]), (2, 1, 3))
         self.assertEqual(row["needs_attention_count"], 6)
         self.assertEqual(row["in_progress_count"], 1)
+        self.assertEqual(row["review_pending_count"], 2)
+        body = self.request("/v1/projects")[1]
+        self.assertEqual(body["summary"], dict(needs_attention=6, in_progress=1, review_pending=2, sessions_working=0))
         example = json.loads((support.CONTRACTS / "projects-summary-breakdown.json").read_text())
-        support.ServeTests.assert_structure(self, {"projects": [row]}, example["response"]["body"])
+        support.ServeTests.assert_structure(self, {"projects": [row]}, example["response"]["body"]["projects"] and {"projects": example["response"]["body"]["projects"]})
+        support.ServeTests.assert_structure(self, body["summary"], example["response"]["body"]["summary"])
+
+    def test_summary_sums_visible_projects_and_ignores_hidden_ones(self):
+        self.prepare()
+        self.dispatch("shown-failed", "done", "failed", True, project="shown")
+        self.dispatch("shown-run", "running", project="shown")
+        self.dispatch("shown-pending", "done", "completed", project="shown")
+        self.dispatch("other-blocked", "done", "blocked", project="other")
+        self.dispatch("other-partial", "done", "partial", project="other")
+        self.dispatch("other-accepted", "done", "completed", True, "accepted", project="other")
+        self.dispatch("hidden-failed", "dead", project="hidden")
+        self.dispatch("hidden-pending", "done", "completed", project="hidden")
+        self.start(poll_interval=3600)
+        rows = self.eventually(lambda: self.request("/v1/projects")[1]["projects"],
+                               lambda rows: len(rows) == 3 and all(r["hosts"].get("target", {}).get("job") for r in rows))
+        identity = next(r["id"] for r in rows if r["name"] == "hidden")
+        self.assertEqual(self.request("/v1/projects/%s/hide" % identity, "POST", None, {"Idempotency-Key": "hide-1"})[0], 200)
+        body = self.eventually(lambda: self.request("/v1/projects")[1], lambda body: any(
+            r["hidden"] for r in body["projects"]))
+        visible = [r for r in body["projects"] if not r["hidden"]]
+        for field, total in (("needs_attention", "needs_attention_count"), ("in_progress", "in_progress_count"),
+                             ("review_pending", "review_pending_count")):
+            self.assertEqual(body["summary"][field], sum(r[total] for r in visible), field)
+        self.assertEqual(body["summary"], dict(needs_attention=2, in_progress=1, review_pending=2, sessions_working=0))
 
     def test_projects_choose_each_priority_and_newest_tie_and_expose_summary_without_writes(self):
         self.prepare()

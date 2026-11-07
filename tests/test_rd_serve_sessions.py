@@ -518,7 +518,7 @@ else:
         self.data["agents"] = []
         self.save_fixture()
         service.wake.set()
-        self.eventually(lambda: self.request("/v1/projects"), lambda row: row == (200, {"projects": []}))
+        self.eventually(lambda: self.request("/v1/projects"), lambda row: row == (200, {"projects": [], "summary": dict(needs_attention=0, in_progress=0, review_pending=0, sessions_working=0)}))
         self.assertFalse(index.path.exists())
 
     def test_live_sessions_extend_indexed_summary_and_respect_hidden_projects_and_device_access(self):

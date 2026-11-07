@@ -1,0 +1,21 @@
+{
+  "request": {
+    "method": "POST",
+    "path": "/v1/sessions/hc:t8/input",
+    "headers": {
+      "Content-Type": "application/json",
+      "Idempotency-Key": "example-key"
+    },
+    "body": {
+      "text": "继续"
+    }
+  },
+  "response": {
+    "status": 409,
+    "body": {
+      "error": "unsupported_surface",
+      "surface": "app"
+    }
+  },
+  "events": []
+}

@@ -23,7 +23,9 @@
           "workspace_id": null,
           "pane_id": null,
           "captured_at": ""
-        }
+        },
+        "initiator_hc": null,
+        "initiator_primary": null
       },
       "stdin": ""
     }

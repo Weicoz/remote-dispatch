@@ -18,6 +18,9 @@ from remote_dispatch import rd_events as events
 from remote_dispatch.rd_serve import Service, UnixHTTPConnection
 from remote_dispatch.rd_herdr import Herdr
 
+# 测试不连接真实 hc；hc 后端的测试自行注入假 hc。
+os.environ.setdefault("RD_HC_BIN", "")
+
 
 class NetworkTests(unittest.TestCase):
     def setUp(self):
@@ -412,7 +415,7 @@ class NetworkTests(unittest.TestCase):
                         headers=dict(headers, session_access="true")),
                         (403, {"error": {"reason": "session_access_disabled"}}))
             self.assertEqual(self.request("/v1/projects", connection=self.tls(info), headers=headers),
-                             (200, {"projects": []}))
+                             (200, {"projects": [], "summary": dict(needs_attention=0, in_progress=0, review_pending=0, sessions_working=0)}))
             self.assertEqual(self.request("/v1/sessions/w1:p1/input", "POST", {"text": "fixture"},
                 connection=self.tls(info), headers=headers)[0], 403)
             send_input.assert_not_called()
@@ -448,7 +451,7 @@ class NetworkTests(unittest.TestCase):
             send_input.assert_called_once_with("w1:p1", {"text": "fixture"})
             self.assertEqual(self.request(route, "POST", {"enabled": False}, key="disable")[0], 200)
             self.assertEqual(self.request("/v1/projects", connection=self.tls(info), headers=headers),
-                             (200, {"projects": []}))
+                             (200, {"projects": [], "summary": dict(needs_attention=0, in_progress=0, review_pending=0, sessions_working=0)}))
 
     @unittest.skipUnless(shutil.which("openssl"), "openssl is required for TLS certificates")
     def test_a_blocked_push_sender_does_not_delay_revocation_or_service_shutdown(self):
