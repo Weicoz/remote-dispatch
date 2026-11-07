@@ -275,7 +275,7 @@ class LocalEndToEndTest(unittest.TestCase):
                 self.assertEqual(rd.all_jobs(), [])
 
     def test_another_controller_with_same_id_warns_and_still_dispatches(self):
-        with patch.dict(os.environ, {"RD_USER_ID": "shared-user"}):
+        with patch.dict(os.environ, {"RD_USER_ID": "shared-user", "RD_INITIATOR_SESSION": "controller-collision-test"}):
             errors = io.StringIO()
             with contextlib.redirect_stderr(errors):
                 rd.cmd_run(self.args(), self.cfg)

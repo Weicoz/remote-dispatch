@@ -7,8 +7,10 @@ main:
           script: apt-get update && apt-get install -y --no-install-recommends git openssh-client rsync lsof tmux openssl
         - name: 安装包
           script: "python -m pip install -e ."
+        - name: 创建普通测试用户
+          script: useradd --create-home runner && chown -R runner:runner "$PWD"
         - name: 完整测试
-          script: "NO_PROXY=* no_proxy=* PYTHONUTF8=1 timeout 1200 python -m unittest discover -v -s tests -p 'test_*.py'"
+          script: "runuser -u runner -- env NO_PROXY=* no_proxy=* PYTHONUTF8=1 timeout 1800 python -m unittest discover -v -s tests -p 'test_*.py'"
     - docker:
         image: python:3.12
       stages:
@@ -16,8 +18,10 @@ main:
           script: apt-get update && apt-get install -y --no-install-recommends git openssh-client rsync lsof tmux openssl
         - name: 安装包
           script: "python -m pip install -e ."
+        - name: 创建普通测试用户
+          script: useradd --create-home runner && chown -R runner:runner "$PWD"
         - name: 完整测试
-          script: "NO_PROXY=* no_proxy=* PYTHONUTF8=1 timeout 1200 python -m unittest discover -v -s tests -p 'test_*.py'"
+          script: "runuser -u runner -- env NO_PROXY=* no_proxy=* PYTHONUTF8=1 timeout 1800 python -m unittest discover -v -s tests -p 'test_*.py'"
     - docker:
         image: python:3.13
       stages:
@@ -25,8 +29,10 @@ main:
           script: apt-get update && apt-get install -y --no-install-recommends git openssh-client rsync lsof tmux openssl
         - name: 安装包
           script: "python -m pip install -e ."
+        - name: 创建普通测试用户
+          script: useradd --create-home runner && chown -R runner:runner "$PWD"
         - name: 完整测试
-          script: "NO_PROXY=* no_proxy=* PYTHONUTF8=1 timeout 1200 python -m unittest discover -v -s tests -p 'test_*.py'"
+          script: "runuser -u runner -- env NO_PROXY=* no_proxy=* PYTHONUTF8=1 timeout 1800 python -m unittest discover -v -s tests -p 'test_*.py'"
   pull_request:
     - docker:
         image: python:3.11
@@ -35,8 +41,10 @@ main:
           script: apt-get update && apt-get install -y --no-install-recommends git openssh-client rsync lsof tmux openssl
         - name: 安装包
           script: "python -m pip install -e ."
+        - name: 创建普通测试用户
+          script: useradd --create-home runner && chown -R runner:runner "$PWD"
         - name: 完整测试
-          script: "NO_PROXY=* no_proxy=* PYTHONUTF8=1 timeout 1200 python -m unittest discover -v -s tests -p 'test_*.py'"
+          script: "runuser -u runner -- env NO_PROXY=* no_proxy=* PYTHONUTF8=1 timeout 1800 python -m unittest discover -v -s tests -p 'test_*.py'"
     - docker:
         image: python:3.12
       stages:
@@ -44,8 +52,10 @@ main:
           script: apt-get update && apt-get install -y --no-install-recommends git openssh-client rsync lsof tmux openssl
         - name: 安装包
           script: "python -m pip install -e ."
+        - name: 创建普通测试用户
+          script: useradd --create-home runner && chown -R runner:runner "$PWD"
         - name: 完整测试
-          script: "NO_PROXY=* no_proxy=* PYTHONUTF8=1 timeout 1200 python -m unittest discover -v -s tests -p 'test_*.py'"
+          script: "runuser -u runner -- env NO_PROXY=* no_proxy=* PYTHONUTF8=1 timeout 1800 python -m unittest discover -v -s tests -p 'test_*.py'"
     - docker:
         image: python:3.13
       stages:
@@ -53,5 +63,7 @@ main:
           script: apt-get update && apt-get install -y --no-install-recommends git openssh-client rsync lsof tmux openssl
         - name: 安装包
           script: "python -m pip install -e ."
+        - name: 创建普通测试用户
+          script: useradd --create-home runner && chown -R runner:runner "$PWD"
         - name: 完整测试
-          script: "NO_PROXY=* no_proxy=* PYTHONUTF8=1 timeout 1200 python -m unittest discover -v -s tests -p 'test_*.py'"
+          script: "runuser -u runner -- env NO_PROXY=* no_proxy=* PYTHONUTF8=1 timeout 1800 python -m unittest discover -v -s tests -p 'test_*.py'"

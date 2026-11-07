@@ -299,6 +299,13 @@ class FingerprintTests(Fixture):
         self.assertEqual([item["host"] for item in record["fingerprint"]["tried"]], ["fixture", "fixture2"])
 
     def test_doctor_reports_match_and_mismatch(self):
+        original_ssh = rd.ssh
+
+        def healthy_tools(host, script, **kwargs):
+            if script.startswith('ok() {'):
+                return subprocess.CompletedProcess([], 0, '', '')
+            return original_ssh(host, script, **kwargs)
+
         for command, expected, code in (("echo same", "环境指纹一致", 0),
                                         ('echo "wt=${RD_WT:+remote}"', "环境指纹与本机不一致", 1)):
             with self.subTest(command=command):
@@ -308,6 +315,7 @@ class FingerprintTests(Fixture):
                 output = io.StringIO()
                 args = argparse.Namespace(host="fixture", agent=None, dir=str(self.repo))
                 with patch.object(rd, "probe", return_value=dict(reachable=False, error="x")), \
+                     patch.object(rd, "ssh", side_effect=healthy_tools), \
                      patch.object(rd, "assess", return_value=[]), patch.object(rd, "fmt_probe", return_value=""), \
                      contextlib.redirect_stdout(output), self.assertRaises(SystemExit) as stop:
                     rd.cmd_doctor(args, self.t.cfg)
