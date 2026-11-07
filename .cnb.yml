@@ -3,43 +3,55 @@ main:
     - docker:
         image: python:3.11
       stages:
+        - name: 安装系统工具
+          script: apt-get update && apt-get install -y --no-install-recommends git openssh-client rsync lsof tmux openssl
         - name: 安装包
           script: "python -m pip install -e ."
         - name: 完整测试
-          script: "PYTHONUTF8=1 python -m unittest discover -s tests -p 'test_*.py'"
+          script: "NO_PROXY=* no_proxy=* PYTHONUTF8=1 timeout 1200 python -m unittest discover -v -s tests -p 'test_*.py'"
     - docker:
         image: python:3.12
       stages:
+        - name: 安装系统工具
+          script: apt-get update && apt-get install -y --no-install-recommends git openssh-client rsync lsof tmux openssl
         - name: 安装包
           script: "python -m pip install -e ."
         - name: 完整测试
-          script: "PYTHONUTF8=1 python -m unittest discover -s tests -p 'test_*.py'"
+          script: "NO_PROXY=* no_proxy=* PYTHONUTF8=1 timeout 1200 python -m unittest discover -v -s tests -p 'test_*.py'"
     - docker:
         image: python:3.13
       stages:
+        - name: 安装系统工具
+          script: apt-get update && apt-get install -y --no-install-recommends git openssh-client rsync lsof tmux openssl
         - name: 安装包
           script: "python -m pip install -e ."
         - name: 完整测试
-          script: "PYTHONUTF8=1 python -m unittest discover -s tests -p 'test_*.py'"
+          script: "NO_PROXY=* no_proxy=* PYTHONUTF8=1 timeout 1200 python -m unittest discover -v -s tests -p 'test_*.py'"
   pull_request:
     - docker:
         image: python:3.11
       stages:
+        - name: 安装系统工具
+          script: apt-get update && apt-get install -y --no-install-recommends git openssh-client rsync lsof tmux openssl
         - name: 安装包
           script: "python -m pip install -e ."
         - name: 完整测试
-          script: "PYTHONUTF8=1 python -m unittest discover -s tests -p 'test_*.py'"
+          script: "NO_PROXY=* no_proxy=* PYTHONUTF8=1 timeout 1200 python -m unittest discover -v -s tests -p 'test_*.py'"
     - docker:
         image: python:3.12
       stages:
+        - name: 安装系统工具
+          script: apt-get update && apt-get install -y --no-install-recommends git openssh-client rsync lsof tmux openssl
         - name: 安装包
           script: "python -m pip install -e ."
         - name: 完整测试
-          script: "PYTHONUTF8=1 python -m unittest discover -s tests -p 'test_*.py'"
+          script: "NO_PROXY=* no_proxy=* PYTHONUTF8=1 timeout 1200 python -m unittest discover -v -s tests -p 'test_*.py'"
     - docker:
         image: python:3.13
       stages:
+        - name: 安装系统工具
+          script: apt-get update && apt-get install -y --no-install-recommends git openssh-client rsync lsof tmux openssl
         - name: 安装包
           script: "python -m pip install -e ."
         - name: 完整测试
-          script: "PYTHONUTF8=1 python -m unittest discover -s tests -p 'test_*.py'"
+          script: "NO_PROXY=* no_proxy=* PYTHONUTF8=1 timeout 1200 python -m unittest discover -v -s tests -p 'test_*.py'"
