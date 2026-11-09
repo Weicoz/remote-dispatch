@@ -23,7 +23,7 @@ completed、partial 可通过、打回或作废；blocked、failed、dead、miss
 本地写入失败也撤销自动代签。通过、作废后仍可正常 resume，新轮次为 pending。
 
 验收记录位于 `results/JOB/rN.review.json`，字段为 `review_state`、
-`reviewed_by`、`reviewed_at`、`review_note`、`checks_at_review`（验收时执行方报告的 checks 状态，未报告记 `not_reported`；仅留痕，不影响能否通过；旧记录和未验收时没有该字段，serve 的回执、轮次与详情视图叠加验收记录后同样带出）。`result`、`result --summary`、
+`reviewed_by`、`reviewed_at`、`review_note`、`checks_at_review`（验收时执行方报告的 checks 状态，未报告记 `not_reported`；仅留痕，不影响能否通过；旧记录和未验收时没有该字段，serve 的 `rounds[].review`、详情、验收写响应与只读回执列表同样带出，单轮 receipt 接口不含）。`result`、`result --summary`、
 `status --json`、`status --details` 只读叠加该记录，未验收默认 pending；
 回执 ID 不变。inbox 和清理扫描不会把验收文件误当成回执。
 

@@ -132,7 +132,7 @@
   已绑定其他方法、路径或规范 JSON 请求体时返回 422 `idempotency_key_reused`，不执行动作。
   `projects-key-reused.json` / `sessions-input-key-reused.json`：项目 hide／show 与会话输入同样按指纹校验，
   同键换项目、动作、会话或请求体返回 422；缺指纹的旧缓存按匹配处理。
-  验收记录新增可选字段 `checks_at_review`（验收时执行方报告的 checks，缺省 `not_reported`）；所有叠加验收记录的回执、`rounds` 与详情视图在已验收时都会带它，旧记录和未验收时没有，客户端须容忍缺失与未知字段。
+  验收记录新增可选字段 `checks_at_review`（验收时执行方报告的 checks，缺省 `not_reported`）；出现在 `rounds[].review`、详情、验收写响应与只读回执列表；`/v1/jobs/{job}/rounds/{n}/receipt` 与 `rounds[].receipt` 的字段白名单不含它，旧记录和未验收时没有，客户端须容忍缺失与未知字段。
   `network-pair-replay.json`：配对码／设备令牌只在首次响应返回；相同配对或开启窗口
   请求重放返回 403 `pairing_closed`，缓存不含两类秘密明文。
 - `sessions-terminal.json`：保留帧结构和 ANSI；含敏感正文时对 Base64 解码数据脱敏后重新编码。

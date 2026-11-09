@@ -355,9 +355,8 @@ class ProjectRoutes:
                 request_hash = fingerprint("POST", "/v1/projects/%s/%s" % (identity, action), {})
                 previous = messages.read_json(saved)
                 if previous is not None and previous.get("fingerprint", request_hash) != request_hash:
-                    handler.json(422, {"error": {"reason": "idempotency_key_reused"}})
-                    return True
-                if previous is None:
+                    previous = dict(status=422, body={"error": {"reason": "idempotency_key_reused"}})
+                elif previous is None:
                     with ProjectLock(service.state, service.user_id):
                         if identity not in index.read():
                             previous = dict(status=404, body={"error": {"reason": "not_found"}}, fingerprint=request_hash)
