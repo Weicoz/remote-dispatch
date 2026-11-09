@@ -642,6 +642,7 @@ App 二维码、Keychain、实际握手固定校验、VPN 切换和真机推送�
 
 `POST /v1/projects/{id}/hide|show` 接受空 JSON 对象，必须有 `Idempotency-Key`（1–255 字符）。
 成功返回 `{"project": <索引项目>}`；未知／其他用户项目为 404。
+同键重放必须是同一项目和同一动作；换项目或在 hide／show 间切换返回 422 `idempotency_key_reused`，不执行动作（旧缓存无指纹时按匹配处理）。
 复用 CLI 的项目变更实现及同一把项目锁，只在内容变化时产生 `project.changed`；
 新派单仍经 CLI 登记自动恢复隐藏项目。
 同一用户同键返回首次已完成结果（包括 404），跨 hide/show 路径亦如此，服务重启后仍有效。
@@ -760,6 +761,7 @@ Herdr 的环境和命名 session 沿用服务进程；可用 `HERDR_CONFIG_PATH`
   可继续使用终端。agy/kimi 尚无转写读取器，仍返回相同 unsupported 响应。
 - `POST /v1/sessions/{id}/input`：JSON 只接受 `{text}`、`{text,submit}` 或 `{keys:[...]}`，必须带
   `Idempotency-Key`（1–256 个可打印 ASCII 非空白字符），逐键输入也每次带新键。
+  同键重放必须是同一会话和同一请求体；不同则返回 422 `idempotency_key_reused`，不写终端（旧缓存无指纹时按匹配处理）。
   `submit` 必须是 JSON 布尔值，省略或 `true` 时文本写入后发送 Enter，保持聊天页行为；
   `false` 只发送文本，不追加 Enter，可用于逐字回显、粘贴、输入法已提交文本及与 Tab 混用。
   文本仍须非空、不含 NUL；`submit` 不能用于 keys 请求，未知字段一律拒绝。

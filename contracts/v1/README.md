@@ -130,6 +130,9 @@
 - `write-idempotency-reused.json` / `network-idempotency-reused.json`：同调用方的幂等键
   先执行可选 `previous_request`，再执行同键的 `request`；幂等键
   已绑定其他方法、路径或规范 JSON 请求体时返回 422 `idempotency_key_reused`，不执行动作。
+  `projects-key-reused.json` / `sessions-input-key-reused.json`：项目 hide／show 与会话输入同样按指纹校验，
+  同键换项目、动作、会话或请求体返回 422；缺指纹的旧缓存按匹配处理。
+  验收记录新增 `checks_at_review`（验收时执行方报告的 checks，缺省 `not_reported`），已验收的 `result` 才带该字段。
   `network-pair-replay.json`：配对码／设备令牌只在首次响应返回；相同配对或开启窗口
   请求重放返回 403 `pairing_closed`，缓存不含两类秘密明文。
 - `sessions-terminal.json`：保留帧结构和 ANSI；含敏感正文时对 Base64 解码数据脱敏后重新编码。

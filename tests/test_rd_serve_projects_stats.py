@@ -177,6 +177,11 @@ class ProjectsStatsTests(unittest.TestCase):
         restored = self.request(path + "/show", "POST", "{}", dict(headers, **{"Idempotency-Key": "show"}))
         self.assertFalse(restored[1]["project"]["hidden"])
         self.assertEqual(self.request(path + "/hide", "POST", "{}", headers), first)
+        self.assertEqual(self.request(path + "/show", "POST", "{}", headers),
+                         (422, {"error": {"reason": "idempotency_key_reused"}}))
+        reused = json.loads((support.CONTRACTS / "projects-key-reused.json").read_text())
+        self.assertEqual(reused["response"]["status"], 422)
+        self.assertEqual(reused["response"]["body"], self.request(path + "/show", "POST", "{}", headers)[1])
         self.assertFalse(self.request("/v1/projects")[1]["projects"][0]["hidden"])
         service.close()
         self.start(poll_interval=3600)

@@ -88,6 +88,7 @@ class ReviewTests(unittest.TestCase):
         self.assertEqual(result["reviewed_by"], "App MacBook")
         self.assertTrue(result["reviewed_at"])
         self.assertEqual(result["review_note"], "")
+        self.assertEqual(result["checks_at_review"], "passed")
         self.assertEqual(result["delivery_state"], "received")
         self.assertEqual(result["acknowledgement"]["acked_by"], "App MacBook")
         self.assertEqual(result["acknowledgement"]["via"], "serve")

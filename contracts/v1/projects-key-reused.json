@@ -1,0 +1,29 @@
+{
+  "previous_request": {
+    "method": "POST",
+    "path": "/v1/projects/3e15c8030cfe7c2cd22b/hide",
+    "headers": {
+      "Content-Type": "application/json",
+      "Idempotency-Key": "used-key"
+    },
+    "body": {}
+  },
+  "request": {
+    "method": "POST",
+    "path": "/v1/projects/3e15c8030cfe7c2cd22b/show",
+    "headers": {
+      "Content-Type": "application/json",
+      "Idempotency-Key": "used-key"
+    },
+    "body": {}
+  },
+  "response": {
+    "status": 422,
+    "body": {
+      "error": {
+        "reason": "idempotency_key_reused"
+      }
+    }
+  },
+  "events": []
+}

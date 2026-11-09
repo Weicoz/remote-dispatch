@@ -1,0 +1,33 @@
+{
+  "previous_request": {
+    "method": "POST",
+    "path": "/v1/sessions/w1:p1/input",
+    "headers": {
+      "Content-Type": "application/json",
+      "Idempotency-Key": "used-key"
+    },
+    "body": {
+      "text": "你好"
+    }
+  },
+  "request": {
+    "method": "POST",
+    "path": "/v1/sessions/w1:p1/input",
+    "headers": {
+      "Content-Type": "application/json",
+      "Idempotency-Key": "used-key"
+    },
+    "body": {
+      "text": "换了内容"
+    }
+  },
+  "response": {
+    "status": 422,
+    "body": {
+      "error": {
+        "reason": "idempotency_key_reused"
+      }
+    }
+  },
+  "events": []
+}

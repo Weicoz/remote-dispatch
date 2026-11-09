@@ -277,7 +277,7 @@ else:
         self.assertEqual(changed["time"], "2026-10-25T02:00:00+00:00")
         self.assertEqual(self.sessions()[0]["updated_at"], "2026-10-25T02:00:00+00:00")
         with patch.object(rd_messages, "utc_now", return_value="2026-10-25T03:00:00+00:00"):
-            self.assertEqual(self.input({"text": "幂等重放"})[0], 200)
+            self.assertEqual(self.input({"text": "新输入"})[0], 200)
         self.assertEqual(self.sessions()[0]["updated_at"], "2026-10-25T02:00:00+00:00")
 
     def test_saved_identity_wins_over_newer_transcript_and_messages_have_stable_after_cursor(self):
@@ -587,7 +587,8 @@ else:
         self.assertEqual(self.input(body, key=None)[0], 400)
         first = self.input(body)
         self.assertEqual(first, (200, {"pane_id": "w1:p1", "accepted": True}))
-        self.assertEqual(self.input({"text": "changed", "submit": True}), first)
+        self.assertEqual(self.input({"text": "changed", "submit": True}),
+                         (422, {"error": {"reason": "idempotency_key_reused"}}))
         service.close()
         self.start(poll_interval=3600)
         self.assertEqual(self.input(body), first)
@@ -603,10 +604,17 @@ else:
         self.assertFalse(self.writes.exists())
         first = self.input({"text": "你好\n第二行"})
         self.assertEqual(first, (200, {"pane_id": "w1:p1", "accepted": True}))
-        self.assertEqual(self.input({"text": "不重复发送"}), first)
+        self.assertEqual(self.input({"text": "不重复发送"}), (422, {"error": {"reason": "idempotency_key_reused"}}))
+        reused = json.loads((Path(__file__).resolve().parents[1] / "contracts" / "v1" / "sessions-input-key-reused.json").read_text())
+        self.assertEqual((reused["response"]["status"], reused["response"]["body"]),
+                         self.input({"text": "不重复发送"}))
+        self.assertEqual(self.input({"text": "你好\n第二行"}, pane="w1:p2"),
+                         (422, {"error": {"reason": "idempotency_key_reused"}}))
+        self.assertEqual(self.input({"text": "你好\n第二行"}), first)
         service.close()
         self.start()
-        self.assertEqual(self.input({"text": "重启仍不发送"}), first)
+        self.assertEqual(self.input({"text": "重启仍不发送"}), (422, {"error": {"reason": "idempotency_key_reused"}}))
+        self.assertEqual(self.input({"text": "你好\n第二行"}), first)
         self.assertEqual(self.input({"keys": ["esc", "up", "down", "tab", "ctrl+c", "enter"]}, key="keys")[0], 200)
         self.assertEqual([json.loads(line) for line in self.writes.read_text().splitlines()],
                          [["pane", "send-text", "w1:p1", "--", "你好\n第二行"],

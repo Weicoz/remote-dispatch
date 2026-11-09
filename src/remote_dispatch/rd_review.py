@@ -24,7 +24,8 @@ def decide(state, rec, number, receipt, action, reviewer, note):
                                  or outcome not in ("completed", "partial")):
         raise ValueError("review_not_allowed: 此回执不可通过；可打回或作废。")
     return dict(review_state=action, reviewed_by=reviewer,
-                reviewed_at=messages.utc_now(), review_note=note)
+                reviewed_at=messages.utc_now(), review_note=note,
+                checks_at_review=(receipt.get("report") or {}).get("checks", "not_reported"))
 
 
 @contextmanager

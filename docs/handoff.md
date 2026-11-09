@@ -18,7 +18,7 @@ rdispatch resume <job> --prompt-file followup.md --initiator-session <当前会�
 
 `run` 同时保存 `initiator_harness`、控制端机器名 `initiator_host` 和 `initiator_herdr`。后者的 `session / workspace_id / pane_id` 分别取自 `HERDR_SESSION / HERDR_WORKSPACE_ID / HERDR_PANE_ID`，缺值为 `null`；`captured_at` 与派单的 `created` 相同，标明这些是派单时继承的值，移动 pane 后不随之更新。两个 ID 同时存在（herdr-core 从某个 Herdr 窗格启动时 App 终端会继承陈旧的 `HERDR_PANE_ID`）时，按两者根进程在派单进程祖先链里的先后判内层，记入 `initiator_primary`（`herdr`／`hc`／`null`）；窗格已不存在则 `initiator_herdr` 的各字段置 `null`。`status --json` 可读回来源；缺这些字段的旧记录仍可正常查询。
 
-`status --json`、`status --details` 和 `result` 只读，不创建缓存或回写接收会话。已有缓存回执在连接中断时仍可读取；未缓存的结果按目标机当前状态即时生成，断线时无法取得。`ack` 在持有 job 锁时核对轮次和具体 receipt_id，并保存此前未缓存的回执；`inbox`、续跑和清理也保留原有的显式收取路径。`inbox` 只列当前用户、当前发起会话尚未 ack 的结果。`ack` 可以重复确认同一回执，不会启动任务。接收会话已识别后，`resume --session` 不接受不同线程ID。
+`status --json`、`status --details` 只读，不创建缓存或回写接收会话。`result` 不回写接收会话，但派单声明了 `--artifact` 时会把产物拉回本地仓库并保存拉取状态（`--summary` 同样触发）。已有缓存回执在连接中断时仍可读取；未缓存的结果按目标机当前状态即时生成，断线时无法取得。`ack` 在持有 job 锁时核对轮次和具体 receipt_id，并保存此前未缓存的回执；`inbox`、续跑和清理也保留原有的显式收取路径。`inbox` 只列当前用户、当前发起会话尚未 ack 的结果。`ack` 可以重复确认同一回执，不会启动任务。接收会话已识别后，`resume --session` 不接受不同线程ID。
 
 CLI以JSON/后台watch事件向调用它的宿主返回数据，未内置跨会话聊天发送器。宿主支持后台唤醒时，由原发起会话消费事件；不支持时保留pending结果，下次该会话主动读取inbox。不能将“写入回执”“返回元数据”“发起方收取”“用户已看到”混成一个状态。
 

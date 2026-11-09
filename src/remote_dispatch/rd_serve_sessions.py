@@ -14,6 +14,7 @@ from urllib.parse import parse_qs, unquote, urlsplit
 
 from . import cli
 from . import rd_messages as messages
+from .rd_idempotency import fingerprint
 from . import rd_events as events
 from .rd_herdr import Herdr
 from .rd_hc import Hc
@@ -571,8 +572,12 @@ class Sessions:
         lock = JobLock(self.service.state, "sessions")
         lock.path = self.service.state / "locks" / "sessions" / "input.lock"
         with self.service.writer, lock:
+            request_hash = fingerprint("POST", "/v1/sessions/%s/input" % pane, body)
             previous = messages.read_json(path)
             if previous is not None:
+                # 旧记录没有指纹，按匹配处理；有指纹而内容不同则拒绝复用该键。
+                if previous.get("fingerprint", request_hash) != request_hash:
+                    return 422, {"error": {"reason": "idempotency_key_reused"}}
                 return previous["status"], previous["body"]
             if self.service.stop.is_set():
                 raise OSError("serve_stopping")
@@ -592,14 +597,15 @@ class Sessions:
             else:
                 # Persist an uncertainty result before crossing the external write boundary.
                 # A crash must never turn a retry into a second terminal input.
-                messages.atomic_json(path, dict(status=409, body={"error": {"reason": "session_input_result_unknown"}}))
+                messages.atomic_json(path, dict(status=409, body={"error": {"reason": "session_input_result_unknown"}},
+                                                fingerprint=request_hash))
                 try:
                     self.herdr.input(pane, body)
                     result = dict(status=200, body=dict(pane_id=pane, accepted=True))
                 except OSError:
                     result = dict(status=503, body={"error": {"reason": "session_input_unavailable"}})
             with events.write_transaction([path]):
-                messages.atomic_json(path, result)
+                messages.atomic_json(path, dict(result, fingerprint=request_hash))
                 if result["status"] == 200:
                     events.emit(self.service.state, "session.changed", dict(target, user_id=self.service.user_id, removed=False))
             self.service.wake.set()

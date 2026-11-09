@@ -11,6 +11,7 @@ from datetime import datetime, timedelta, timezone
 
 from . import rd_events as events
 from . import rd_messages as messages
+from .rd_idempotency import fingerprint
 from .rd_projects import ProjectIndex, ProjectLock
 from .rd_serve_history import instant, records as history_records
 
@@ -351,17 +352,21 @@ class ProjectRoutes:
             with service.writer:
                 if service.stop.is_set():
                     raise OSError("serve_stopping")
+                request_hash = fingerprint("POST", "/v1/projects/%s/%s" % (identity, action), {})
                 previous = messages.read_json(saved)
+                if previous is not None and previous.get("fingerprint", request_hash) != request_hash:
+                    handler.json(422, {"error": {"reason": "idempotency_key_reused"}})
+                    return True
                 if previous is None:
                     with ProjectLock(service.state, service.user_id):
                         if identity not in index.read():
-                            previous = dict(status=404, body={"error": {"reason": "not_found"}})
+                            previous = dict(status=404, body={"error": {"reason": "not_found"}}, fingerprint=request_hash)
                             messages.atomic_json(saved, previous)
                         else:
                             with events.write_transaction([index.path, saved]):
                                 row = index.set_hidden_locked(identity, action == "hide")
                                 row = dict(row, origin=re.sub(r"(://)[^/@\s]+@", r"\1", row["origin"]))
-                                previous = dict(status=200, body={"project": row})
+                                previous = dict(status=200, body={"project": row}, fingerprint=request_hash)
                                 messages.atomic_json(saved, previous)
             handler.json(previous["status"], service.redact(previous["body"]))
         except (ValueError, TypeError, UnicodeError) as error:
