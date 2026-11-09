@@ -182,6 +182,12 @@ class ProjectsStatsTests(unittest.TestCase):
         reused = json.loads((support.CONTRACTS / "projects-key-reused.json").read_text())
         self.assertEqual(reused["response"]["status"], 422)
         self.assertEqual(reused["response"]["body"], self.request(path + "/show", "POST", "{}", headers)[1])
+        # 旧缓存没有指纹时按匹配处理：同键换动作仍返回首次结果，不返回 422。
+        for saved in (self.state / "serve-project-requests").glob("*.json"):
+            record = json.loads(saved.read_text())
+            record.pop("fingerprint", None)
+            saved.write_text(json.dumps(record))
+        self.assertEqual(self.request(path + "/show", "POST", "{}", headers), first)
         self.assertFalse(self.request("/v1/projects")[1]["projects"][0]["hidden"])
         service.close()
         self.start(poll_interval=3600)

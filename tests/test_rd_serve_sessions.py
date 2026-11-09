@@ -611,9 +611,15 @@ else:
         self.assertEqual(self.input({"text": "你好\n第二行"}, pane="w1:p2"),
                          (422, {"error": {"reason": "idempotency_key_reused"}}))
         self.assertEqual(self.input({"text": "你好\n第二行"}), first)
+        # 旧缓存没有指纹时按匹配处理：同键换内容仍返回首次结果，不再写终端。
+        for saved in (self.state / "sessions" / "inputs").glob("*.json"):
+            record = json.loads(saved.read_text())
+            record.pop("fingerprint", None)
+            saved.write_text(json.dumps(record))
+        self.assertEqual(self.input({"text": "旧缓存换内容"}), first)
         service.close()
         self.start()
-        self.assertEqual(self.input({"text": "重启仍不发送"}), (422, {"error": {"reason": "idempotency_key_reused"}}))
+        self.assertEqual(self.input({"text": "重启仍不发送"}), first)
         self.assertEqual(self.input({"text": "你好\n第二行"}), first)
         self.assertEqual(self.input({"keys": ["esc", "up", "down", "tab", "ctrl+c", "enter"]}, key="keys")[0], 200)
         self.assertEqual([json.loads(line) for line in self.writes.read_text().splitlines()],
