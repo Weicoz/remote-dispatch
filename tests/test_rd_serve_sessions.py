@@ -1,4 +1,5 @@
 """会话 HTTP 接缝；Herdr 仅在可执行文件边界替换，不接触真实会话。"""
+import hashlib
 import json
 import base64
 import contextlib
@@ -597,6 +598,22 @@ else:
         self.assertNotIn("粘贴", saved)
         self.assertEqual([json.loads(line) for line in self.writes.read_text().splitlines()],
                          [["pane", "send-text", "w1:p1", "--", "--测试\n粘贴"]])
+
+    def test_crash_after_unknown_marker_never_writes_terminal_again(self):
+        # 崩溃发生在“未知结果”标记落盘之后、终端写入之前或之后：磁盘上只剩这条带指纹的 409。
+        from remote_dispatch import rd_messages
+        from remote_dispatch.rd_idempotency import fingerprint
+        body = {"text": "崩溃前的输入"}
+        identity = hashlib.sha256(json.dumps(["fixture", "local", "input-one"]).encode()).hexdigest()
+        marker = self.state / "sessions" / "inputs" / (identity + ".json")
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        unknown = {"status": 409, "body": {"error": {"reason": "session_input_result_unknown"}}}
+        rd_messages.atomic_json(marker, dict(unknown, fingerprint=fingerprint("POST", "/v1/sessions/w1:p1/input", body)))
+        self.start(poll_interval=3600)
+        self.assertEqual(self.input(body), (409, unknown["body"]))
+        self.assertEqual(self.input({"text": "换了内容"}), (422, {"error": {"reason": "idempotency_key_reused"}}))
+        self.assertEqual(self.input(body, pane="w1:p2"), (422, {"error": {"reason": "idempotency_key_reused"}}))
+        self.assertFalse(self.writes.exists())
 
     def test_input_requires_key_and_replays_first_result_across_restart_without_resending(self):
         service = self.start()
