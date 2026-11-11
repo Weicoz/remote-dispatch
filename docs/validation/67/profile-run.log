@@ -4,7 +4,7 @@ F
 FAIL: test_realistic_lists_remain_fast_with_ten_clients_and_sse (tests.test_rd_serve_list_cache.ListCacheTests.test_realistic_lists_remain_fast_with_ten_clients_and_sse)
 ----------------------------------------------------------------------
 Traceback (most recent call last):
-  File "/Users/mac/remote-dispatch/users/weicoz/wt/weicoz-remote-dispatch-v4-67-20261026-235115-795015000/tests/test_rd_serve_list_cache.py", line 72, in test_realistic_lists_remain_fast_with_ten_clients_and_sse
+  File "/Users/user/remote-dispatch/users/weicoz/wt/weicoz-remote-dispatch-v4-67-20261026-235115-795015000/tests/test_rd_serve_list_cache.py", line 72, in test_realistic_lists_remain_fast_with_ten_clients_and_sse
     self.assertLess(concurrent, 1.0, f"{path} ten_clients={concurrent:.3f}s")
 AssertionError: 2.608742540993262 not less than 1.0 : /v1/projects ten_clients=2.609s
 

@@ -82,7 +82,7 @@ test_working_reports_wait_and_leave_in_fifo_order_after_restart (tests.test_rd_r
 ERROR: test_input_preserves_option_like_text_and_screen_carriage_returns (tests.test_rd_serve_sessions.SessionTests.test_input_preserves_option_like_text_and_screen_carriage_returns)
 ----------------------------------------------------------------------
 Traceback (most recent call last):
-  File "/Users/mac/remote-dispatch/users/weicoz/wt/weicoz-remote-dispatch-v4-68-20261027-005018-799752000/tests/test_rd_serve_sessions.py", line 620, in test_input_preserves_option_like_text_and_screen_carriage_returns
+  File "/Users/user/remote-dispatch/users/weicoz/wt/weicoz-remote-dispatch-v4-68-20261027-005018-799752000/tests/test_rd_serve_sessions.py", line 620, in test_input_preserves_option_like_text_and_screen_carriage_returns
     self.assertEqual(self.request("/v1/sessions/w1:p1/screen")[1]["text"], "\x1b[31mhello\r\n")
                      ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^
 KeyError: 'text'
@@ -91,7 +91,7 @@ KeyError: 'text'
 FAIL: test_screen_and_terminal_forward_rendered_text_and_raw_herdr_records (tests.test_rd_serve_sessions.SessionTests.test_screen_and_terminal_forward_rendered_text_and_raw_herdr_records)
 ----------------------------------------------------------------------
 Traceback (most recent call last):
-  File "/Users/mac/remote-dispatch/users/weicoz/wt/weicoz-remote-dispatch-v4-68-20261027-005018-799752000/tests/test_rd_serve_sessions.py", line 393, in test_screen_and_terminal_forward_rendered_text_and_raw_herdr_records
+  File "/Users/user/remote-dispatch/users/weicoz/wt/weicoz-remote-dispatch-v4-68-20261027-005018-799752000/tests/test_rd_serve_sessions.py", line 393, in test_screen_and_terminal_forward_rendered_text_and_raw_herdr_records
     self.assertEqual(self.request("/v1/sessions/w1:p1/screen"),
 AssertionError: Tuples differ: (503, {'error': {'reason': 'read_unavailable'}}) != (200, {'pane_id': 'w1:p1', 'text': '❯ hello\n'})
 
@@ -106,7 +106,7 @@ First differing element 0:
 FAIL: test_session_v1_contract_examples_match_http_and_sse_responses (tests.test_rd_serve_sessions.SessionTests.test_session_v1_contract_examples_match_http_and_sse_responses) (contract='screen')
 ----------------------------------------------------------------------
 Traceback (most recent call last):
-  File "/Users/mac/remote-dispatch/users/weicoz/wt/weicoz-remote-dispatch-v4-68-20261027-005018-799752000/tests/test_rd_serve_sessions.py", line 727, in test_session_v1_contract_examples_match_http_and_sse_responses
+  File "/Users/user/remote-dispatch/users/weicoz/wt/weicoz-remote-dispatch-v4-68-20261027-005018-799752000/tests/test_rd_serve_sessions.py", line 727, in test_session_v1_contract_examples_match_http_and_sse_responses
     self.assertEqual(status, example["response"]["status"])
 AssertionError: 503 != 200
 
@@ -114,7 +114,7 @@ AssertionError: 503 != 200
 FAIL: test_session_v1_contract_examples_match_http_and_sse_responses (tests.test_rd_serve_sessions.SessionTests.test_session_v1_contract_examples_match_http_and_sse_responses)
 ----------------------------------------------------------------------
 Traceback (most recent call last):
-  File "/Users/mac/remote-dispatch/users/weicoz/wt/weicoz-remote-dispatch-v4-68-20261027-005018-799752000/tests/test_rd_serve_sessions.py", line 739, in test_session_v1_contract_examples_match_http_and_sse_responses
+  File "/Users/user/remote-dispatch/users/weicoz/wt/weicoz-remote-dispatch-v4-68-20261027-005018-799752000/tests/test_rd_serve_sessions.py", line 739, in test_session_v1_contract_examples_match_http_and_sse_responses
     self.assertEqual(response.readline().decode(), "data: " + frame + "\n")
 AssertionError: 'data: {"type": "terminal.frame", "data": "G1szMW1oaRtbM[87 chars]}}\n' != 'data: {"type":"terminal.frame", "data":"G1szMW1oaRtbMG0=","seq":7}\n'
 - data: {"type": "terminal.frame", "data": "G1szMW1oaRtbMG0=", "seq": 7, "width": 149, "height": 45, "cursor": {"x": 0, "y": 0, "visible": false}}
@@ -125,7 +125,7 @@ AssertionError: 'data: {"type": "terminal.frame", "data": "G1szMW1oaRtbM[87 char
 FAIL: test_unknown_transcript_record_preserves_chat_and_invalid_input_never_writes (tests.test_rd_serve_sessions.SessionTests.test_unknown_transcript_record_preserves_chat_and_invalid_input_never_writes)
 ----------------------------------------------------------------------
 Traceback (most recent call last):
-  File "/Users/mac/remote-dispatch/users/weicoz/wt/weicoz-remote-dispatch-v4-68-20261027-005018-799752000/tests/test_rd_serve_sessions.py", line 700, in test_unknown_transcript_record_preserves_chat_and_invalid_input_never_writes
+  File "/Users/user/remote-dispatch/users/weicoz/wt/weicoz-remote-dispatch-v4-68-20261027-005018-799752000/tests/test_rd_serve_sessions.py", line 700, in test_unknown_transcript_record_preserves_chat_and_invalid_input_never_writes
     self.assertEqual(self.request("/v1/sessions/w1:p1/screen")[0], 200)
 AssertionError: 503 != 200
 

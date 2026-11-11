@@ -4,7 +4,7 @@ test_network_classifies_selected_addresses_including_disabled_rows (tests.test_r
 ERROR: test_network_classifies_selected_addresses_including_disabled_rows (tests.test_rd_serve_admin.AdminNetworkTests.test_network_classifies_selected_addresses_including_disabled_rows)
 ----------------------------------------------------------------------
 Traceback (most recent call last):
-  File "/Users/mac/remote-dispatch/users/weicoz/wt/weicoz-remote-dispatch-v4-73-20261027-225655-383823000/tests/test_rd_serve_admin.py", line 56, in test_network_classifies_selected_addresses_including_disabled_rows
+  File "/Users/user/remote-dispatch/users/weicoz/wt/weicoz-remote-dispatch-v4-73-20261027-225655-383823000/tests/test_rd_serve_admin.py", line 56, in test_network_classifies_selected_addresses_including_disabled_rows
     self.assertEqual({row['address']: row['kind'] for row in rows}, expected)
                                       ~~~^^^^^^^^
 KeyError: 'kind'

@@ -1,29 +1,29 @@
 test_invalid_herdr_layout_returns_service_unavailable_for_screen (tests.test_rd_serve_sessions.SessionTests.test_invalid_herdr_layout_returns_service_unavailable_for_screen) ... ----------------------------------------
 Exception occurred during processing of request from
 Traceback (most recent call last):
-  File "/Users/mac/.local/share/uv/python/cpython-3.12.13-macos-aarch64-none/lib/python3.12/socketserver.py", line 697, in process_request_thread
+  File "/Users/user/.local/share/uv/python/cpython-3.12.13-macos-aarch64-none/lib/python3.12/socketserver.py", line 697, in process_request_thread
     self.finish_request(request, client_address)
-  File "/Users/mac/.local/share/uv/python/cpython-3.12.13-macos-aarch64-none/lib/python3.12/socketserver.py", line 362, in finish_request
+  File "/Users/user/.local/share/uv/python/cpython-3.12.13-macos-aarch64-none/lib/python3.12/socketserver.py", line 362, in finish_request
     self.RequestHandlerClass(request, client_address, self)
-  File "/Users/mac/.local/share/uv/python/cpython-3.12.13-macos-aarch64-none/lib/python3.12/socketserver.py", line 766, in __init__
+  File "/Users/user/.local/share/uv/python/cpython-3.12.13-macos-aarch64-none/lib/python3.12/socketserver.py", line 766, in __init__
     self.handle()
-  File "/Users/mac/.local/share/uv/python/cpython-3.12.13-macos-aarch64-none/lib/python3.12/http/server.py", line 440, in handle
+  File "/Users/user/.local/share/uv/python/cpython-3.12.13-macos-aarch64-none/lib/python3.12/http/server.py", line 440, in handle
     self.handle_one_request()
-  File "/Users/mac/.local/share/uv/python/cpython-3.12.13-macos-aarch64-none/lib/python3.12/http/server.py", line 428, in handle_one_request
+  File "/Users/user/.local/share/uv/python/cpython-3.12.13-macos-aarch64-none/lib/python3.12/http/server.py", line 428, in handle_one_request
     method()
-  File "/Users/mac/remote-dispatch/users/weicoz/wt/weicoz-remote-dispatch-v4-68-20261027-005018-799752000/src/remote_dispatch/rd_serve_network.py", line 491, in do_GET
+  File "/Users/user/remote-dispatch/users/weicoz/wt/weicoz-remote-dispatch-v4-68-20261027-005018-799752000/src/remote_dispatch/rd_serve_network.py", line 491, in do_GET
     return super().do_GET()
            ^^^^^^^^^^^^^^^^
-  File "/Users/mac/remote-dispatch/users/weicoz/wt/weicoz-remote-dispatch-v4-68-20261027-005018-799752000/src/remote_dispatch/rd_serve.py", line 159, in do_GET
+  File "/Users/user/remote-dispatch/users/weicoz/wt/weicoz-remote-dispatch-v4-68-20261027-005018-799752000/src/remote_dispatch/rd_serve.py", line 159, in do_GET
     if self.server.service.sessions.handle_get(self):
        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/Users/mac/remote-dispatch/users/weicoz/wt/weicoz-remote-dispatch-v4-68-20261027-005018-799752000/src/remote_dispatch/rd_serve_sessions.py", line 319, in handle_get
+  File "/Users/user/remote-dispatch/users/weicoz/wt/weicoz-remote-dispatch-v4-68-20261027-005018-799752000/src/remote_dispatch/rd_serve_sessions.py", line 319, in handle_get
     for line in frames:
                 ^^^^^^
-  File "/Users/mac/remote-dispatch/users/weicoz/wt/weicoz-remote-dispatch-v4-68-20261027-005018-799752000/src/remote_dispatch/rd_herdr.py", line 139, in frames
+  File "/Users/user/remote-dispatch/users/weicoz/wt/weicoz-remote-dispatch-v4-68-20261027-005018-799752000/src/remote_dispatch/rd_herdr.py", line 139, in frames
     width, height = self.viewport(pane)
                     ^^^^^^^^^^^^^^^^^^^
-  File "/Users/mac/remote-dispatch/users/weicoz/wt/weicoz-remote-dispatch-v4-68-20261027-005018-799752000/src/remote_dispatch/rd_herdr.py", line 100, in viewport
+  File "/Users/user/remote-dispatch/users/weicoz/wt/weicoz-remote-dispatch-v4-68-20261027-005018-799752000/src/remote_dispatch/rd_herdr.py", line 100, in viewport
     layout = result.get("result", result)["layout"]
              ^^^^^^^^^^
 AttributeError: 'NoneType' object has no attribute 'get'
@@ -33,29 +33,29 @@ AttributeError: 'NoneType' object has no attribute 'get'
 ----------------------------------------
 Exception occurred during processing of request from
 Traceback (most recent call last):
-  File "/Users/mac/.local/share/uv/python/cpython-3.12.13-macos-aarch64-none/lib/python3.12/socketserver.py", line 697, in process_request_thread
+  File "/Users/user/.local/share/uv/python/cpython-3.12.13-macos-aarch64-none/lib/python3.12/socketserver.py", line 697, in process_request_thread
     self.finish_request(request, client_address)
-  File "/Users/mac/.local/share/uv/python/cpython-3.12.13-macos-aarch64-none/lib/python3.12/socketserver.py", line 362, in finish_request
+  File "/Users/user/.local/share/uv/python/cpython-3.12.13-macos-aarch64-none/lib/python3.12/socketserver.py", line 362, in finish_request
     self.RequestHandlerClass(request, client_address, self)
-  File "/Users/mac/.local/share/uv/python/cpython-3.12.13-macos-aarch64-none/lib/python3.12/socketserver.py", line 766, in __init__
+  File "/Users/user/.local/share/uv/python/cpython-3.12.13-macos-aarch64-none/lib/python3.12/socketserver.py", line 766, in __init__
     self.handle()
-  File "/Users/mac/.local/share/uv/python/cpython-3.12.13-macos-aarch64-none/lib/python3.12/http/server.py", line 440, in handle
+  File "/Users/user/.local/share/uv/python/cpython-3.12.13-macos-aarch64-none/lib/python3.12/http/server.py", line 440, in handle
     self.handle_one_request()
-  File "/Users/mac/.local/share/uv/python/cpython-3.12.13-macos-aarch64-none/lib/python3.12/http/server.py", line 428, in handle_one_request
+  File "/Users/user/.local/share/uv/python/cpython-3.12.13-macos-aarch64-none/lib/python3.12/http/server.py", line 428, in handle_one_request
     method()
-  File "/Users/mac/remote-dispatch/users/weicoz/wt/weicoz-remote-dispatch-v4-68-20261027-005018-799752000/src/remote_dispatch/rd_serve_network.py", line 491, in do_GET
+  File "/Users/user/remote-dispatch/users/weicoz/wt/weicoz-remote-dispatch-v4-68-20261027-005018-799752000/src/remote_dispatch/rd_serve_network.py", line 491, in do_GET
     return super().do_GET()
            ^^^^^^^^^^^^^^^^
-  File "/Users/mac/remote-dispatch/users/weicoz/wt/weicoz-remote-dispatch-v4-68-20261027-005018-799752000/src/remote_dispatch/rd_serve.py", line 159, in do_GET
+  File "/Users/user/remote-dispatch/users/weicoz/wt/weicoz-remote-dispatch-v4-68-20261027-005018-799752000/src/remote_dispatch/rd_serve.py", line 159, in do_GET
     if self.server.service.sessions.handle_get(self):
        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/Users/mac/remote-dispatch/users/weicoz/wt/weicoz-remote-dispatch-v4-68-20261027-005018-799752000/src/remote_dispatch/rd_serve_sessions.py", line 319, in handle_get
+  File "/Users/user/remote-dispatch/users/weicoz/wt/weicoz-remote-dispatch-v4-68-20261027-005018-799752000/src/remote_dispatch/rd_serve_sessions.py", line 319, in handle_get
     for line in frames:
                 ^^^^^^
-  File "/Users/mac/remote-dispatch/users/weicoz/wt/weicoz-remote-dispatch-v4-68-20261027-005018-799752000/src/remote_dispatch/rd_herdr.py", line 139, in frames
+  File "/Users/user/remote-dispatch/users/weicoz/wt/weicoz-remote-dispatch-v4-68-20261027-005018-799752000/src/remote_dispatch/rd_herdr.py", line 139, in frames
     width, height = self.viewport(pane)
                     ^^^^^^^^^^^^^^^^^^^
-  File "/Users/mac/remote-dispatch/users/weicoz/wt/weicoz-remote-dispatch-v4-68-20261027-005018-799752000/src/remote_dispatch/rd_herdr.py", line 100, in viewport
+  File "/Users/user/remote-dispatch/users/weicoz/wt/weicoz-remote-dispatch-v4-68-20261027-005018-799752000/src/remote_dispatch/rd_herdr.py", line 100, in viewport
     layout = result.get("result", result)["layout"]
              ^^^^^^^^^^
 AttributeError: 'list' object has no attribute 'get'
@@ -66,18 +66,18 @@ AttributeError: 'list' object has no attribute 'get'
 ERROR: test_invalid_herdr_layout_returns_service_unavailable_for_screen (tests.test_rd_serve_sessions.SessionTests.test_invalid_herdr_layout_returns_service_unavailable_for_screen) (layout=None)
 ----------------------------------------------------------------------
 Traceback (most recent call last):
-  File "/Users/mac/remote-dispatch/users/weicoz/wt/weicoz-remote-dispatch-v4-68-20261027-005018-799752000/tests/test_rd_serve_sessions.py", line 349, in test_invalid_herdr_layout_returns_service_unavailable_for_screen
+  File "/Users/user/remote-dispatch/users/weicoz/wt/weicoz-remote-dispatch-v4-68-20261027-005018-799752000/tests/test_rd_serve_sessions.py", line 349, in test_invalid_herdr_layout_returns_service_unavailable_for_screen
     self.assertEqual(self.request("/v1/sessions/w1:p1/screen"),
                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/Users/mac/remote-dispatch/users/weicoz/wt/weicoz-remote-dispatch-v4-68-20261027-005018-799752000/tests/test_rd_serve.py", line 72, in request
+  File "/Users/user/remote-dispatch/users/weicoz/wt/weicoz-remote-dispatch-v4-68-20261027-005018-799752000/tests/test_rd_serve.py", line 72, in request
     response = connection.getresponse()
                ^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/Users/mac/.local/share/uv/python/cpython-3.12.13-macos-aarch64-none/lib/python3.12/http/client.py", line 1450, in getresponse
+  File "/Users/user/.local/share/uv/python/cpython-3.12.13-macos-aarch64-none/lib/python3.12/http/client.py", line 1450, in getresponse
     response.begin()
-  File "/Users/mac/.local/share/uv/python/cpython-3.12.13-macos-aarch64-none/lib/python3.12/http/client.py", line 336, in begin
+  File "/Users/user/.local/share/uv/python/cpython-3.12.13-macos-aarch64-none/lib/python3.12/http/client.py", line 336, in begin
     version, status, reason = self._read_status()
                               ^^^^^^^^^^^^^^^^^^^
-  File "/Users/mac/.local/share/uv/python/cpython-3.12.13-macos-aarch64-none/lib/python3.12/http/client.py", line 305, in _read_status
+  File "/Users/user/.local/share/uv/python/cpython-3.12.13-macos-aarch64-none/lib/python3.12/http/client.py", line 305, in _read_status
     raise RemoteDisconnected("Remote end closed connection without"
 http.client.RemoteDisconnected: Remote end closed connection without response
 
@@ -85,18 +85,18 @@ http.client.RemoteDisconnected: Remote end closed connection without response
 ERROR: test_invalid_herdr_layout_returns_service_unavailable_for_screen (tests.test_rd_serve_sessions.SessionTests.test_invalid_herdr_layout_returns_service_unavailable_for_screen) (layout=[])
 ----------------------------------------------------------------------
 Traceback (most recent call last):
-  File "/Users/mac/remote-dispatch/users/weicoz/wt/weicoz-remote-dispatch-v4-68-20261027-005018-799752000/tests/test_rd_serve_sessions.py", line 349, in test_invalid_herdr_layout_returns_service_unavailable_for_screen
+  File "/Users/user/remote-dispatch/users/weicoz/wt/weicoz-remote-dispatch-v4-68-20261027-005018-799752000/tests/test_rd_serve_sessions.py", line 349, in test_invalid_herdr_layout_returns_service_unavailable_for_screen
     self.assertEqual(self.request("/v1/sessions/w1:p1/screen"),
                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/Users/mac/remote-dispatch/users/weicoz/wt/weicoz-remote-dispatch-v4-68-20261027-005018-799752000/tests/test_rd_serve.py", line 72, in request
+  File "/Users/user/remote-dispatch/users/weicoz/wt/weicoz-remote-dispatch-v4-68-20261027-005018-799752000/tests/test_rd_serve.py", line 72, in request
     response = connection.getresponse()
                ^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/Users/mac/.local/share/uv/python/cpython-3.12.13-macos-aarch64-none/lib/python3.12/http/client.py", line 1450, in getresponse
+  File "/Users/user/.local/share/uv/python/cpython-3.12.13-macos-aarch64-none/lib/python3.12/http/client.py", line 1450, in getresponse
     response.begin()
-  File "/Users/mac/.local/share/uv/python/cpython-3.12.13-macos-aarch64-none/lib/python3.12/http/client.py", line 336, in begin
+  File "/Users/user/.local/share/uv/python/cpython-3.12.13-macos-aarch64-none/lib/python3.12/http/client.py", line 336, in begin
     version, status, reason = self._read_status()
                               ^^^^^^^^^^^^^^^^^^^
-  File "/Users/mac/.local/share/uv/python/cpython-3.12.13-macos-aarch64-none/lib/python3.12/http/client.py", line 305, in _read_status
+  File "/Users/user/.local/share/uv/python/cpython-3.12.13-macos-aarch64-none/lib/python3.12/http/client.py", line 305, in _read_status
     raise RemoteDisconnected("Remote end closed connection without"
 http.client.RemoteDisconnected: Remote end closed connection without response
 

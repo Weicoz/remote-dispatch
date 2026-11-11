@@ -71,13 +71,13 @@ test_stale_socket_falls_back_to_direct_write (tests.test_rd_config_cli.ConfigCli
 ERROR: test_bad_environment_or_config_intervals_stop_cleanly (tests.test_rd.MonitorConfigTests.test_bad_environment_or_config_intervals_stop_cleanly) (value='0', source='environment')
 ----------------------------------------------------------------------
 Traceback (most recent call last):
-  File "/Users/weicoz/remote-dispatch-self/users/weicoz/wt/weicoz-remote-dispatch-u04-20261028-130706-628613000/tests/test_rd.py", line 210, in test_bad_environment_or_config_intervals_stop_cleanly
+  File "/Users/user/remote-dispatch-self/users/weicoz/wt/weicoz-remote-dispatch-u04-20261028-130706-628613000/tests/test_rd.py", line 210, in test_bad_environment_or_config_intervals_stop_cleanly
     self.cfg.report_interval()
     ~~~~~~~~~~~~~~~~~~~~~~~~^^
-  File "/Users/weicoz/remote-dispatch-self/users/weicoz/wt/weicoz-remote-dispatch-u04-20261028-130706-628613000/src/remote_dispatch/cli.py", line 226, in report_interval
+  File "/Users/user/remote-dispatch-self/users/weicoz/wt/weicoz-remote-dispatch-u04-20261028-130706-628613000/src/remote_dispatch/cli.py", line 226, in report_interval
     self.fail("RD_REPORT_INTERVAL_SECONDS / [monitor] report_interval_seconds must be a positive integer (seconds)", 4)
     ~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/Users/weicoz/remote-dispatch-self/users/weicoz/wt/weicoz-remote-dispatch-u04-20261028-130706-628613000/src/remote_dispatch/cli.py", line 211, in fail
+  File "/Users/user/remote-dispatch-self/users/weicoz/wt/weicoz-remote-dispatch-u04-20261028-130706-628613000/src/remote_dispatch/cli.py", line 211, in fail
     if self.strict:
        ^^^^^^^^^^^
 AttributeError: 'Config' object has no attribute 'strict'
@@ -86,13 +86,13 @@ AttributeError: 'Config' object has no attribute 'strict'
 ERROR: test_bad_environment_or_config_intervals_stop_cleanly (tests.test_rd.MonitorConfigTests.test_bad_environment_or_config_intervals_stop_cleanly) (value='0', source='config')
 ----------------------------------------------------------------------
 Traceback (most recent call last):
-  File "/Users/weicoz/remote-dispatch-self/users/weicoz/wt/weicoz-remote-dispatch-u04-20261028-130706-628613000/tests/test_rd.py", line 210, in test_bad_environment_or_config_intervals_stop_cleanly
+  File "/Users/user/remote-dispatch-self/users/weicoz/wt/weicoz-remote-dispatch-u04-20261028-130706-628613000/tests/test_rd.py", line 210, in test_bad_environment_or_config_intervals_stop_cleanly
     self.cfg.report_interval()
     ~~~~~~~~~~~~~~~~~~~~~~~~^^
-  File "/Users/weicoz/remote-dispatch-self/users/weicoz/wt/weicoz-remote-dispatch-u04-20261028-130706-628613000/src/remote_dispatch/cli.py", line 226, in report_interval
+  File "/Users/user/remote-dispatch-self/users/weicoz/wt/weicoz-remote-dispatch-u04-20261028-130706-628613000/src/remote_dispatch/cli.py", line 226, in report_interval
     self.fail("RD_REPORT_INTERVAL_SECONDS / [monitor] report_interval_seconds must be a positive integer (seconds)", 4)
     ~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/Users/weicoz/remote-dispatch-self/users/weicoz/wt/weicoz-remote-dispatch-u04-20261028-130706-628613000/src/remote_dispatch/cli.py", line 211, in fail
+  File "/Users/user/remote-dispatch-self/users/weicoz/wt/weicoz-remote-dispatch-u04-20261028-130706-628613000/src/remote_dispatch/cli.py", line 211, in fail
     if self.strict:
        ^^^^^^^^^^^
 AttributeError: 'Config' object has no attribute 'strict'
@@ -101,13 +101,13 @@ AttributeError: 'Config' object has no attribute 'strict'
 ERROR: test_bad_environment_or_config_intervals_stop_cleanly (tests.test_rd.MonitorConfigTests.test_bad_environment_or_config_intervals_stop_cleanly) (value='-5', source='environment')
 ----------------------------------------------------------------------
 Traceback (most recent call last):
-  File "/Users/weicoz/remote-dispatch-self/users/weicoz/wt/weicoz-remote-dispatch-u04-20261028-130706-628613000/tests/test_rd.py", line 210, in test_bad_environment_or_config_intervals_stop_cleanly
+  File "/Users/user/remote-dispatch-self/users/weicoz/wt/weicoz-remote-dispatch-u04-20261028-130706-628613000/tests/test_rd.py", line 210, in test_bad_environment_or_config_intervals_stop_cleanly
     self.cfg.report_interval()
     ~~~~~~~~~~~~~~~~~~~~~~~~^^
-  File "/Users/weicoz/remote-dispatch-self/users/weicoz/wt/weicoz-remote-dispatch-u04-20261028-130706-628613000/src/remote_dispatch/cli.py", line 226, in report_interval
+  File "/Users/user/remote-dispatch-self/users/weicoz/wt/weicoz-remote-dispatch-u04-20261028-130706-628613000/src/remote_dispatch/cli.py", line 226, in report_interval
     self.fail("RD_REPORT_INTERVAL_SECONDS / [monitor] report_interval_seconds must be a positive integer (seconds)", 4)
     ~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/Users/weicoz/remote-dispatch-self/users/weicoz/wt/weicoz-remote-dispatch-u04-20261028-130706-628613000/src/remote_dispatch/cli.py", line 211, in fail
+  File "/Users/user/remote-dispatch-self/users/weicoz/wt/weicoz-remote-dispatch-u04-20261028-130706-628613000/src/remote_dispatch/cli.py", line 211, in fail
     if self.strict:
        ^^^^^^^^^^^
 AttributeError: 'Config' object has no attribute 'strict'
@@ -116,13 +116,13 @@ AttributeError: 'Config' object has no attribute 'strict'
 ERROR: test_bad_environment_or_config_intervals_stop_cleanly (tests.test_rd.MonitorConfigTests.test_bad_environment_or_config_intervals_stop_cleanly) (value='-5', source='config')
 ----------------------------------------------------------------------
 Traceback (most recent call last):
-  File "/Users/weicoz/remote-dispatch-self/users/weicoz/wt/weicoz-remote-dispatch-u04-20261028-130706-628613000/tests/test_rd.py", line 210, in test_bad_environment_or_config_intervals_stop_cleanly
+  File "/Users/user/remote-dispatch-self/users/weicoz/wt/weicoz-remote-dispatch-u04-20261028-130706-628613000/tests/test_rd.py", line 210, in test_bad_environment_or_config_intervals_stop_cleanly
     self.cfg.report_interval()
     ~~~~~~~~~~~~~~~~~~~~~~~~^^
-  File "/Users/weicoz/remote-dispatch-self/users/weicoz/wt/weicoz-remote-dispatch-u04-20261028-130706-628613000/src/remote_dispatch/cli.py", line 226, in report_interval
+  File "/Users/user/remote-dispatch-self/users/weicoz/wt/weicoz-remote-dispatch-u04-20261028-130706-628613000/src/remote_dispatch/cli.py", line 226, in report_interval
     self.fail("RD_REPORT_INTERVAL_SECONDS / [monitor] report_interval_seconds must be a positive integer (seconds)", 4)
     ~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/Users/weicoz/remote-dispatch-self/users/weicoz/wt/weicoz-remote-dispatch-u04-20261028-130706-628613000/src/remote_dispatch/cli.py", line 211, in fail
+  File "/Users/user/remote-dispatch-self/users/weicoz/wt/weicoz-remote-dispatch-u04-20261028-130706-628613000/src/remote_dispatch/cli.py", line 211, in fail
     if self.strict:
        ^^^^^^^^^^^
 AttributeError: 'Config' object has no attribute 'strict'
@@ -131,20 +131,20 @@ AttributeError: 'Config' object has no attribute 'strict'
 ERROR: test_bad_environment_or_config_intervals_stop_cleanly (tests.test_rd.MonitorConfigTests.test_bad_environment_or_config_intervals_stop_cleanly) (value='abc', source='environment')
 ----------------------------------------------------------------------
 Traceback (most recent call last):
-  File "/Users/weicoz/remote-dispatch-self/users/weicoz/wt/weicoz-remote-dispatch-u04-20261028-130706-628613000/src/remote_dispatch/cli.py", line 222, in report_interval
+  File "/Users/user/remote-dispatch-self/users/weicoz/wt/weicoz-remote-dispatch-u04-20261028-130706-628613000/src/remote_dispatch/cli.py", line 222, in report_interval
     interval = int(value)
 ValueError: invalid literal for int() with base 10: 'abc'
 
 During handling of the above exception, another exception occurred:
 
 Traceback (most recent call last):
-  File "/Users/weicoz/remote-dispatch-self/users/weicoz/wt/weicoz-remote-dispatch-u04-20261028-130706-628613000/tests/test_rd.py", line 210, in test_bad_environment_or_config_intervals_stop_cleanly
+  File "/Users/user/remote-dispatch-self/users/weicoz/wt/weicoz-remote-dispatch-u04-20261028-130706-628613000/tests/test_rd.py", line 210, in test_bad_environment_or_config_intervals_stop_cleanly
     self.cfg.report_interval()
     ~~~~~~~~~~~~~~~~~~~~~~~~^^
-  File "/Users/weicoz/remote-dispatch-self/users/weicoz/wt/weicoz-remote-dispatch-u04-20261028-130706-628613000/src/remote_dispatch/cli.py", line 224, in report_interval
+  File "/Users/user/remote-dispatch-self/users/weicoz/wt/weicoz-remote-dispatch-u04-20261028-130706-628613000/src/remote_dispatch/cli.py", line 224, in report_interval
     self.fail("RD_REPORT_INTERVAL_SECONDS / [monitor] report_interval_seconds must be a positive integer (seconds)", 4)
     ~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/Users/weicoz/remote-dispatch-self/users/weicoz/wt/weicoz-remote-dispatch-u04-20261028-130706-628613000/src/remote_dispatch/cli.py", line 211, in fail
+  File "/Users/user/remote-dispatch-self/users/weicoz/wt/weicoz-remote-dispatch-u04-20261028-130706-628613000/src/remote_dispatch/cli.py", line 211, in fail
     if self.strict:
        ^^^^^^^^^^^
 AttributeError: 'Config' object has no attribute 'strict'
@@ -153,20 +153,20 @@ AttributeError: 'Config' object has no attribute 'strict'
 ERROR: test_bad_environment_or_config_intervals_stop_cleanly (tests.test_rd.MonitorConfigTests.test_bad_environment_or_config_intervals_stop_cleanly) (value='abc', source='config')
 ----------------------------------------------------------------------
 Traceback (most recent call last):
-  File "/Users/weicoz/remote-dispatch-self/users/weicoz/wt/weicoz-remote-dispatch-u04-20261028-130706-628613000/src/remote_dispatch/cli.py", line 222, in report_interval
+  File "/Users/user/remote-dispatch-self/users/weicoz/wt/weicoz-remote-dispatch-u04-20261028-130706-628613000/src/remote_dispatch/cli.py", line 222, in report_interval
     interval = int(value)
 ValueError: invalid literal for int() with base 10: 'abc'
 
 During handling of the above exception, another exception occurred:
 
 Traceback (most recent call last):
-  File "/Users/weicoz/remote-dispatch-self/users/weicoz/wt/weicoz-remote-dispatch-u04-20261028-130706-628613000/tests/test_rd.py", line 210, in test_bad_environment_or_config_intervals_stop_cleanly
+  File "/Users/user/remote-dispatch-self/users/weicoz/wt/weicoz-remote-dispatch-u04-20261028-130706-628613000/tests/test_rd.py", line 210, in test_bad_environment_or_config_intervals_stop_cleanly
     self.cfg.report_interval()
     ~~~~~~~~~~~~~~~~~~~~~~~~^^
-  File "/Users/weicoz/remote-dispatch-self/users/weicoz/wt/weicoz-remote-dispatch-u04-20261028-130706-628613000/src/remote_dispatch/cli.py", line 224, in report_interval
+  File "/Users/user/remote-dispatch-self/users/weicoz/wt/weicoz-remote-dispatch-u04-20261028-130706-628613000/src/remote_dispatch/cli.py", line 224, in report_interval
     self.fail("RD_REPORT_INTERVAL_SECONDS / [monitor] report_interval_seconds must be a positive integer (seconds)", 4)
     ~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/Users/weicoz/remote-dispatch-self/users/weicoz/wt/weicoz-remote-dispatch-u04-20261028-130706-628613000/src/remote_dispatch/cli.py", line 211, in fail
+  File "/Users/user/remote-dispatch-self/users/weicoz/wt/weicoz-remote-dispatch-u04-20261028-130706-628613000/src/remote_dispatch/cli.py", line 211, in fail
     if self.strict:
        ^^^^^^^^^^^
 AttributeError: 'Config' object has no attribute 'strict'
@@ -175,20 +175,20 @@ AttributeError: 'Config' object has no attribute 'strict'
 ERROR: test_bad_environment_or_config_intervals_stop_cleanly (tests.test_rd.MonitorConfigTests.test_bad_environment_or_config_intervals_stop_cleanly) (value='1.5', source='environment')
 ----------------------------------------------------------------------
 Traceback (most recent call last):
-  File "/Users/weicoz/remote-dispatch-self/users/weicoz/wt/weicoz-remote-dispatch-u04-20261028-130706-628613000/src/remote_dispatch/cli.py", line 222, in report_interval
+  File "/Users/user/remote-dispatch-self/users/weicoz/wt/weicoz-remote-dispatch-u04-20261028-130706-628613000/src/remote_dispatch/cli.py", line 222, in report_interval
     interval = int(value)
 ValueError: invalid literal for int() with base 10: '1.5'
 
 During handling of the above exception, another exception occurred:
 
 Traceback (most recent call last):
-  File "/Users/weicoz/remote-dispatch-self/users/weicoz/wt/weicoz-remote-dispatch-u04-20261028-130706-628613000/tests/test_rd.py", line 210, in test_bad_environment_or_config_intervals_stop_cleanly
+  File "/Users/user/remote-dispatch-self/users/weicoz/wt/weicoz-remote-dispatch-u04-20261028-130706-628613000/tests/test_rd.py", line 210, in test_bad_environment_or_config_intervals_stop_cleanly
     self.cfg.report_interval()
     ~~~~~~~~~~~~~~~~~~~~~~~~^^
-  File "/Users/weicoz/remote-dispatch-self/users/weicoz/wt/weicoz-remote-dispatch-u04-20261028-130706-628613000/src/remote_dispatch/cli.py", line 224, in report_interval
+  File "/Users/user/remote-dispatch-self/users/weicoz/wt/weicoz-remote-dispatch-u04-20261028-130706-628613000/src/remote_dispatch/cli.py", line 224, in report_interval
     self.fail("RD_REPORT_INTERVAL_SECONDS / [monitor] report_interval_seconds must be a positive integer (seconds)", 4)
     ~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/Users/weicoz/remote-dispatch-self/users/weicoz/wt/weicoz-remote-dispatch-u04-20261028-130706-628613000/src/remote_dispatch/cli.py", line 211, in fail
+  File "/Users/user/remote-dispatch-self/users/weicoz/wt/weicoz-remote-dispatch-u04-20261028-130706-628613000/src/remote_dispatch/cli.py", line 211, in fail
     if self.strict:
        ^^^^^^^^^^^
 AttributeError: 'Config' object has no attribute 'strict'
@@ -197,20 +197,20 @@ AttributeError: 'Config' object has no attribute 'strict'
 ERROR: test_bad_environment_or_config_intervals_stop_cleanly (tests.test_rd.MonitorConfigTests.test_bad_environment_or_config_intervals_stop_cleanly) (value='1.5', source='config')
 ----------------------------------------------------------------------
 Traceback (most recent call last):
-  File "/Users/weicoz/remote-dispatch-self/users/weicoz/wt/weicoz-remote-dispatch-u04-20261028-130706-628613000/src/remote_dispatch/cli.py", line 222, in report_interval
+  File "/Users/user/remote-dispatch-self/users/weicoz/wt/weicoz-remote-dispatch-u04-20261028-130706-628613000/src/remote_dispatch/cli.py", line 222, in report_interval
     interval = int(value)
 ValueError: invalid literal for int() with base 10: '1.5'
 
 During handling of the above exception, another exception occurred:
 
 Traceback (most recent call last):
-  File "/Users/weicoz/remote-dispatch-self/users/weicoz/wt/weicoz-remote-dispatch-u04-20261028-130706-628613000/tests/test_rd.py", line 210, in test_bad_environment_or_config_intervals_stop_cleanly
+  File "/Users/user/remote-dispatch-self/users/weicoz/wt/weicoz-remote-dispatch-u04-20261028-130706-628613000/tests/test_rd.py", line 210, in test_bad_environment_or_config_intervals_stop_cleanly
     self.cfg.report_interval()
     ~~~~~~~~~~~~~~~~~~~~~~~~^^
-  File "/Users/weicoz/remote-dispatch-self/users/weicoz/wt/weicoz-remote-dispatch-u04-20261028-130706-628613000/src/remote_dispatch/cli.py", line 224, in report_interval
+  File "/Users/user/remote-dispatch-self/users/weicoz/wt/weicoz-remote-dispatch-u04-20261028-130706-628613000/src/remote_dispatch/cli.py", line 224, in report_interval
     self.fail("RD_REPORT_INTERVAL_SECONDS / [monitor] report_interval_seconds must be a positive integer (seconds)", 4)
     ~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/Users/weicoz/remote-dispatch-self/users/weicoz/wt/weicoz-remote-dispatch-u04-20261028-130706-628613000/src/remote_dispatch/cli.py", line 211, in fail
+  File "/Users/user/remote-dispatch-self/users/weicoz/wt/weicoz-remote-dispatch-u04-20261028-130706-628613000/src/remote_dispatch/cli.py", line 211, in fail
     if self.strict:
        ^^^^^^^^^^^
 AttributeError: 'Config' object has no attribute 'strict'

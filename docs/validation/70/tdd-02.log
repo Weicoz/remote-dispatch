@@ -8,7 +8,7 @@ test_redacts_credentials_across_frames_ansi_and_split_osc_without_logging_body (
 FAIL: test_fragmented_input_with_interleaved_ping_is_one_command_and_never_replayed (tests.test_rd_terminal_ws.TerminalWSTests.test_fragmented_input_with_interleaved_ping_is_one_command_and_never_replayed)
 ----------------------------------------------------------------------
 Traceback (most recent call last):
-  File "/Users/mac/remote-dispatch/users/weicoz/wt/weicoz-remote-dispatch-v4-70-20261027-094955-260757000/tests/test_rd_terminal_ws.py", line 209, in test_fragmented_input_with_interleaved_ping_is_one_command_and_never_replayed
+  File "/Users/user/remote-dispatch/users/weicoz/wt/weicoz-remote-dispatch-v4-70-20261027-094955-260757000/tests/test_rd_terminal_ws.py", line 209, in test_fragmented_input_with_interleaved_ping_is_one_command_and_never_replayed
     self.assertEqual(reconnect.status, 101)
 AssertionError: 409 != 101
 
@@ -16,7 +16,7 @@ AssertionError: 409 != 101
 FAIL: test_redacts_credentials_across_frames_ansi_and_split_osc_without_logging_body (tests.test_rd_terminal_ws.TerminalWSTests.test_redacts_credentials_across_frames_ansi_and_split_osc_without_logging_body)
 ----------------------------------------------------------------------
 Traceback (most recent call last):
-  File "/Users/mac/remote-dispatch/users/weicoz/wt/weicoz-remote-dispatch-v4-70-20261027-094955-260757000/tests/test_rd_terminal_ws.py", line 145, in test_redacts_credentials_across_frames_ansi_and_split_osc_without_logging_body
+  File "/Users/user/remote-dispatch/users/weicoz/wt/weicoz-remote-dispatch-v4-70-20261027-094955-260757000/tests/test_rd_terminal_ws.py", line 145, in test_redacts_credentials_across_frames_ansi_and_split_osc_without_logging_body
     self.assertIn(b"safe\x1b[3;5H\x1b[?25h", data)
 AssertionError: b'safe\x1b[3;5H\x1b[?25h' not found in b'\x1b[2J**********\x1b[31m********** token=****** sa*e\x1b[3;5H\x1b[?25h'
 

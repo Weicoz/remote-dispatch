@@ -39,7 +39,7 @@ docs/validation/68/environment-checks.log:35: trailing whitespace.
 docs/validation/68/environment-checks.log:37: trailing whitespace.
 +
 docs/validation/68/environment-checks.log:39: trailing whitespace.
-+/Users/mac/remote-dispatch/users/weicoz/repos/remote-dispatch-2fd8213ed7d2.git/hooks/pre-commit
++/Users/user/remote-dispatch/users/weicoz/repos/remote-dispatch-2fd8213ed7d2.git/hooks/pre-commit
 docs/validation/68/herdr-interface-checks.log:3: trailing whitespace.
 +
 docs/validation/68/herdr-interface-checks.log:11: trailing whitespace.

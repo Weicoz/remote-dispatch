@@ -4,7 +4,7 @@ test_resume_moving_to_the_local_target_keeps_the_original_profile (tests.test_rd
 FAIL: test_resume_moving_to_the_local_target_keeps_the_original_profile (tests.test_rd_local.LocalTargetProfileSyncTest.test_resume_moving_to_the_local_target_keeps_the_original_profile)
 ----------------------------------------------------------------------
 Traceback (most recent call last):
-  File "/Users/weicoz/remote-dispatch-self/users/weicoz/wt/weicoz-remote-dispatch-u10-20261028-124312-057246000/tests/test_rd_local.py", line 541, in test_resume_moving_to_the_local_target_keeps_the_original_profile
+  File "/Users/user/remote-dispatch-self/users/weicoz/wt/weicoz-remote-dispatch-u10-20261028-124312-057246000/tests/test_rd_local.py", line 541, in test_resume_moving_to_the_local_target_keeps_the_original_profile
     self.assertEqual(resumed.returncode, 0, resumed.stdout + resumed.stderr)
     ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 AssertionError: 4 != 0 : self (本机)    load 33.36/10c  mem-free 32%  swap 16387.50M used/1020.50M free io 7.7MB/s  disk 5G  sessions 0  heavy 0/1  network [skipped for local]  -> busy: load 33.4 on 10 cores; only 5 GB disk free; swap nearly full (1.0 GB free) while swapping 7.7 MB/s  (note: swap 16.0 GB used (paging 7.7 MB/s), not counted as busy)

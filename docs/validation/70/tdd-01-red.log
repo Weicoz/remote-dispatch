@@ -48,7 +48,7 @@ test_raw_input_paste_controls_and_restore_before_release (tests.test_rd_terminal
 FAIL: test_raw_input_paste_controls_and_restore_before_release (tests.test_rd_terminal_ws.TerminalWSTests.test_raw_input_paste_controls_and_restore_before_release)
 ----------------------------------------------------------------------
 Traceback (most recent call last):
-  File "/Users/mac/remote-dispatch/users/weicoz/wt/weicoz-remote-dispatch-v4-70-20261027-094955-260757000/tests/test_rd_terminal_ws.py", line 107, in test_raw_input_paste_controls_and_restore_before_release
+  File "/Users/user/remote-dispatch/users/weicoz/wt/weicoz-remote-dispatch-v4-70-20261027-094955-260757000/tests/test_rd_terminal_ws.py", line 107, in test_raw_input_paste_controls_and_restore_before_release
     self.assertEqual(client.status, 101)
 AssertionError: 404 != 101
 

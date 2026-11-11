@@ -36,6 +36,6 @@ Filesystem      Size    Used   Avail Capacity iused ifree %iused  Mounted on
 $ git config --get core.hooksPath exit 1
 
 $ git rev-parse --git-path hooks/pre-commit exit 0
-/Users/mac/remote-dispatch/users/weicoz/repos/remote-dispatch-2fd8213ed7d2.git/hooks/pre-commit
+/Users/user/remote-dispatch/users/weicoz/repos/remote-dispatch-2fd8213ed7d2.git/hooks/pre-commit
 mypy installed: False
 pyright installed: False

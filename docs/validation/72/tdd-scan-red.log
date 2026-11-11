@@ -4,7 +4,7 @@ test_each_discovery_scans_a_harness_once_for_multiple_panes (tests.test_rd_sessi
 FAIL: test_each_discovery_scans_a_harness_once_for_multiple_panes (tests.test_rd_session_poll_isolation.SessionPollIsolationTests.test_each_discovery_scans_a_harness_once_for_multiple_panes)
 ----------------------------------------------------------------------
 Traceback (most recent call last):
-  File "/Users/mac/remote-dispatch/users/weicoz/wt/weicoz-remote-dispatch-v4-72-20261027-104926-774223000/tests/test_rd_session_poll_isolation.py", line 171, in test_each_discovery_scans_a_harness_once_for_multiple_panes
+  File "/Users/user/remote-dispatch/users/weicoz/wt/weicoz-remote-dispatch-v4-72-20261027-104926-774223000/tests/test_rd_session_poll_isolation.py", line 171, in test_each_discovery_scans_a_harness_once_for_multiple_panes
     self.assertEqual(scans, ["rollout-*.jsonl"])
 AssertionError: Lists differ: ['rollout-*.jsonl', 'rollout-*.jsonl'] != ['rollout-*.jsonl']
 

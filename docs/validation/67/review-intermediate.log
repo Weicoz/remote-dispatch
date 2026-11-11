@@ -12,7 +12,7 @@ test_warm_lists_show_next_round_receipt_ack_review_event_and_deletion_immediatel
 FAIL: test_warm_lists_show_next_round_receipt_ack_review_event_and_deletion_immediately (tests.test_rd_serve_list_cache.ListCacheTests.test_warm_lists_show_next_round_receipt_ack_review_event_and_deletion_immediately)
 ----------------------------------------------------------------------
 Traceback (most recent call last):
-  File "/Users/mac/remote-dispatch/users/weicoz/wt/weicoz-remote-dispatch-v4-67-20261026-235115-795015000/tests/test_rd_serve_list_cache.py", line 159, in test_warm_lists_show_next_round_receipt_ack_review_event_and_deletion_immediately
+  File "/Users/user/remote-dispatch/users/weicoz/wt/weicoz-remote-dispatch-v4-67-20261026-235115-795015000/tests/test_rd_serve_list_cache.py", line 159, in test_warm_lists_show_next_round_receipt_ack_review_event_and_deletion_immediately
     self.assertEqual(self.request("/v1/jobs")[1]["jobs"][0]["delivery_state"], "received")
 AssertionError: 'pending' != 'received'
 - pending

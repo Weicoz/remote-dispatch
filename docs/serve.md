@@ -455,7 +455,7 @@ PYTHONPATH=src python3 -m unittest tests.test_rd_serve_writes -v
 
 ```ini
 [serve]
-listen_addresses = [{"address":"192.168.1.20","port":8443,"enabled":true},{"address":"100.90.1.20","port":8443,"enabled":false}]
+listen_addresses = [{"address":"192.0.2.20","port":8443,"enabled":true},{"address":"198.51.100.20","port":8443,"enabled":false}]
 ```
 
 列表由 Mac 设置页提供。`enabled` 缺省为 true，表示列出的候选默认勾选；
@@ -477,7 +477,7 @@ listen_addresses = [{"address":"192.168.1.20","port":8443,"enabled":true},{"addr
 非空 `Idempotency-Key`，body 为：
 
 ```json
-{"listen_addresses":[{"address":"192.168.1.20","port":8443,"enabled":true},{"address":"100.90.1.20","port":8443,"enabled":false}]}
+{"listen_addresses":[{"address":"192.0.2.20","port":8443,"enabled":true},{"address":"198.51.100.20","port":8443,"enabled":false}]}
 ```
 
 这是完整替换列表；`enabled` 缺省 true、`port` 缺省 8443，端口 0 让系统分配随机端口。

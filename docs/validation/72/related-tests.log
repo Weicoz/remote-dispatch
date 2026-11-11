@@ -116,7 +116,7 @@ test_write_key_reuse_does_not_execute_and_is_bound_to_device_and_method (tests.t
 FAIL: test_persistent_projects_survive_herdr_outage_and_never_expose_origin_credentials (tests.test_rd_serve_sessions.SessionTests.test_persistent_projects_survive_herdr_outage_and_never_expose_origin_credentials)
 ----------------------------------------------------------------------
 Traceback (most recent call last):
-  File "/Users/mac/remote-dispatch/users/weicoz/wt/weicoz-remote-dispatch-v4-72-20261027-104926-774223000/tests/test_rd_serve_sessions.py", line 691, in test_persistent_projects_survive_herdr_outage_and_never_expose_origin_credentials
+  File "/Users/user/remote-dispatch/users/weicoz/wt/weicoz-remote-dispatch-v4-72-20261027-104926-774223000/tests/test_rd_serve_sessions.py", line 691, in test_persistent_projects_survive_herdr_outage_and_never_expose_origin_credentials
     self.assertEqual(self.request("/v1/sessions"), (200, {"sessions": []}))
 AssertionError: Tuples differ: (200, {'sessions': [], 'collection': {'stale': False, 'consecu[88 chars]ne}}) != (200, {'sessions': []})
 
@@ -141,7 +141,7 @@ First differing element 1:
 FAIL: test_slow_job_probe_does_not_block_another_jobs_ack (tests.test_rd_serve_review_fixes.WriteFixTests.test_slow_job_probe_does_not_block_another_jobs_ack)
 ----------------------------------------------------------------------
 Traceback (most recent call last):
-  File "/Users/mac/remote-dispatch/users/weicoz/wt/weicoz-remote-dispatch-v4-72-20261027-104926-774223000/tests/test_rd_serve_review_fixes.py", line 218, in test_slow_job_probe_does_not_block_another_jobs_ack
+  File "/Users/user/remote-dispatch/users/weicoz/wt/weicoz-remote-dispatch-v4-72-20261027-104926-774223000/tests/test_rd_serve_review_fixes.py", line 218, in test_slow_job_probe_does_not_block_another_jobs_ack
     self.assertTrue(entered.wait(3))
 AssertionError: False is not true
 

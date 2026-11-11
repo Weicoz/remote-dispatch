@@ -26,7 +26,7 @@ test_sse_delivers_new_events_and_reconnect_replays_every_missing_sequence (tests
 FAIL: test_current_user_can_read_cards_details_historical_receipt_and_log_tail_without_writes (tests.test_rd_serve.ServeTests.test_current_user_can_read_cards_details_historical_receipt_and_log_tail_without_writes)
 ----------------------------------------------------------------------
 Traceback (most recent call last):
-  File "/Users/weicoz/remote-dispatch-self/users/weicoz/wt/weicoz-remote-dispatch-u06-20261028-115022-261556000/.rd-context/06-evidence/baseline/tests/test_rd_serve.py", line 153, in test_current_user_can_read_cards_details_historical_receipt_and_log_tail_without_writes
+  File "/Users/user/remote-dispatch-self/users/weicoz/wt/weicoz-remote-dispatch-u06-20261028-115022-261556000/.rd-context/06-evidence/baseline/tests/test_rd_serve.py", line 153, in test_current_user_can_read_cards_details_historical_receipt_and_log_tail_without_writes
     self.assertEqual(self.snapshot(), before)
     ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^
 AssertionError: {'eve[4542 chars], 'reports/fixture.json': (1793160683018290505[1495 chars]b'')} != {'eve[4542 chars], 'results/fixture-job/r1.json': (179316068223[1106 chars]b'')}

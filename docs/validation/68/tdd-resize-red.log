@@ -4,16 +4,16 @@ test_quiet_pane_resize_restarts_observer_with_full_frame_and_monotonic_sequence 
 ERROR: test_quiet_pane_resize_restarts_observer_with_full_frame_and_monotonic_sequence (tests.test_rd_serve_sessions.SessionTests.test_quiet_pane_resize_restarts_observer_with_full_frame_and_monotonic_sequence)
 ----------------------------------------------------------------------
 Traceback (most recent call last):
-  File "/Users/mac/remote-dispatch/users/weicoz/wt/weicoz-remote-dispatch-v4-68-20261027-005018-799752000/tests/test_rd_serve_sessions.py", line 354, in test_quiet_pane_resize_restarts_observer_with_full_frame_and_monotonic_sequence
+  File "/Users/user/remote-dispatch/users/weicoz/wt/weicoz-remote-dispatch-v4-68-20261027-005018-799752000/tests/test_rd_serve_sessions.py", line 354, in test_quiet_pane_resize_restarts_observer_with_full_frame_and_monotonic_sequence
     resized = next_frame()
               ^^^^^^^^^^^^
-  File "/Users/mac/remote-dispatch/users/weicoz/wt/weicoz-remote-dispatch-v4-68-20261027-005018-799752000/tests/test_rd_serve_sessions.py", line 345, in next_frame
+  File "/Users/user/remote-dispatch/users/weicoz/wt/weicoz-remote-dispatch-v4-68-20261027-005018-799752000/tests/test_rd_serve_sessions.py", line 345, in next_frame
     self.assertEqual(response.readline(), b"event: terminal.frame\n")
                      ^^^^^^^^^^^^^^^^^^^
-  File "/Users/mac/.local/share/uv/python/cpython-3.12.13-macos-aarch64-none/lib/python3.12/http/client.py", line 711, in readline
+  File "/Users/user/.local/share/uv/python/cpython-3.12.13-macos-aarch64-none/lib/python3.12/http/client.py", line 711, in readline
     result = self.fp.readline(limit)
              ^^^^^^^^^^^^^^^^^^^^^^^
-  File "/Users/mac/.local/share/uv/python/cpython-3.12.13-macos-aarch64-none/lib/python3.12/socket.py", line 720, in readinto
+  File "/Users/user/.local/share/uv/python/cpython-3.12.13-macos-aarch64-none/lib/python3.12/socket.py", line 720, in readinto
     return self._sock.recv_into(b)
            ^^^^^^^^^^^^^^^^^^^^^^^
 TimeoutError: timed out

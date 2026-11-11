@@ -46,15 +46,15 @@ test_two_hundred_jobs_and_thirty_projects_return_while_target_is_slow (tests.tes
 FAIL: test_new_http_and_sse_contract_examples_match_requests_responses_and_events (tests.test_rd_serve_projects_stats.ProjectsStatsTests.test_new_http_and_sse_contract_examples_match_requests_responses_and_events) (contract='jobs-project')
 ----------------------------------------------------------------------
 Traceback (most recent call last):
-  File "/Users/mac/remote-dispatch/users/weicoz/wt/weicoz-remote-dispatch-v4-67-20261026-235115-795015000/tests/test_rd_serve_projects_stats.py", line 331, in test_new_http_and_sse_contract_examples_match_requests_responses_and_events
+  File "/Users/user/remote-dispatch/users/weicoz/wt/weicoz-remote-dispatch-v4-67-20261026-235115-795015000/tests/test_rd_serve_projects_stats.py", line 331, in test_new_http_and_sse_contract_examples_match_requests_responses_and_events
     self.assert_structure(body, example["response"]["body"])
-  File "/Users/mac/remote-dispatch/users/weicoz/wt/weicoz-remote-dispatch-v4-67-20261026-235115-795015000/tests/test_rd_serve.py", line 346, in assert_structure
+  File "/Users/user/remote-dispatch/users/weicoz/wt/weicoz-remote-dispatch-v4-67-20261026-235115-795015000/tests/test_rd_serve.py", line 346, in assert_structure
     self.assert_structure(actual[key], value, nullable=key in {
-  File "/Users/mac/remote-dispatch/users/weicoz/wt/weicoz-remote-dispatch-v4-67-20261026-235115-795015000/tests/test_rd_serve.py", line 352, in assert_structure
+  File "/Users/user/remote-dispatch/users/weicoz/wt/weicoz-remote-dispatch-v4-67-20261026-235115-795015000/tests/test_rd_serve.py", line 352, in assert_structure
     self.assert_structure(row, example[0])
-  File "/Users/mac/remote-dispatch/users/weicoz/wt/weicoz-remote-dispatch-v4-67-20261026-235115-795015000/tests/test_rd_serve.py", line 346, in assert_structure
+  File "/Users/user/remote-dispatch/users/weicoz/wt/weicoz-remote-dispatch-v4-67-20261026-235115-795015000/tests/test_rd_serve.py", line 346, in assert_structure
     self.assert_structure(actual[key], value, nullable=key in {
-  File "/Users/mac/remote-dispatch/users/weicoz/wt/weicoz-remote-dispatch-v4-67-20261026-235115-795015000/tests/test_rd_serve.py", line 340, in assert_structure
+  File "/Users/user/remote-dispatch/users/weicoz/wt/weicoz-remote-dispatch-v4-67-20261026-235115-795015000/tests/test_rd_serve.py", line 340, in assert_structure
     self.assertTrue(nullable, "必需的契约对象或字段不能为 null")
 AssertionError: False is not true : 必需的契约对象或字段不能为 null
 
@@ -62,15 +62,15 @@ AssertionError: False is not true : 必需的契约对象或字段不能为 null
 FAIL: test_new_http_and_sse_contract_examples_match_requests_responses_and_events (tests.test_rd_serve_projects_stats.ProjectsStatsTests.test_new_http_and_sse_contract_examples_match_requests_responses_and_events) (contract='jobs-history')
 ----------------------------------------------------------------------
 Traceback (most recent call last):
-  File "/Users/mac/remote-dispatch/users/weicoz/wt/weicoz-remote-dispatch-v4-67-20261026-235115-795015000/tests/test_rd_serve_projects_stats.py", line 331, in test_new_http_and_sse_contract_examples_match_requests_responses_and_events
+  File "/Users/user/remote-dispatch/users/weicoz/wt/weicoz-remote-dispatch-v4-67-20261026-235115-795015000/tests/test_rd_serve_projects_stats.py", line 331, in test_new_http_and_sse_contract_examples_match_requests_responses_and_events
     self.assert_structure(body, example["response"]["body"])
-  File "/Users/mac/remote-dispatch/users/weicoz/wt/weicoz-remote-dispatch-v4-67-20261026-235115-795015000/tests/test_rd_serve.py", line 346, in assert_structure
+  File "/Users/user/remote-dispatch/users/weicoz/wt/weicoz-remote-dispatch-v4-67-20261026-235115-795015000/tests/test_rd_serve.py", line 346, in assert_structure
     self.assert_structure(actual[key], value, nullable=key in {
-  File "/Users/mac/remote-dispatch/users/weicoz/wt/weicoz-remote-dispatch-v4-67-20261026-235115-795015000/tests/test_rd_serve.py", line 352, in assert_structure
+  File "/Users/user/remote-dispatch/users/weicoz/wt/weicoz-remote-dispatch-v4-67-20261026-235115-795015000/tests/test_rd_serve.py", line 352, in assert_structure
     self.assert_structure(row, example[0])
-  File "/Users/mac/remote-dispatch/users/weicoz/wt/weicoz-remote-dispatch-v4-67-20261026-235115-795015000/tests/test_rd_serve.py", line 346, in assert_structure
+  File "/Users/user/remote-dispatch/users/weicoz/wt/weicoz-remote-dispatch-v4-67-20261026-235115-795015000/tests/test_rd_serve.py", line 346, in assert_structure
     self.assert_structure(actual[key], value, nullable=key in {
-  File "/Users/mac/remote-dispatch/users/weicoz/wt/weicoz-remote-dispatch-v4-67-20261026-235115-795015000/tests/test_rd_serve.py", line 340, in assert_structure
+  File "/Users/user/remote-dispatch/users/weicoz/wt/weicoz-remote-dispatch-v4-67-20261026-235115-795015000/tests/test_rd_serve.py", line 340, in assert_structure
     self.assertTrue(nullable, "必需的契约对象或字段不能为 null")
 AssertionError: False is not true : 必需的契约对象或字段不能为 null
 

@@ -4,7 +4,7 @@ test_received_terminal_job_is_not_reprobed_but_new_round_is (tests.test_rd_sessi
 FAIL: test_received_terminal_job_is_not_reprobed_but_new_round_is (tests.test_rd_session_poll_isolation.SessionPollIsolationTests.test_received_terminal_job_is_not_reprobed_but_new_round_is)
 ----------------------------------------------------------------------
 Traceback (most recent call last):
-  File "/Users/mac/remote-dispatch/users/weicoz/wt/weicoz-remote-dispatch-v4-72-20261027-104926-774223000/tests/test_rd_session_poll_isolation.py", line 146, in test_received_terminal_job_is_not_reprobed_but_new_round_is
+  File "/Users/user/remote-dispatch/users/weicoz/wt/weicoz-remote-dispatch-v4-72-20261027-104926-774223000/tests/test_rd_session_poll_isolation.py", line 146, in test_received_terminal_job_is_not_reprobed_but_new_round_is
     self.assertEqual(state_batches, [])
 AssertionError: Lists differ: ['sample_code=\'"""可随请求传到 worker 的只读网络探针与有[9024 chars]one'] != []
 

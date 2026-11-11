@@ -8,7 +8,7 @@ test_redacts_credentials_across_frames_ansi_and_split_osc_without_logging_body (
 FAIL: test_fragmented_input_with_interleaved_ping_is_one_command_and_never_replayed (tests.test_rd_terminal_ws.TerminalWSTests.test_fragmented_input_with_interleaved_ping_is_one_command_and_never_replayed)
 ----------------------------------------------------------------------
 Traceback (most recent call last):
-  File "/Users/mac/remote-dispatch/users/weicoz/wt/weicoz-remote-dispatch-v4-70-20261027-094955-260757000/tests/test_rd_terminal_ws.py", line 209, in test_fragmented_input_with_interleaved_ping_is_one_command_and_never_replayed
+  File "/Users/user/remote-dispatch/users/weicoz/wt/weicoz-remote-dispatch-v4-70-20261027-094955-260757000/tests/test_rd_terminal_ws.py", line 209, in test_fragmented_input_with_interleaved_ping_is_one_command_and_never_replayed
     self.assertEqual(reconnect.status, 101)
 AssertionError: 409 != 101
 

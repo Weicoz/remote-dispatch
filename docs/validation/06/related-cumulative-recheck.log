@@ -4,10 +4,10 @@ rdispatch: poll_unavailable: cannot collect host jobs
 ERROR: test_session_access_rejects_bad_requests_and_preserves_config_on_replace_failure (tests.test_rd_serve_admin.AdminConfigTests.test_session_access_rejects_bad_requests_and_preserves_config_on_replace_failure)
 ----------------------------------------------------------------------
 Traceback (most recent call last):
-  File "/Users/weicoz/remote-dispatch-self/users/weicoz/wt/weicoz-remote-dispatch-u06-20261028-115022-261556000/tests/test_rd_serve_admin.py", line 33, in test_session_access_rejects_bad_requests_and_preserves_config_on_replace_failure
+  File "/Users/user/remote-dispatch-self/users/weicoz/wt/weicoz-remote-dispatch-u06-20261028-115022-261556000/tests/test_rd_serve_admin.py", line 33, in test_session_access_rejects_bad_requests_and_preserves_config_on_replace_failure
     self.assertEqual(self.request('/v1/config/session-access', 'PUT', '{}', {'Content-Type': 'application/json'})[0], 400)
                      ~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/Users/weicoz/remote-dispatch-self/users/weicoz/wt/weicoz-remote-dispatch-u06-20261028-115022-261556000/tests/test_rd_serve.py", line 71, in request
+  File "/Users/user/remote-dispatch-self/users/weicoz/wt/weicoz-remote-dispatch-u06-20261028-115022-261556000/tests/test_rd_serve.py", line 71, in request
     connection.request(method, path, body=body, headers=headers or {})
     ~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
   File "/opt/homebrew/Cellar/python@3.14/3.14.6/Frameworks/Python.framework/Versions/3.14/lib/python3.14/http/client.py", line 1367, in request

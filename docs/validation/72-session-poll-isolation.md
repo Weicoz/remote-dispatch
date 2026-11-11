@@ -24,7 +24,7 @@ TDD 接缝以票据指定的 `/v1/sessions` 与假目标机验收为准；扫描
 
 ## 检查命令、次数与覆盖
 
-技能路径差异：指定的 `/Users/weicoz/.agents/skills/weicoz-agent-implement/SKILL.md` 在本机不存在。
+技能路径差异：指定的 `/Users/user/.agents/skills/weicoz-agent-implement/SKILL.md` 在本机不存在。
 已完整读取本机 `~/.agents/skills/weicoz-agent-implement/SKILL.md`，该版本没有名为“实现会话检查约定”的节；
 因此按本票明示的串行、保留 hook、相关与全量单元测试、socket 执行边界要求运行，未声称读到缺失章节。
 

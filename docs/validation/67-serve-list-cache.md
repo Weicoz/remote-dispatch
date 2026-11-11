@@ -24,7 +24,7 @@
 ## 技能与 TDD
 
 完整读取 `~/.agents/skills/implement/SKILL.md`、`tdd/SKILL.md` 及其 tests/mocking 参考。
-用户指定的 `/Users/weicoz/.agents/skills/weicoz-agent-implement/SKILL.md` 在本机不存在，
+用户指定的 `/Users/user/.agents/skills/weicoz-agent-implement/SKILL.md` 在本机不存在，
 已找到并完整读取 `~/.agents/skills/weicoz-agent-implement/SKILL.md`，按其检查约定执行。
 接缝沿用票据已指定的 HTTP 列表、SSE 和状态写入后的立即读取；测试不依赖内部缓存结构。
 

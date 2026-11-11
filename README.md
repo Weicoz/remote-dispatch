@@ -29,7 +29,7 @@ pip install --user git+https://github.com/Weicoz/remote-dispatch
 
 ```ini
 [host:mini]
-ssh = weicoz@192.168.1.20
+ssh = user@192.0.2.20
 workdir = ~/remote-dispatch
 sync = origin
 
@@ -109,7 +109,7 @@ rdispatch session-access off             # 关闭
 rdispatch session-access on --json       # 打开，JSON 输出
 
 rdispatch host list --json               # 含禁用项，不回显凭据
-rdispatch host add mini --ssh weicoz@192.168.1.20 --workdir ~/remote-dispatch --sync origin
+rdispatch host add mini --ssh user@192.0.2.20 --workdir ~/remote-dispatch --sync origin
 rdispatch host update mini --set max_heavy=2
 rdispatch host delete mini
 ```
@@ -132,7 +132,7 @@ DSH 需要在机器清单里给出员工凭据文件：
 
 ```ini
 [host:mini]
-ssh = weicoz@192.168.1.20
+ssh = user@192.0.2.20
 dsh_auth_file = ~/employee/dsh-credentials.yaml
 ```
 
@@ -204,4 +204,4 @@ make check-skill   # 校验技能副本一致，且 SKILL.md 不含相对链接
 
 ## 许可
 
-私有软件，保留所有权利。见 `LICENSE`。
+MIT 许可证，见 `LICENSE`。

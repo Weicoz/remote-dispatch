@@ -85,8 +85,8 @@ mypy/pyright 入口，环境也未安装，未擅自增加依赖，未运行类�
 
 TDD 接缝使用票据明确要求的 HTTP 输入、屏幕与 SSE；所有 Herdr 替换仅在可执行文件
 外部边界。implement、tdd（含 tests.md/mocking.md）、code-review 已完整读取并执行。
-指定检查约定原 `/Users/weicoz/...` 路径不存在，已定位并完整读取实际
-`/Users/mac/.agents/skills/weicoz-agent-implement/SKILL.md`。审查结果见
+指定检查约定原 `/Users/user/...` 路径不存在，已定位并完整读取实际
+`/Users/user/.agents/skills/weicoz-agent-implement/SKILL.md`。审查结果见
 [双轴报告](68/code-review.md)：Standards 发现 1 项 P2，已红绿修复并复核关闭；Spec 未发现
 实现缺陷，要求补齐的调查／E2E 报告内容已写入本文。
 

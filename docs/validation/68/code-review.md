@@ -6,7 +6,7 @@
 规格：`.rd-context/68-terminal-raw-io.md`，背景为同目录的 `68-app-terminal-findings.md`。
 规范来源：本票用户指令、仓库现有 Python unittest/HTTP/SSE/假 Herdr 接缝与合同；
 仓内没有适用的 CODING_STANDARDS/CONTRIBUTING。未读取示例目录的 AGENTS。
-本轮已完整读取 `/Users/mac/.agents/skills/code-review/SKILL.md`，
+本轮已完整读取 `/Users/user/.agents/skills/code-review/SKILL.md`，
 按其明确要求并行运行两个只读审查子代理；测试始终由主代理串行执行。
 
 ## Standards

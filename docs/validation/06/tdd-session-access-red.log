@@ -4,7 +4,7 @@ test_session_access_offline_show_toggle_backup_and_json (tests.test_rd_config_cl
 FAIL: test_session_access_offline_show_toggle_backup_and_json (tests.test_rd_config_cli.ConfigCliTests.test_session_access_offline_show_toggle_backup_and_json)
 ----------------------------------------------------------------------
 Traceback (most recent call last):
-  File "/Users/weicoz/remote-dispatch-self/users/weicoz/wt/weicoz-remote-dispatch-u06-20261028-115022-261556000/tests/test_rd_config_cli.py", line 98, in test_session_access_offline_show_toggle_backup_and_json
+  File "/Users/user/remote-dispatch-self/users/weicoz/wt/weicoz-remote-dispatch-u06-20261028-115022-261556000/tests/test_rd_config_cli.py", line 98, in test_session_access_offline_show_toggle_backup_and_json
     self.assertEqual(shown.returncode, 0, shown.stderr)
     ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 AssertionError: 2 != 0 : usage: rdispatch [-h] [-C TOP_DIR] [--version]

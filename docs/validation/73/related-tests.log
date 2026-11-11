@@ -39,7 +39,7 @@ test_wildcard_public_hostname_and_invalid_listeners_are_rejected_before_starting
 FAIL: test_delete_rejects_in_progress_dispatch_then_succeeds_after_completion (tests.test_rd_serve_host_config.HostConfigTests.test_delete_rejects_in_progress_dispatch_then_succeeds_after_completion)
 ----------------------------------------------------------------------
 Traceback (most recent call last):
-  File "/Users/mac/remote-dispatch/users/weicoz/wt/weicoz-remote-dispatch-v4-73-20261027-225655-383823000/tests/test_rd_serve_host_config.py", line 128, in test_delete_rejects_in_progress_dispatch_then_succeeds_after_completion
+  File "/Users/user/remote-dispatch/users/weicoz/wt/weicoz-remote-dispatch-v4-73-20261027-225655-383823000/tests/test_rd_serve_host_config.py", line 128, in test_delete_rejects_in_progress_dispatch_then_succeeds_after_completion
     self.assertEqual(reply, (200, {"deleted": "target"}))
 AssertionError: Tuples differ: (409, {'error': {'reason': 'host_has_activ[67 chars]']}}) != (200, {'deleted': 'target'})
 
@@ -57,7 +57,7 @@ First differing element 0:
 FAIL: test_candidates_are_sent_in_events_and_session_access_can_only_be_enabled_locally (tests.test_rd_serve_network.NetworkTests.test_candidates_are_sent_in_events_and_session_access_can_only_be_enabled_locally)
 ----------------------------------------------------------------------
 Traceback (most recent call last):
-  File "/Users/mac/remote-dispatch/users/weicoz/wt/weicoz-remote-dispatch-v4-73-20261027-225655-383823000/tests/test_rd_serve_network.py", line 377, in test_candidates_are_sent_in_events_and_session_access_can_only_be_enabled_locally
+  File "/Users/user/remote-dispatch/users/weicoz/wt/weicoz-remote-dispatch-v4-73-20261027-225655-383823000/tests/test_rd_serve_network.py", line 377, in test_candidates_are_sent_in_events_and_session_access_can_only_be_enabled_locally
     self.assertEqual(event["data"]["candidates"], info["candidates"])
 AssertionError: Lists differ: [{'address': '127.0.0.1', 'port': 55921}] != [{'address': '127.0.0.1', 'port': 55921, 'kind': 'other'}]
 

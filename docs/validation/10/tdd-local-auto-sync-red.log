@@ -6,7 +6,7 @@ test_ssh_target_still_requires_profile_confirmation (tests.test_rd_local.LocalTa
 FAIL: test_local_target_syncs_missing_profile_and_runs_with_an_isolated_copy (tests.test_rd_local.LocalTargetProfileSyncTest.test_local_target_syncs_missing_profile_and_runs_with_an_isolated_copy)
 ----------------------------------------------------------------------
 Traceback (most recent call last):
-  File "/Users/weicoz/remote-dispatch-self/users/weicoz/wt/weicoz-remote-dispatch-u10-20261028-124312-057246000/tests/test_rd_local.py", line 443, in test_local_target_syncs_missing_profile_and_runs_with_an_isolated_copy
+  File "/Users/user/remote-dispatch-self/users/weicoz/wt/weicoz-remote-dispatch-u10-20261028-124312-057246000/tests/test_rd_local.py", line 443, in test_local_target_syncs_missing_profile_and_runs_with_an_isolated_copy
     self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
     ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 AssertionError: 4 != 0 : Remote Dispatch: ID=employee_a host=self root=/private/var/folders/55/xwg7x1wj6m93xp67ncz01_3m0000gn/T/rd-local-profile-5qpy799p/worker/users/employee_a
@@ -22,7 +22,7 @@ rdispatch: 此 ID 尚无远端配置；先询问是否同步、确认 ID，再�
 FAIL: test_local_target_updates_a_stale_copy_and_keeps_old_versions (tests.test_rd_local.LocalTargetProfileSyncTest.test_local_target_updates_a_stale_copy_and_keeps_old_versions)
 ----------------------------------------------------------------------
 Traceback (most recent call last):
-  File "/Users/weicoz/remote-dispatch-self/users/weicoz/wt/weicoz-remote-dispatch-u10-20261028-124312-057246000/tests/test_rd_local.py", line 471, in test_local_target_updates_a_stale_copy_and_keeps_old_versions
+  File "/Users/user/remote-dispatch-self/users/weicoz/wt/weicoz-remote-dispatch-u10-20261028-124312-057246000/tests/test_rd_local.py", line 471, in test_local_target_updates_a_stale_copy_and_keeps_old_versions
     self.assertIn("本机目标 self：已自动同步员工配置副本 version=", result.stdout)
     ~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 AssertionError: '本机目标 self：已自动同步员工配置副本 version=' not found in 'Remote Dispatch: ID=employee_a host=self root=/private/var/folders/55/xwg7x1wj6m93xp67ncz01_3m0000gn/T/rd-local-profile-lm5n_gw7/worker/users/employee_a\n配置源更新时间：本地 2026-10-28 04:49:11 UTC；远端 2026-10-28 04:49:09 UTC；状态 different\n本地配置版本：d472ca91ecd2fc8f314a8394bc2ebf50796444761cb0d5fc1dd9043d5b6e2796\n同步清单：AGENTS.md, config.toml\n变化：AGENTS.md；移出新版本：无\ndispatching employee_a-repo-codex-20261028-124910-965875000 -> self (branch rd/employee_a/codex-20261028-124910-965875000, base b4eb72847d, sync direct)\nstarted. job id: employee_a-repo-codex-20261028-124910-965875000\n  rdispatch status employee_a-repo-codex-20261028-124910-965875000    rdispatch logs employee_a-repo-codex-20261028-124910-965875000    rdispatch wait employee_a-repo-codex-20261028-124910-965875000    rdispatch fetch employee_a-repo-codex-20261028-124910-965875000\n'

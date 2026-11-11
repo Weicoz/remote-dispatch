@@ -3,7 +3,7 @@
 范围仅 remote-dispatch；没有改 App、部署、重启服务、push、merge 或切换分支。
 接口合同为 `docs/serve.md` 的“目标机配置（票 64）”节。
 实现使用本宿主 `~/.agents/skills/implement/SKILL.md`、`tdd/SKILL.md`、
-`code-review/SKILL.md`；指定 `/Users/weicoz/.agents/skills/weicoz-agent-implement/SKILL.md`
+`code-review/SKILL.md`；指定 `/Users/user/.agents/skills/weicoz-agent-implement/SKILL.md`
 不存在，已读取当前宿主 `~/.agents/skills/weicoz-agent-implement/SKILL.md` 全文，
 按其“检查与验收”节及本票约定执行。未读取其他个人规则、记忆或历史。
 

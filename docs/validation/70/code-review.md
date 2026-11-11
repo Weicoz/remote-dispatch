@@ -3,7 +3,7 @@
 范围：当前任务 WIP 相对 `987b6448ebb4d596b4daf8cae7025e1f2e94a6ff`。
 首轮命令 `git diff --cached 987b6448ebb4d596b4daf8cae7025e1f2e94a6ff`；
 修复复核命令 `git diff HEAD -- src tests docs/terminal-websocket.md`。
-技能：按当前宿主 `/Users/mac/.agents/skills/code-review/SKILL.md`，规范与规格两轴独立子代理只读审查。
+技能：按当前宿主 `/Users/user/.agents/skills/code-review/SKILL.md`，规范与规格两轴独立子代理只读审查。
 本轮提交尚未创建，基线为进入任务时 HEAD；未读取其他目录个人规则或历史。
 规格使用用户提供的 `.rd-context/70-terminal-ws-bridge.md`，无外部 issue tracker 依赖。
 

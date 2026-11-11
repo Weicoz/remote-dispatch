@@ -19,7 +19,7 @@
 
 已完整读取当前宿主 `~/.agents/skills/implement/SKILL.md`、`tdd/SKILL.md`
 及其 tests/mocking 参考、`code-review/SKILL.md`。
-用户指定的 `/Users/weicoz/.agents/skills/weicoz-agent-implement/SKILL.md` 不存在，实际完整读取
+用户指定的 `/Users/user/.agents/skills/weicoz-agent-implement/SKILL.md` 不存在，实际完整读取
 `~/.agents/skills/weicoz-agent-implement/SKILL.md`；该版本无同名“实现会话检查约定”标题，
 按其“检查与验收”章节及本轮用户明确约定执行。
 测试接缝采用票据指定的公开转写接口与会话 HTTP 接口。

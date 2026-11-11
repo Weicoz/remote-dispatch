@@ -5,7 +5,7 @@ rdispatch: poll_unavailable: cannot update harness statistics
 FAIL: test_large_project_index_and_unrelated_user_files_preserve_list_contract (tests.test_rd_serve_list_cache.ListCacheTests.test_large_project_index_and_unrelated_user_files_preserve_list_contract)
 ----------------------------------------------------------------------
 Traceback (most recent call last):
-  File "/Users/mac/remote-dispatch/users/weicoz/wt/weicoz-remote-dispatch-v4-67-20261026-235115-795015000/tests/test_rd_serve_list_cache.py", line 28, in test_large_project_index_and_unrelated_user_files_preserve_list_contract
+  File "/Users/user/remote-dispatch/users/weicoz/wt/weicoz-remote-dispatch-v4-67-20261026-235115-795015000/tests/test_rd_serve_list_cache.py", line 28, in test_large_project_index_and_unrelated_user_files_preserve_list_contract
     self.assertEqual(status, 200)
 AssertionError: 400 != 200
 
